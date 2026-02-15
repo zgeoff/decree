@@ -1,0 +1,41 @@
+{
+  "name": "@decree/monorepo",
+  "private": true,
+  "packageManager": "yarn@4.12.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "biome lint",
+    "lint:fix": "biome lint --fix",
+    "format": "biome format --write . && prettier --write .",
+    "format:check": "biome format . && prettier --check .",
+    "check": "biome check . && prettier --check . && turbo run typecheck test && yarn test:sh",
+    "check:write": "biome check --write . && prettier --write . && turbo run typecheck test && yarn test:sh",
+    "typecheck": "turbo run typecheck",
+    "control-plane": "yarn workspace @decree/control-plane start",
+    "test:sh": "scripts/run-bats.sh",
+    "prepare": "lefthook install"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.3.14",
+    "bats": "1.13.0",
+    "lefthook": "2.1.0",
+    "prettier": "3.8.1",
+    "turbo": "2.8.3",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "volta": {
+    "node": "24.13.0"
+  },
+  "dependenciesMeta": {
+    "bats@1.13.0": {
+      "unplugged": true
+    }
+  }
+}
