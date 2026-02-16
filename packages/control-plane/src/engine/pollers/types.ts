@@ -1,5 +1,8 @@
 import type { SpecPollerBatchResult } from '../../types.ts';
 import type { GitHubClient } from '../github-client/types.ts';
+import type { WorkProviderReader } from '../github-provider/types.ts';
+import type { WorkItemChanged } from '../state-store/domain-type-stubs.ts';
+import type { EngineState } from '../state-store/types.ts';
 
 // ---------------------------------------------------------------------------
 // IssuePoller
@@ -40,6 +43,22 @@ export interface SpecPollerSnapshot {
 export interface SpecPoller {
   poll: () => Promise<SpecPollerBatchResult>;
   getSnapshot: () => SpecPollerSnapshot;
+}
+
+// ---------------------------------------------------------------------------
+// WorkItemPoller
+// ---------------------------------------------------------------------------
+
+export interface WorkItemPoller {
+  poll: () => Promise<void>;
+  stop: () => void;
+}
+
+export interface WorkItemPollerConfig {
+  reader: WorkProviderReader;
+  getState: () => EngineState;
+  enqueue: (event: WorkItemChanged) => void;
+  interval: number;
 }
 
 // ---------------------------------------------------------------------------
