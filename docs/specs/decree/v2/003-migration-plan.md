@@ -24,7 +24,8 @@ directory. The v2 planning documents (`001-plan.md`, `002-architecture.md`, this
 1. Read every file listed in the step's **Read first** section.
 2. For REWORK steps: read the existing spec being reworked (listed under "Affected specs") to
    understand the current state you are changing.
-3. Use the `/doc-coauthoring` skill to write or update the spec.
+3. Invoke the `/spec-writing` skill, then use the `/doc-coauthoring` skill to write or update the
+   spec.
 4. Replace content in place — do not reprint entire sections when editing.
 5. Verify per the step's criteria.
 6. Check the box in this file.
@@ -57,7 +58,7 @@ Foundation for all other components. Defines the canonical engine state shape, s
 functions, and selectors. References domain types already defined in 002-architecture.md — does not
 redefine them.
 
-- [ ] Write spec
+- [x] Write spec
 
 **Read first:**
 
@@ -90,9 +91,9 @@ explicit no-op). Selectors cover all read patterns referenced by the handler cat
 
 **Spec impact:**
 
-| Spec             | Action |
-| ---------------- | ------ |
-| `state-store.md` | NEW    |
+| Spec                                  | Action |
+| ------------------------------------- | ------ |
+| `control-plane-engine-state-store.md` | NEW    |
 
 ---
 
@@ -135,9 +136,9 @@ accepts domain-level parameters. The five interfaces match 002-architecture.md e
 
 **Spec impact:**
 
-| Spec                 | Action |
-| -------------------- | ------ |
-| `github-provider.md` | NEW    |
+| Spec                                      | Action |
+| ----------------------------------------- | ------ |
+| `control-plane-engine-github-provider.md` | NEW    |
 
 ---
 
@@ -306,9 +307,9 @@ invariant.
 
 **Spec impact:**
 
-| Spec          | Action |
-| ------------- | ------ |
-| `handlers.md` | NEW    |
+| Spec                               | Action |
+| ---------------------------------- | ------ |
+| `control-plane-engine-handlers.md` | NEW    |
 
 ---
 
@@ -362,9 +363,9 @@ the error handling section.
 
 **Spec impact:**
 
-| Spec                  | Action |
-| --------------------- | ------ |
-| `command-executor.md` | NEW    |
+| Spec                                       | Action |
+| ------------------------------------------ | ------ |
+| `control-plane-engine-command-executor.md` | NEW    |
 
 ---
 
@@ -863,13 +864,13 @@ Step 1 (state store)
 
 | Step | Spec                                             | Action     |
 | ---- | ------------------------------------------------ | ---------- |
-| 1    | `state-store.md`                                 | NEW        |
-| 2    | `github-provider.md`                             | NEW        |
+| 1    | `control-plane-engine-state-store.md`            | NEW        |
+| 2    | `control-plane-engine-github-provider.md`        | NEW        |
 | 3a   | `control-plane-engine-issue-poller.md`           | REWORK     |
 | 3b   | `control-plane-engine-pr-poller.md`              | REWORK     |
 | 3c   | `control-plane-engine-spec-poller.md`            | REWORK     |
-| 4    | `handlers.md`                                    | NEW        |
-| 5    | `command-executor.md`                            | NEW        |
+| 4    | `control-plane-engine-handlers.md`               | NEW        |
+| 5    | `control-plane-engine-command-executor.md`       | NEW        |
 | 6    | `control-plane-engine-agent-manager.md`          | REWORK     |
 | 7a   | `agent-planner.md`                               | REWORK     |
 | 7b   | `agent-implementor.md`                           | REWORK     |
