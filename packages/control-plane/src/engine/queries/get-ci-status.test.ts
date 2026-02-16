@@ -29,7 +29,9 @@ test('it reports failure when combined status is failure', async () => {
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -55,7 +57,9 @@ test('it reports failure when any check run has a failure conclusion', async () 
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -97,7 +101,9 @@ test('it reports failure when any check run has a cancelled conclusion', async (
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -133,7 +139,9 @@ test('it reports failure when any check run has a timed_out conclusion', async (
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -169,7 +177,9 @@ test('it reports pending when any check run has not completed', async () => {
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -205,7 +215,9 @@ test('it reports pending when combined status is pending with real statuses', as
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -231,7 +243,9 @@ test('it reports pending when no CI is configured', async () => {
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -257,7 +271,9 @@ test('it reports success when all check runs succeed and combined status is succ
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -299,7 +315,9 @@ test('it reports success when combined status has no statuses and all check runs
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -335,7 +353,9 @@ test('it defaults to pending when CI status API calls fail', async () => {
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -359,7 +379,9 @@ test('it returns failed check runs when overall status is failure', async () => 
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -422,7 +444,9 @@ test('it returns only timed_out check runs in failedCheckRuns', async () => {
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -471,7 +495,9 @@ test('it returns empty array for failedCheckRuns when overall status is success'
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -507,7 +533,9 @@ test('it returns empty array for failedCheckRuns when overall status is pending'
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -534,7 +562,7 @@ test('it returns empty array for failedCheckRuns when overall status is pending'
   expect(result.failedCheckRuns).toStrictEqual([]);
 });
 
-test('it handles check runs with missing name or details_url fields', async () => {
+test('it handles check runs with empty name and null details url', async () => {
   const { octokit, config } = setupTest();
 
   vi.mocked(octokit.pulls.get).mockResolvedValue({
@@ -543,7 +571,9 @@ test('it handles check runs with missing name or details_url fields', async () =
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -555,7 +585,7 @@ test('it handles check runs with missing name or details_url fields', async () =
   vi.mocked(octokit.checks.listForRef).mockResolvedValue({
     data: {
       total_count: 1,
-      check_runs: [{ status: 'completed', conclusion: 'failure' }],
+      check_runs: [{ name: '', status: 'completed', conclusion: 'failure', details_url: null }],
     },
   });
 
@@ -579,7 +609,9 @@ test('it calls pulls.get to obtain head.sha', async () => {
       title: 'test PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/42',
+      user: null,
       head: { sha: 'specific-sha-123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });

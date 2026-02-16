@@ -1,72 +1,9 @@
 import invariant from 'tiny-invariant';
+import type { GitHubClient } from '../../github-client/types.ts';
 import type { Spec } from '../../state-store/domain-type-stubs.ts';
 import { mapTreeEntryToSpec } from '../mapping/map-tree-entry-to-spec.ts';
 import { retryWithBackoff } from '../retry-with-backoff.ts';
 import type { SpecProviderReader } from '../types.ts';
-
-// --- Narrow Octokit interfaces ---
-
-interface TreeEntry {
-  path?: string;
-  sha?: string;
-  type?: string;
-}
-
-interface TreeResponse {
-  data: {
-    sha: string;
-    tree: TreeEntry[];
-  };
-}
-
-interface BlobResponse {
-  data: {
-    content: string;
-    encoding: string;
-  };
-}
-
-interface GitAPI {
-  getTree: (params: GetTreeParams) => Promise<TreeResponse>;
-  getBlob: (params: GetBlobParams) => Promise<BlobResponse>;
-}
-
-interface GetTreeParams {
-  owner: string;
-  repo: string;
-  tree_sha: string;
-  recursive?: string;
-}
-
-interface GetBlobParams {
-  owner: string;
-  repo: string;
-  file_sha: string;
-}
-
-interface ContentItem {
-  sha: string;
-}
-
-interface ContentResponse {
-  data: ContentItem;
-}
-
-interface ReposAPI {
-  getContent: (params: GetContentParams) => Promise<ContentResponse>;
-}
-
-interface GetContentParams {
-  owner: string;
-  repo: string;
-  path: string;
-  ref: string;
-}
-
-export interface SpecReaderOctokit {
-  git: GitAPI;
-  repos: ReposAPI;
-}
 
 export interface SpecReaderConfig {
   owner: string;
@@ -75,29 +12,31 @@ export interface SpecReaderConfig {
   defaultBranch: string;
 }
 
+export interface SpecReaderDeps {
+  client: GitHubClient;
+  config: SpecReaderConfig;
+}
+
 interface SpecCache {
   treeSHA: string;
   specs: Spec[];
 }
 
-export function createSpecReader(
-  octokit: SpecReaderOctokit,
-  config: SpecReaderConfig,
-): SpecProviderReader {
+export function createSpecReader(deps: SpecReaderDeps): SpecProviderReader {
   let cache: SpecCache | null = null;
 
   return {
     listSpecs: async (): Promise<Spec[]> => {
-      const dirTreeSHA = await getSpecsDirTreeSHA(octokit, config);
+      const dirTreeSHA = await getSpecsDirTreeSHA(deps);
 
       if (cache !== null && cache.treeSHA === dirTreeSHA) {
         return cache.specs;
       }
 
       const treeResponse = await retryWithBackoff(() =>
-        octokit.git.getTree({
-          owner: config.owner,
-          repo: config.repo,
+        deps.client.git.getTree({
+          owner: deps.config.owner,
+          repo: deps.config.repo,
           tree_sha: dirTreeSHA,
           recursive: '1',
         }),
@@ -118,9 +57,9 @@ export function createSpecReader(
 
         // biome-ignore lint/performance/noAwaitInLoops: sequential to fail on first error per spec requirements
         const blobResponse = await retryWithBackoff(() =>
-          octokit.git.getBlob({
-            owner: config.owner,
-            repo: config.repo,
+          deps.client.git.getBlob({
+            owner: deps.config.owner,
+            repo: deps.config.repo,
             file_sha: entrySHA,
           }),
         );
@@ -130,7 +69,7 @@ export function createSpecReader(
         specs.push(
           mapTreeEntryToSpec(
             { path: entryPath, sha: entrySHA },
-            { specsDir: config.specsDir, content },
+            { specsDir: deps.config.specsDir, content },
           ),
         );
       }
@@ -142,19 +81,17 @@ export function createSpecReader(
   };
 }
 
-async function getSpecsDirTreeSHA(
-  octokit: SpecReaderOctokit,
-  config: SpecReaderConfig,
-): Promise<string> {
+async function getSpecsDirTreeSHA(deps: SpecReaderDeps): Promise<string> {
   const response = await retryWithBackoff(() =>
-    octokit.repos.getContent({
-      owner: config.owner,
-      repo: config.repo,
-      path: config.specsDir,
-      ref: config.defaultBranch,
+    deps.client.repos.getContent({
+      owner: deps.config.owner,
+      repo: deps.config.repo,
+      path: deps.config.specsDir,
+      ref: deps.config.defaultBranch,
     }),
   );
 
+  invariant(response.data.sha, 'specs directory content must have a sha');
   return response.data.sha;
 }
 

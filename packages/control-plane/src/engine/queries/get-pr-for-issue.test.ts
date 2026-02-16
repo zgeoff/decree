@@ -32,7 +32,9 @@ function setupLinkedPr(
       title: 'feat: test',
       changed_files: 3,
       html_url: 'https://github.com/test-owner/test-repo/pull/20',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft,
     },
   });
@@ -173,7 +175,9 @@ test('it returns PR details when a linked pull request exists', async () => {
       title: 'feat(agentic-workflow): implement queries',
       changed_files: 3,
       html_url: 'https://github.com/test-owner/test-repo/pull/20',
+      user: null,
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -297,7 +301,9 @@ test('it returns the first matching PR by number when multiple link to the same 
       title: 'first PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/120',
+      user: null,
       head: { sha: 'sha-first', ref: 'pr-120-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -362,8 +368,8 @@ test('it reports failure when any check run has a failure conclusion', async () 
     data: {
       total_count: 2,
       check_runs: [
-        { status: 'completed', conclusion: 'success' },
-        { status: 'completed', conclusion: 'failure' },
+        { name: 'ci', status: 'completed', conclusion: 'success', details_url: null },
+        { name: 'ci', status: 'completed', conclusion: 'failure', details_url: null },
       ],
     },
   });
@@ -383,7 +389,7 @@ test('it reports failure when any check run has a cancelled conclusion', async (
   vi.mocked(octokit.checks.listForRef).mockResolvedValue({
     data: {
       total_count: 1,
-      check_runs: [{ status: 'completed', conclusion: 'cancelled' }],
+      check_runs: [{ name: 'ci', status: 'completed', conclusion: 'cancelled', details_url: null }],
     },
   });
 
@@ -402,7 +408,7 @@ test('it reports failure when any check run has a timed out conclusion', async (
   vi.mocked(octokit.checks.listForRef).mockResolvedValue({
     data: {
       total_count: 1,
-      check_runs: [{ status: 'completed', conclusion: 'timed_out' }],
+      check_runs: [{ name: 'ci', status: 'completed', conclusion: 'timed_out', details_url: null }],
     },
   });
 
@@ -421,7 +427,7 @@ test('it reports pending when checks have not completed', async () => {
   vi.mocked(octokit.checks.listForRef).mockResolvedValue({
     data: {
       total_count: 1,
-      check_runs: [{ status: 'in_progress', conclusion: null }],
+      check_runs: [{ name: 'ci', status: 'in_progress', conclusion: null, details_url: null }],
     },
   });
 
@@ -473,8 +479,8 @@ test('it reports success when all check runs complete successfully', async () =>
     data: {
       total_count: 2,
       check_runs: [
-        { status: 'completed', conclusion: 'success' },
-        { status: 'completed', conclusion: 'success' },
+        { name: 'ci', status: 'completed', conclusion: 'success', details_url: null },
+        { name: 'lint', status: 'completed', conclusion: 'success', details_url: null },
       ],
     },
   });
@@ -494,7 +500,7 @@ test('it reports success when combined status has no statuses and all check runs
   vi.mocked(octokit.checks.listForRef).mockResolvedValue({
     data: {
       total_count: 1,
-      check_runs: [{ status: 'completed', conclusion: 'success' }],
+      check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success', details_url: null }],
     },
   });
 
@@ -515,7 +521,9 @@ test('it defaults to pending when the CI status API call fails', async () => {
       title: 'feat: test',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/100',
+      user: null,
       head: { sha: 'sha-error', ref: 'error-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -573,7 +581,9 @@ test('it includes draft PRs when includeDrafts is true', async () => {
       title: 'draft PR',
       changed_files: 2,
       html_url: 'https://github.com/test-owner/test-repo/pull/30',
+      user: null,
       head: { sha: 'draft-sha', ref: 'draft-branch' },
+      body: null,
       draft: true,
     },
   });
@@ -615,7 +625,9 @@ test('it returns a non-draft PR when includeDrafts is false and both draft and n
       title: 'non-draft PR',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/40',
+      user: null,
       head: { sha: 'non-draft-sha', ref: 'non-draft-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -649,7 +661,9 @@ test('it returns the first matching PR when includeDrafts is true and both draft
       title: 'first PR (draft)',
       changed_files: 1,
       html_url: 'https://github.com/test-owner/test-repo/pull/50',
+      user: null,
       head: { sha: 'first-sha', ref: 'first-branch' },
+      body: null,
       draft: true,
     },
   });

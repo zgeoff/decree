@@ -1,3 +1,4 @@
+import type { GitHubClient } from '../../github-client/types.ts';
 import type { WorkItem, WorkItemStatus } from '../../state-store/domain-type-stubs.ts';
 import { formatDependencyMetadata } from '../mapping/format-dependency-metadata.ts';
 import type { GitHubIssueInput } from '../mapping/map-issue-to-work-item.ts';
@@ -6,74 +7,13 @@ import { stripDependencyMetadata } from '../mapping/strip-dependency-metadata.ts
 import { retryWithBackoff } from '../retry-with-backoff.ts';
 import type { WorkProviderWriter } from '../types.ts';
 
-// --- Narrow Octokit interface types ---
-
-interface IssueLabel {
-  name?: string;
-}
-
-interface IssueResponse {
-  data: {
-    number: number;
-    title: string;
-    labels: IssueLabel[];
-    body: string | null;
-    created_at: string;
-  };
-}
-
-interface LabelsResponse {
-  data: IssueLabel[];
-}
-
-interface OctokitIssues {
-  get: (params: { owner: string; repo: string; issue_number: number }) => Promise<IssueResponse>;
-  create: (params: {
-    owner: string;
-    repo: string;
-    title: string;
-    body: string;
-    labels: string[];
-  }) => Promise<IssueResponse>;
-  update: (params: {
-    owner: string;
-    repo: string;
-    issue_number: number;
-    body?: string;
-    state?: string;
-    labels?: string[];
-  }) => Promise<IssueResponse>;
-  listLabelsOnIssue: (params: {
-    owner: string;
-    repo: string;
-    issue_number: number;
-    per_page: number;
-  }) => Promise<LabelsResponse>;
-  addLabels: (params: {
-    owner: string;
-    repo: string;
-    issue_number: number;
-    labels: string[];
-  }) => Promise<unknown>;
-  removeLabel: (params: {
-    owner: string;
-    repo: string;
-    issue_number: number;
-    name: string;
-  }) => Promise<unknown>;
-}
-
-export interface WorkItemWriterOctokit {
-  issues: OctokitIssues;
-}
-
 export interface WorkItemWriterConfig {
   owner: string;
   repo: string;
 }
 
 export interface WorkItemWriterDeps {
-  octokit: WorkItemWriterOctokit;
+  client: GitHubClient;
   config: WorkItemWriterConfig;
 }
 
@@ -111,7 +51,7 @@ async function transitionStatus(
   const issueNumber = Number(workItemID);
 
   const labelsResponse = await retryWithBackoff(() =>
-    deps.octokit.issues.listLabelsOnIssue({
+    deps.client.issues.listLabelsOnIssue({
       owner: deps.config.owner,
       repo: deps.config.repo,
       issue_number: issueNumber,
@@ -124,7 +64,7 @@ async function transitionStatus(
     if (labelName?.startsWith(STATUS_PREFIX)) {
       // biome-ignore lint/performance/noAwaitInLoops: sequential label removal required — labels may conflict if removed concurrently
       await retryWithBackoff(() =>
-        deps.octokit.issues.removeLabel({
+        deps.client.issues.removeLabel({
           owner: deps.config.owner,
           repo: deps.config.repo,
           issue_number: issueNumber,
@@ -135,7 +75,7 @@ async function transitionStatus(
   }
 
   await retryWithBackoff(() =>
-    deps.octokit.issues.addLabels({
+    deps.client.issues.addLabels({
       owner: deps.config.owner,
       repo: deps.config.repo,
       issue_number: issueNumber,
@@ -145,7 +85,7 @@ async function transitionStatus(
 
   if (newStatus === 'closed') {
     await retryWithBackoff(() =>
-      deps.octokit.issues.update({
+      deps.client.issues.update({
         owner: deps.config.owner,
         repo: deps.config.repo,
         issue_number: issueNumber,
@@ -168,7 +108,7 @@ async function createWorkItem(params: CreateWorkItemParams): Promise<WorkItem> {
   const allLabels = ['task:implement', ...params.labels];
 
   const response = await retryWithBackoff(() =>
-    params.deps.octokit.issues.create({
+    params.deps.client.issues.create({
       owner: params.deps.config.owner,
       repo: params.deps.config.repo,
       title: params.title,
@@ -211,7 +151,7 @@ async function updateWorkItemBody(
   newBody: string,
 ): Promise<void> {
   const response = await retryWithBackoff(() =>
-    deps.octokit.issues.get({
+    deps.client.issues.get({
       owner: deps.config.owner,
       repo: deps.config.repo,
       issue_number: issueNumber,
@@ -225,7 +165,7 @@ async function updateWorkItemBody(
   const updatedBody = newBody + metadataSuffix;
 
   await retryWithBackoff(() =>
-    deps.octokit.issues.update({
+    deps.client.issues.update({
       owner: deps.config.owner,
       repo: deps.config.repo,
       issue_number: issueNumber,
@@ -240,7 +180,7 @@ async function updateWorkItemLabels(
   newLabels: string[],
 ): Promise<void> {
   const labelsResponse = await retryWithBackoff(() =>
-    deps.octokit.issues.listLabelsOnIssue({
+    deps.client.issues.listLabelsOnIssue({
       owner: deps.config.owner,
       repo: deps.config.repo,
       issue_number: issueNumber,
@@ -262,7 +202,7 @@ async function updateWorkItemLabels(
   const combinedLabels = [...reservedLabels, ...newLabels];
 
   await retryWithBackoff(() =>
-    deps.octokit.issues.update({
+    deps.client.issues.update({
       owner: deps.config.owner,
       repo: deps.config.repo,
       issue_number: issueNumber,

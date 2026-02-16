@@ -1,116 +1,11 @@
+import type { GitHubClient } from '../../github-client/types.ts';
 import type { PipelineResult, Revision } from '../../state-store/domain-type-stubs.ts';
-import {
-  type CheckRunsInput,
-  type CombinedStatusInput,
-  derivePipelineStatus,
-} from '../mapping/derive-pipeline-status.ts';
+import { isNotFoundError } from '../is-not-found-error.ts';
+import { derivePipelineStatus } from '../mapping/derive-pipeline-status.ts';
 import type { GitHubPRInput } from '../mapping/map-pr-to-revision.ts';
 import { mapPRToRevision } from '../mapping/map-pr-to-revision.ts';
 import { retryWithBackoff } from '../retry-with-backoff.ts';
 import type { RevisionFile, RevisionFileStatus, RevisionProviderReader } from '../types.ts';
-
-// --- Narrow Octokit interfaces ---
-
-interface PRListResponse {
-  data: GitHubPRInput[];
-}
-
-interface PRGetResponse {
-  data: GitHubPRInput;
-}
-
-interface ReviewItem {
-  id: number;
-  user: ReviewUser | null;
-  submitted_at?: string;
-}
-
-interface ReviewUser {
-  login: string;
-}
-
-interface ReviewListResponse {
-  data: ReviewItem[];
-}
-
-interface CombinedStatusResponse {
-  data: CombinedStatusInput;
-}
-
-interface CheckRunsResponse {
-  data: CheckRunsInput;
-}
-
-interface PRFileItem {
-  filename: string;
-  status: string;
-  patch?: string;
-}
-
-interface PRFilesResponse {
-  data: PRFileItem[];
-}
-
-interface PullsAPI {
-  list: (params: PRListParams) => Promise<PRListResponse>;
-  get: (params: PRGetParams) => Promise<PRGetResponse>;
-  listReviews: (params: PRReviewsParams) => Promise<ReviewListResponse>;
-  listFiles: (params: PRFilesParams) => Promise<PRFilesResponse>;
-}
-
-interface ReposAPI {
-  getCombinedStatusForRef: (params: CombinedStatusParams) => Promise<CombinedStatusResponse>;
-}
-
-interface ChecksAPI {
-  listForRef: (params: ChecksListParams) => Promise<CheckRunsResponse>;
-}
-
-interface PRListParams {
-  owner: string;
-  repo: string;
-  state: 'open';
-  per_page: number;
-}
-
-interface PRGetParams {
-  owner: string;
-  repo: string;
-  pull_number: number;
-}
-
-interface PRReviewsParams {
-  owner: string;
-  repo: string;
-  pull_number: number;
-  per_page: number;
-}
-
-interface CombinedStatusParams {
-  owner: string;
-  repo: string;
-  ref: string;
-}
-
-interface ChecksListParams {
-  owner: string;
-  repo: string;
-  ref: string;
-  per_page: number;
-}
-
-interface PRFilesParams {
-  owner: string;
-  repo: string;
-  pull_number: number;
-  per_page: number;
-}
-
-export interface RevisionReaderOctokit {
-  pulls: PullsAPI;
-  repos: ReposAPI;
-  checks: ChecksAPI;
-}
 
 export interface RevisionReaderConfig {
   owner: string;
@@ -118,12 +13,15 @@ export interface RevisionReaderConfig {
   botUsername: string;
 }
 
+export interface RevisionReaderDeps {
+  client: GitHubClient;
+  config: RevisionReaderConfig;
+}
+
 interface PipelineCacheEntry {
   headSHA: string;
   pipeline: PipelineResult;
 }
-
-const STATUS_NOT_FOUND = 404;
 
 const VALID_FILE_STATUSES: Record<string, RevisionFileStatus> = {
   added: 'added',
@@ -135,18 +33,15 @@ const VALID_FILE_STATUSES: Record<string, RevisionFileStatus> = {
   unchanged: 'unchanged',
 };
 
-export function createRevisionReader(
-  octokit: RevisionReaderOctokit,
-  config: RevisionReaderConfig,
-): RevisionProviderReader {
+export function createRevisionReader(deps: RevisionReaderDeps): RevisionProviderReader {
   const pipelineCache = new Map<string, PipelineCacheEntry>();
 
   return {
     listRevisions: async (): Promise<Revision[]> => {
       const response = await retryWithBackoff(() =>
-        octokit.pulls.list({
-          owner: config.owner,
-          repo: config.repo,
+        deps.client.pulls.list({
+          owner: deps.config.owner,
+          repo: deps.config.repo,
           state: 'open',
           per_page: 100,
         }),
@@ -158,8 +53,8 @@ export function createRevisionReader(
       for (const pr of prs) {
         // biome-ignore lint/performance/noAwaitInLoops: each PR needs its own review+pipeline fetch
         const [reviewID, pipeline] = await Promise.all([
-          resolveReviewID(octokit, config, pr.number),
-          resolvePipeline(octokit, config, pr, pipelineCache),
+          resolveReviewID(deps, pr.number),
+          resolvePipeline(deps, pr, pipelineCache),
         ]);
 
         revisions.push(mapPRToRevision(pr, { pipeline, reviewID }));
@@ -171,9 +66,9 @@ export function createRevisionReader(
     getRevision: async (id: string): Promise<Revision | null> => {
       try {
         const response = await retryWithBackoff(() =>
-          octokit.pulls.get({
-            owner: config.owner,
-            repo: config.repo,
+          deps.client.pulls.get({
+            owner: deps.config.owner,
+            repo: deps.config.repo,
             pull_number: Number(id),
           }),
         );
@@ -189,9 +84,9 @@ export function createRevisionReader(
 
     getRevisionFiles: async (id: string): Promise<RevisionFile[]> => {
       const response = await retryWithBackoff(() =>
-        octokit.pulls.listFiles({
-          owner: config.owner,
-          repo: config.repo,
+        deps.client.pulls.listFiles({
+          owner: deps.config.owner,
+          repo: deps.config.repo,
           pull_number: Number(id),
           per_page: 100,
         }),
@@ -203,21 +98,20 @@ export function createRevisionReader(
 }
 
 async function resolveReviewID(
-  octokit: RevisionReaderOctokit,
-  config: RevisionReaderConfig,
+  deps: RevisionReaderDeps,
   pullNumber: number,
 ): Promise<string | null> {
   const response = await retryWithBackoff(() =>
-    octokit.pulls.listReviews({
-      owner: config.owner,
-      repo: config.repo,
+    deps.client.pulls.listReviews({
+      owner: deps.config.owner,
+      repo: deps.config.repo,
       pull_number: pullNumber,
       per_page: 100,
     }),
   );
 
   const botReviews = response.data.filter(
-    (review) => review.user !== null && review.user.login === config.botUsername,
+    (review) => review.user !== null && review.user.login === deps.config.botUsername,
   );
 
   if (botReviews.length === 0) {
@@ -234,8 +128,7 @@ async function resolveReviewID(
 }
 
 async function resolvePipeline(
-  octokit: RevisionReaderOctokit,
-  config: RevisionReaderConfig,
+  deps: RevisionReaderDeps,
   pr: GitHubPRInput,
   cache: Map<string, PipelineCacheEntry>,
 ): Promise<PipelineResult | null> {
@@ -253,16 +146,16 @@ async function resolvePipeline(
   try {
     const [combinedResponse, checksResponse] = await Promise.all([
       retryWithBackoff(() =>
-        octokit.repos.getCombinedStatusForRef({
-          owner: config.owner,
-          repo: config.repo,
+        deps.client.repos.getCombinedStatusForRef({
+          owner: deps.config.owner,
+          repo: deps.config.repo,
           ref: pr.head.sha,
         }),
       ),
       retryWithBackoff(() =>
-        octokit.checks.listForRef({
-          owner: config.owner,
-          repo: config.repo,
+        deps.client.checks.listForRef({
+          owner: deps.config.owner,
+          repo: deps.config.repo,
           ref: pr.head.sha,
           per_page: 100,
         }),
@@ -282,19 +175,16 @@ async function resolvePipeline(
   }
 }
 
-function mapFileToRevisionFile(file: PRFileItem): RevisionFile {
+interface FileItem {
+  filename: string;
+  status: string;
+  patch?: string;
+}
+
+function mapFileToRevisionFile(file: FileItem): RevisionFile {
   return {
     path: file.filename,
     status: VALID_FILE_STATUSES[file.status] ?? 'changed',
     patch: file.patch ?? null,
   };
-}
-
-function isNotFoundError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'status' in error &&
-    error.status === STATUS_NOT_FOUND
-  );
 }

@@ -1,27 +1,15 @@
 import { expect, test, vi } from 'vitest';
-import type { GitHubClient } from '../github-client/types.ts';
+import { createMockGitHubClient } from '../../test-utils/create-mock-github-client.ts';
 import { getPRReviews } from './get-pr-reviews.ts';
 import type { QueriesConfig } from './types.ts';
 
 interface SetupTestResult {
-  mockOctokit: GitHubClient;
+  mockOctokit: ReturnType<typeof createMockGitHubClient>;
   config: QueriesConfig;
 }
 
 function setupTest(): SetupTestResult {
-  const mockOctokit: GitHubClient = {
-    issues: {} as GitHubClient['issues'],
-    pulls: {
-      list: vi.fn(),
-      get: vi.fn(),
-      listFiles: vi.fn(),
-      listReviews: vi.fn(),
-      listReviewComments: vi.fn(),
-    },
-    repos: {} as GitHubClient['repos'],
-    checks: {} as GitHubClient['checks'],
-    git: {} as GitHubClient['git'],
-  };
+  const mockOctokit = createMockGitHubClient();
 
   const config: QueriesConfig = {
     octokit: mockOctokit,

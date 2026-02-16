@@ -1,4 +1,6 @@
 import { expect, test, vi } from 'vitest';
+import { createMockGitHubClient } from '../../test-utils/create-mock-github-client.ts';
+import type { GitHubClient } from '../github-client/types.ts';
 import { createGitHubProvider } from './create-github-provider.ts';
 import { createRevisionReader } from './readers/create-revision-reader.ts';
 import { createSpecReader } from './readers/create-spec-reader.ts';
@@ -7,27 +9,10 @@ import type { GitHubProviderConfig } from './types.ts';
 import { createRevisionWriter } from './writers/create-revision-writer.ts';
 import { createWorkItemWriter } from './writers/create-work-item-writer.ts';
 
-interface MockOctokitInstance {
-  apps: {
-    getAuthenticated: ReturnType<typeof vi.fn>;
-  };
-}
+let mockClient: GitHubClient;
 
-let mockOctokitInstance: MockOctokitInstance;
-
-vi.mock('@octokit/rest', () => {
-  class MockOctokit {
-    apps: MockOctokitInstance['apps'];
-
-    constructor() {
-      this.apps = mockOctokitInstance.apps;
-    }
-  }
-  return { Octokit: MockOctokit };
-});
-
-vi.mock('@octokit/auth-app', () => ({
-  createAppAuth: vi.fn(),
+vi.mock('../github-client/create-github-client.ts', () => ({
+  createGitHubClient: vi.fn(() => mockClient),
 }));
 
 vi.mock('./readers/create-work-item-reader.ts', () => ({
@@ -83,21 +68,17 @@ function buildConfig(): GitHubProviderConfig {
   };
 }
 
-function setupTest(): {
-  config: GitHubProviderConfig;
-  mockOctokit: MockOctokitInstance;
-} {
+function setupTest(): { config: GitHubProviderConfig; client: GitHubClient } {
   const config = buildConfig();
+  const client = createMockGitHubClient();
 
-  mockOctokitInstance = {
-    apps: {
-      getAuthenticated: vi.fn().mockResolvedValue({
-        data: { slug: 'my-app' },
-      }),
-    },
-  };
+  vi.mocked(client.apps.getAuthenticated).mockResolvedValue({
+    data: { slug: 'my-app' },
+  });
 
-  return { config, mockOctokit: mockOctokitInstance };
+  mockClient = client;
+
+  return { config, client };
 }
 
 test('it returns a provider with all five interface objects', async () => {
@@ -112,12 +93,11 @@ test('it returns a provider with all five interface objects', async () => {
   expect(provider.specReader).toBeDefined();
 });
 
-test('it creates an Octokit instance and wires all factories', async () => {
+test('it creates a client and wires all factories', async () => {
   const { config } = setupTest();
 
   await createGitHubProvider(config);
 
-  // Verify all five factories were called (proving Octokit was constructed and passed)
   expect(vi.mocked(createWorkItemReader)).toHaveBeenCalled();
   expect(vi.mocked(createRevisionReader)).toHaveBeenCalled();
   expect(vi.mocked(createSpecReader)).toHaveBeenCalled();
@@ -126,11 +106,11 @@ test('it creates an Octokit instance and wires all factories', async () => {
 });
 
 test('it resolves the bot username from the app slug', async () => {
-  const { config, mockOctokit } = setupTest();
+  const { config, client } = setupTest();
 
   await createGitHubProvider(config);
 
-  expect(mockOctokit.apps.getAuthenticated).toHaveBeenCalledOnce();
+  expect(client.apps.getAuthenticated).toHaveBeenCalledOnce();
 });
 
 test('it passes the bot username to the revision reader factory', async () => {
@@ -139,8 +119,9 @@ test('it passes the bot username to the revision reader factory', async () => {
   await createGitHubProvider(config);
 
   expect(createRevisionReader).toHaveBeenCalledWith(
-    expect.anything(),
-    expect.objectContaining({ botUsername: 'my-app[bot]' }),
+    expect.objectContaining({
+      config: expect.objectContaining({ botUsername: 'my-app[bot]' }),
+    }),
   );
 });
 
@@ -149,10 +130,11 @@ test('it passes owner and repo to the work item reader factory', async () => {
 
   await createGitHubProvider(config);
 
-  expect(createWorkItemReader).toHaveBeenCalledWith(expect.anything(), {
-    owner: 'test-owner',
-    repo: 'test-repo',
-  });
+  expect(createWorkItemReader).toHaveBeenCalledWith(
+    expect.objectContaining({
+      config: { owner: 'test-owner', repo: 'test-repo' },
+    }),
+  );
 });
 
 test('it passes owner and repo to the work item writer factory', async () => {
@@ -160,10 +142,11 @@ test('it passes owner and repo to the work item writer factory', async () => {
 
   await createGitHubProvider(config);
 
-  expect(createWorkItemWriter).toHaveBeenCalledWith({
-    octokit: expect.anything(),
-    config: { owner: 'test-owner', repo: 'test-repo' },
-  });
+  expect(createWorkItemWriter).toHaveBeenCalledWith(
+    expect.objectContaining({
+      config: { owner: 'test-owner', repo: 'test-repo' },
+    }),
+  );
 });
 
 test('it passes owner, repo, and bot username to the revision reader factory', async () => {
@@ -171,11 +154,11 @@ test('it passes owner, repo, and bot username to the revision reader factory', a
 
   await createGitHubProvider(config);
 
-  expect(createRevisionReader).toHaveBeenCalledWith(expect.anything(), {
-    owner: 'test-owner',
-    repo: 'test-repo',
-    botUsername: 'my-app[bot]',
-  });
+  expect(createRevisionReader).toHaveBeenCalledWith(
+    expect.objectContaining({
+      config: { owner: 'test-owner', repo: 'test-repo', botUsername: 'my-app[bot]' },
+    }),
+  );
 });
 
 test('it passes owner, repo, and default branch to the revision writer factory', async () => {
@@ -183,14 +166,15 @@ test('it passes owner, repo, and default branch to the revision writer factory',
 
   await createGitHubProvider(config);
 
-  expect(createRevisionWriter).toHaveBeenCalledWith({
-    octokit: expect.anything(),
-    config: {
-      owner: 'test-owner',
-      repo: 'test-repo',
-      defaultBranch: 'main',
-    },
-  });
+  expect(createRevisionWriter).toHaveBeenCalledWith(
+    expect.objectContaining({
+      config: {
+        owner: 'test-owner',
+        repo: 'test-repo',
+        defaultBranch: 'main',
+      },
+    }),
+  );
 });
 
 test('it passes owner, repo, specs dir, and default branch to the spec reader factory', async () => {
@@ -198,32 +182,32 @@ test('it passes owner, repo, specs dir, and default branch to the spec reader fa
 
   await createGitHubProvider(config);
 
-  expect(createSpecReader).toHaveBeenCalledWith(expect.anything(), {
-    owner: 'test-owner',
-    repo: 'test-repo',
-    specsDir: 'docs/specs',
-    defaultBranch: 'main',
-  });
+  expect(createSpecReader).toHaveBeenCalledWith(
+    expect.objectContaining({
+      config: {
+        owner: 'test-owner',
+        repo: 'test-repo',
+        specsDir: 'docs/specs',
+        defaultBranch: 'main',
+      },
+    }),
+  );
 });
 
-test('it shares the same Octokit instance across all reader and writer factories', async () => {
-  const { config } = setupTest();
+test('it shares the same client instance across all reader and writer factories', async () => {
+  const { config, client } = setupTest();
 
   await createGitHubProvider(config);
 
-  // Extract the most recent call's first argument for each factory (the octokit instance)
-  const workItemReaderOctokit = vi.mocked(createWorkItemReader).mock.calls.at(-1)?.[0];
-  const revisionReaderOctokit = vi.mocked(createRevisionReader).mock.calls.at(-1)?.[0];
-  const specReaderOctokit = vi.mocked(createSpecReader).mock.calls.at(-1)?.[0];
+  const workItemReaderClient = vi.mocked(createWorkItemReader).mock.calls.at(-1)?.[0]?.client;
+  const revisionReaderClient = vi.mocked(createRevisionReader).mock.calls.at(-1)?.[0]?.client;
+  const specReaderClient = vi.mocked(createSpecReader).mock.calls.at(-1)?.[0]?.client;
+  const workItemWriterClient = vi.mocked(createWorkItemWriter).mock.calls.at(-1)?.[0]?.client;
+  const revisionWriterClient = vi.mocked(createRevisionWriter).mock.calls.at(-1)?.[0]?.client;
 
-  // All readers should receive the exact same instance
-  expect(workItemReaderOctokit).toBe(revisionReaderOctokit);
-  expect(workItemReaderOctokit).toBe(specReaderOctokit);
-
-  // Writers receive the octokit inside a deps object — verify same reference
-  const workItemWriterOctokit = vi.mocked(createWorkItemWriter).mock.calls.at(-1)?.[0]?.octokit;
-  const revisionWriterOctokit = vi.mocked(createRevisionWriter).mock.calls.at(-1)?.[0]?.octokit;
-
-  expect(workItemWriterOctokit).toBe(workItemReaderOctokit);
-  expect(revisionWriterOctokit).toBe(workItemReaderOctokit);
+  expect(workItemReaderClient).toBe(client);
+  expect(revisionReaderClient).toBe(client);
+  expect(specReaderClient).toBe(client);
+  expect(workItemWriterClient).toBe(client);
+  expect(revisionWriterClient).toBe(client);
 });

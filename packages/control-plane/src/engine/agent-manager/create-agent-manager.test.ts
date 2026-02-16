@@ -119,7 +119,9 @@ interface SetupContext {
   events: EngineEvent[];
   mockQueries: MockQuery[];
   queryParams: QueryFactoryParams[];
-  execCommandCalls: Array<{ cwd: string; command: string; args: string[] }>;
+  execCommand: ReturnType<
+    typeof vi.fn<(cwd: string, command: string, args: string[]) => Promise<void>>
+  >;
   logInfoCalls: string[];
 }
 
@@ -127,7 +129,6 @@ interface SetupOverrides {
   maxAgentDuration?: number;
   loggingEnabled?: boolean;
   logsDir?: string;
-  execCommandShouldFail?: boolean;
 }
 
 function setupTest(overrides?: SetupOverrides): SetupContext {
@@ -136,7 +137,6 @@ function setupTest(overrides?: SetupOverrides): SetupContext {
   const events: EngineEvent[] = [];
   const mockQueries: MockQuery[] = [];
   const queryParams: QueryFactoryParams[] = [];
-  const execCommandCalls: Array<{ cwd: string; command: string; args: string[] }> = [];
   const logInfoCalls: string[] = [];
 
   emitter.on((event) => {
@@ -152,12 +152,9 @@ function setupTest(overrides?: SetupOverrides): SetupContext {
     return mockQuery;
   };
 
-  const execCommand = async (cwd: string, command: string, args: string[]): Promise<void> => {
-    execCommandCalls.push({ cwd, command, args });
-    if (overrides?.execCommandShouldFail === true) {
-      throw new Error('yarn install failed');
-    }
-  };
+  const execCommand = vi
+    .fn<(cwd: string, command: string, args: string[]) => Promise<void>>()
+    .mockResolvedValue(undefined);
 
   const manager = createAgentManager({
     emitter,
@@ -186,7 +183,7 @@ function setupTest(overrides?: SetupOverrides): SetupContext {
     events,
     mockQueries,
     queryParams,
-    execCommandCalls,
+    execCommand,
     logInfoCalls,
   };
 }
@@ -490,16 +487,15 @@ test('it runs yarn install in the worktree after creating it for implementors', 
     prompt: 'enriched implementor prompt for #42',
   });
 
-  expect(ctx.execCommandCalls).toHaveLength(1);
-  expect(ctx.execCommandCalls[0]).toStrictEqual({
-    cwd: '/repo/.worktrees/issue-42-1700000000',
-    command: 'yarn',
-    args: ['install'],
-  });
+  expect(ctx.execCommand).toHaveBeenCalledOnce();
+  expect(ctx.execCommand).toHaveBeenCalledWith('/repo/.worktrees/issue-42-1700000000', 'yarn', [
+    'install',
+  ]);
 });
 
 test('it removes the worktree and emits agentFailed when yarn install fails for implementors', async () => {
-  const ctx = setupTest({ execCommandShouldFail: true });
+  const ctx = setupTest();
+  ctx.execCommand.mockRejectedValueOnce(new Error('yarn install failed'));
 
   await ctx.manager.dispatchImplementor({
     issueNumber: 42,
@@ -737,16 +733,15 @@ test('it runs yarn install in the worktree after creating it for reviewers', asy
     prompt: 'enriched prompt',
   });
 
-  expect(ctx.execCommandCalls).toHaveLength(1);
-  expect(ctx.execCommandCalls[0]).toStrictEqual({
-    cwd: '/repo/.worktrees/issue-10-branch',
-    command: 'yarn',
-    args: ['install'],
-  });
+  expect(ctx.execCommand).toHaveBeenCalledOnce();
+  expect(ctx.execCommand).toHaveBeenCalledWith('/repo/.worktrees/issue-10-branch', 'yarn', [
+    'install',
+  ]);
 });
 
 test('it removes the worktree and emits agentFailed when yarn install fails for reviewers', async () => {
-  const ctx = setupTest({ execCommandShouldFail: true });
+  const ctx = setupTest();
+  ctx.execCommand.mockRejectedValueOnce(new Error('yarn install failed'));
 
   await ctx.manager.dispatchReviewer({
     issueNumber: 10,

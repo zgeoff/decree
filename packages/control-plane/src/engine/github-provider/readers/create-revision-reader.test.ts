@@ -1,13 +1,13 @@
 import { expect, test, vi } from 'vitest';
+import { createMockGitHubClient } from '../../../test-utils/create-mock-github-client.ts';
 import type { CheckRunOverrides } from '../test-utils/build-check-run.ts';
 import { buildCheckRun } from '../test-utils/build-check-run.ts';
 import { buildCombinedStatus } from '../test-utils/build-combined-status.ts';
-import { buildRevisionReaderOctokit } from '../test-utils/build-octokit.ts';
 import type { PROverrides } from '../test-utils/build-pr-data.ts';
 import { buildPRData } from '../test-utils/build-pr-data.ts';
 import type { ReviewOverrides } from '../test-utils/build-review-data.ts';
 import { buildReviewData } from '../test-utils/build-review-data.ts';
-import type { RevisionReaderConfig, RevisionReaderOctokit } from './create-revision-reader.ts';
+import type { RevisionReaderConfig } from './create-revision-reader.ts';
 import { createRevisionReader } from './create-revision-reader.ts';
 
 function buildConfig(): RevisionReaderConfig {
@@ -22,59 +22,39 @@ interface SetupOverrides {
   checkRuns?: CheckRunOverrides[];
   checkRunsTotalCount?: number;
   getPR?: PROverrides;
-  getPRError?: { status: number };
   files?: { filename: string; status: string; patch?: string }[];
-  filesError?: { status: number };
-  pipelineError?: boolean;
 }
 
 function setupTest(overrides?: SetupOverrides): {
   reader: ReturnType<typeof createRevisionReader>;
-  octokit: RevisionReaderOctokit;
+  client: ReturnType<typeof createMockGitHubClient>;
 } {
   const prsList = (overrides?.prs ?? []).map((p) => buildPRData(p));
   const reviewsList = (overrides?.reviews ?? []).map((r) => buildReviewData(r));
   const checkRunsList = (overrides?.checkRuns ?? []).map((c) => buildCheckRun(c));
 
-  const pullsGet = overrides?.getPRError
-    ? vi.fn().mockRejectedValue(overrides.getPRError)
-    : vi.fn().mockResolvedValue({ data: buildPRData(overrides?.getPR) });
+  const client = createMockGitHubClient();
 
-  const pullsListFiles = overrides?.filesError
-    ? vi.fn().mockRejectedValue(overrides.filesError)
-    : vi.fn().mockResolvedValue({ data: overrides?.files ?? [] });
+  vi.mocked(client.pulls.list).mockResolvedValue({ data: prsList });
+  vi.mocked(client.pulls.listReviews).mockResolvedValue({ data: reviewsList });
 
-  const getCombinedStatusForRef = overrides?.pipelineError
-    ? vi.fn().mockRejectedValue({ status: 403 })
-    : vi.fn().mockResolvedValue({
-        data: buildCombinedStatus(
-          overrides?.combinedState ?? 'success',
-          overrides?.combinedTotalCount ?? 1,
-        ),
-      });
-
-  const listForRef = overrides?.pipelineError
-    ? vi.fn().mockRejectedValue({ status: 403 })
-    : vi.fn().mockResolvedValue({
-        data: {
-          total_count: overrides?.checkRunsTotalCount ?? checkRunsList.length,
-          check_runs: checkRunsList,
-        },
-      });
-
-  const octokit = buildRevisionReaderOctokit({
-    pulls: {
-      list: vi.fn().mockResolvedValue({ data: prsList }),
-      get: pullsGet,
-      listReviews: vi.fn().mockResolvedValue({ data: reviewsList }),
-      listFiles: pullsListFiles,
+  vi.mocked(client.pulls.get).mockResolvedValue({ data: buildPRData(overrides?.getPR) });
+  vi.mocked(client.pulls.listFiles).mockResolvedValue({ data: overrides?.files ?? [] });
+  vi.mocked(client.repos.getCombinedStatusForRef).mockResolvedValue({
+    data: buildCombinedStatus(
+      overrides?.combinedState ?? 'success',
+      overrides?.combinedTotalCount ?? 1,
+    ),
+  });
+  vi.mocked(client.checks.listForRef).mockResolvedValue({
+    data: {
+      total_count: overrides?.checkRunsTotalCount ?? checkRunsList.length,
+      check_runs: checkRunsList,
     },
-    repos: { getCombinedStatusForRef },
-    checks: { listForRef },
   });
 
-  const reader = createRevisionReader(octokit, buildConfig());
-  return { reader, octokit };
+  const reader = createRevisionReader({ client, config: buildConfig() });
+  return { reader, client };
 }
 
 // --- listRevisions ---
@@ -160,10 +140,11 @@ test('it sets review ID to null when no bot-authored review exists', async () =>
 });
 
 test('it sets pipeline to null when CI status fetch fails after retries', async () => {
-  const { reader } = setupTest({
+  const { reader, client } = setupTest({
     prs: [{ number: 1 }],
-    pipelineError: true,
   });
+  vi.mocked(client.repos.getCombinedStatusForRef).mockRejectedValue({ status: 403 });
+  vi.mocked(client.checks.listForRef).mockRejectedValue({ status: 403 });
 
   const result = await reader.listRevisions();
 
@@ -207,68 +188,52 @@ test('it returns only domain types without GitHub-specific fields', async () => 
 // --- Pipeline caching ---
 
 test('it skips CI fetch when head SHA is unchanged and cached status is success', async () => {
-  const getCombinedStatusForRef = vi
-    .fn()
-    .mockResolvedValue({ data: buildCombinedStatus('success', 1) });
-  const listForRef = vi.fn().mockResolvedValue({
+  const client = createMockGitHubClient();
+
+  vi.mocked(client.pulls.list).mockResolvedValue({
+    data: [buildPRData({ number: 1, head: { sha: 'same-sha', ref: 'branch' } })],
+  });
+  vi.mocked(client.pulls.listReviews).mockResolvedValue({ data: [] });
+  vi.mocked(client.repos.getCombinedStatusForRef).mockResolvedValue({
+    data: buildCombinedStatus('success', 1),
+  });
+  vi.mocked(client.checks.listForRef).mockResolvedValue({
     data: { total_count: 1, check_runs: [buildCheckRun({ conclusion: 'success' })] },
   });
 
-  const octokit = buildRevisionReaderOctokit({
-    pulls: {
-      list: vi.fn().mockResolvedValue({
-        data: [buildPRData({ number: 1, head: { sha: 'same-sha', ref: 'branch' } })],
-      }),
-      get: vi.fn(),
-      listReviews: vi.fn().mockResolvedValue({ data: [] }),
-      listFiles: vi.fn(),
-    },
-    repos: { getCombinedStatusForRef },
-    checks: { listForRef },
-  });
-
-  const reader = createRevisionReader(octokit, buildConfig());
+  const reader = createRevisionReader({ client, config: buildConfig() });
 
   await reader.listRevisions();
-  expect(getCombinedStatusForRef).toHaveBeenCalledTimes(1);
+  expect(client.repos.getCombinedStatusForRef).toHaveBeenCalledTimes(1);
 
   await reader.listRevisions();
-  expect(getCombinedStatusForRef).toHaveBeenCalledTimes(1);
+  expect(client.repos.getCombinedStatusForRef).toHaveBeenCalledTimes(1);
 });
 
 test('it re-fetches CI status when head SHA changes', async () => {
-  const getCombinedStatusForRef = vi
-    .fn()
-    .mockResolvedValue({ data: buildCombinedStatus('success', 1) });
-  const listForRef = vi.fn().mockResolvedValue({
-    data: { total_count: 1, check_runs: [buildCheckRun({ conclusion: 'success' })] },
-  });
+  const client = createMockGitHubClient();
 
   let callCount = 0;
-  const pullsList = vi.fn().mockImplementation(async () => {
+  vi.mocked(client.pulls.list).mockImplementation(async () => {
     callCount += 1;
     const sha = callCount === 1 ? 'sha-v1' : 'sha-v2';
     return { data: [buildPRData({ number: 1, head: { sha, ref: 'branch' } })] };
   });
-
-  const octokit = buildRevisionReaderOctokit({
-    pulls: {
-      list: pullsList,
-      get: vi.fn(),
-      listReviews: vi.fn().mockResolvedValue({ data: [] }),
-      listFiles: vi.fn(),
-    },
-    repos: { getCombinedStatusForRef },
-    checks: { listForRef },
+  vi.mocked(client.pulls.listReviews).mockResolvedValue({ data: [] });
+  vi.mocked(client.repos.getCombinedStatusForRef).mockResolvedValue({
+    data: buildCombinedStatus('success', 1),
+  });
+  vi.mocked(client.checks.listForRef).mockResolvedValue({
+    data: { total_count: 1, check_runs: [buildCheckRun({ conclusion: 'success' })] },
   });
 
-  const reader = createRevisionReader(octokit, buildConfig());
+  const reader = createRevisionReader({ client, config: buildConfig() });
 
   await reader.listRevisions();
-  expect(getCombinedStatusForRef).toHaveBeenCalledTimes(1);
+  expect(client.repos.getCombinedStatusForRef).toHaveBeenCalledTimes(1);
 
   await reader.listRevisions();
-  expect(getCombinedStatusForRef).toHaveBeenCalledTimes(2);
+  expect(client.repos.getCombinedStatusForRef).toHaveBeenCalledTimes(2);
 });
 
 // --- getRevision ---
@@ -286,9 +251,8 @@ test('it returns a single revision by id', async () => {
 });
 
 test('it returns null when revision is not found', async () => {
-  const { reader } = setupTest({
-    getPRError: { status: 404 },
-  });
+  const { reader, client } = setupTest();
+  vi.mocked(client.pulls.get).mockRejectedValue({ status: 404 });
 
   const result = await reader.getRevision('999');
 
@@ -296,9 +260,8 @@ test('it returns null when revision is not found', async () => {
 });
 
 test('it propagates non-404 errors from get revision', async () => {
-  const { reader } = setupTest({
-    getPRError: { status: 422 },
-  });
+  const { reader, client } = setupTest();
+  vi.mocked(client.pulls.get).mockRejectedValue({ status: 422 });
 
   await expect(reader.getRevision('1')).rejects.toMatchObject({ status: 422 });
 });
@@ -332,9 +295,8 @@ test('it returns null patch for files without a patch field', async () => {
 });
 
 test('it throws on 404 for revision files', async () => {
-  const { reader } = setupTest({
-    filesError: { status: 404 },
-  });
+  const { reader, client } = setupTest();
+  vi.mocked(client.pulls.listFiles).mockRejectedValue({ status: 404 });
 
   await expect(reader.getRevisionFiles('999')).rejects.toMatchObject({ status: 404 });
 });

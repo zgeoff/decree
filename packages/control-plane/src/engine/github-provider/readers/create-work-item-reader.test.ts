@@ -1,8 +1,8 @@
 import { expect, test, vi } from 'vitest';
+import { createMockGitHubClient } from '../../../test-utils/create-mock-github-client.ts';
 import type { IssueOverrides } from '../test-utils/build-issue-data.ts';
 import { buildIssueData } from '../test-utils/build-issue-data.ts';
-import { buildWorkItemReaderOctokit } from '../test-utils/build-octokit.ts';
-import type { WorkItemReaderConfig, WorkItemReaderOctokit } from './create-work-item-reader.ts';
+import type { WorkItemReaderConfig } from './create-work-item-reader.ts';
 import { createWorkItemReader } from './create-work-item-reader.ts';
 
 interface PROverrides {
@@ -10,10 +10,23 @@ interface PROverrides {
   body?: string | null;
 }
 
-function buildPRListItem(overrides?: PROverrides): { number: number; body: string | null } {
+function buildPRListItem(overrides?: PROverrides): {
+  number: number;
+  title: string;
+  html_url: string;
+  user: { login: string } | null;
+  head: { sha: string; ref: string };
+  body: string | null;
+  draft: boolean;
+} {
   return {
     number: overrides?.number ?? 10,
+    title: 'Test PR',
+    html_url: 'https://github.com/owner/repo/pull/1',
+    user: null,
+    head: { sha: 'abc123', ref: 'branch' },
     body: overrides?.body === undefined ? 'Closes #1' : overrides.body,
+    draft: false,
   };
 }
 
@@ -25,30 +38,23 @@ function setupTest(overrides?: {
   issues?: IssueOverrides[];
   prs?: PROverrides[];
   getIssue?: IssueOverrides;
-  getIssueError?: { status: number };
 }): {
   reader: ReturnType<typeof createWorkItemReader>;
-  octokit: WorkItemReaderOctokit;
+  client: ReturnType<typeof createMockGitHubClient>;
 } {
   const issuesList = (overrides?.issues ?? []).map((i) => buildIssueData(i));
   const prsList = (overrides?.prs ?? []).map((p) => buildPRListItem(p));
 
-  const issuesGet = overrides?.getIssueError
-    ? vi.fn().mockRejectedValue(overrides.getIssueError)
-    : vi.fn().mockResolvedValue({ data: buildIssueData(overrides?.getIssue) });
+  const client = createMockGitHubClient();
 
-  const octokit = buildWorkItemReaderOctokit({
-    issues: {
-      listForRepo: vi.fn().mockResolvedValue({ data: issuesList }),
-      get: issuesGet,
-    },
-    pulls: {
-      list: vi.fn().mockResolvedValue({ data: prsList }),
-    },
+  vi.mocked(client.issues.listForRepo).mockResolvedValue({ data: issuesList });
+  vi.mocked(client.pulls.list).mockResolvedValue({ data: prsList });
+  vi.mocked(client.issues.get).mockResolvedValue({
+    data: buildIssueData(overrides?.getIssue),
   });
 
-  const reader = createWorkItemReader(octokit, buildConfig());
-  return { reader, octokit };
+  const reader = createWorkItemReader({ client, config: buildConfig() });
+  return { reader, client };
 }
 
 // --- listWorkItems ---
@@ -142,19 +148,15 @@ test('it returns domain types without GitHub-specific fields', async () => {
 });
 
 test('it wraps list API calls with retry', async () => {
-  const listForRepo = vi.fn().mockResolvedValue({ data: [] });
-  const pullsList = vi.fn().mockResolvedValue({ data: [] });
+  const client = createMockGitHubClient();
+  vi.mocked(client.issues.listForRepo).mockResolvedValue({ data: [] });
+  vi.mocked(client.pulls.list).mockResolvedValue({ data: [] });
 
-  const octokit = buildWorkItemReaderOctokit({
-    issues: { listForRepo, get: vi.fn() },
-    pulls: { list: pullsList },
-  });
-
-  const reader = createWorkItemReader(octokit, buildConfig());
+  const reader = createWorkItemReader({ client, config: buildConfig() });
   await reader.listWorkItems();
 
-  expect(listForRepo).toHaveBeenCalledTimes(1);
-  expect(pullsList).toHaveBeenCalledTimes(1);
+  expect(client.issues.listForRepo).toHaveBeenCalledTimes(1);
+  expect(client.pulls.list).toHaveBeenCalledTimes(1);
 });
 
 // --- getWorkItem ---
@@ -172,9 +174,8 @@ test('it returns a single work item by id', async () => {
 });
 
 test('it returns null when issue is not found', async () => {
-  const { reader } = setupTest({
-    getIssueError: { status: 404 },
-  });
+  const { reader, client } = setupTest();
+  vi.mocked(client.issues.get).mockRejectedValue({ status: 404 });
 
   const result = await reader.getWorkItem('999');
 
@@ -182,9 +183,8 @@ test('it returns null when issue is not found', async () => {
 });
 
 test('it propagates non-404 errors from get', async () => {
-  const { reader } = setupTest({
-    getIssueError: { status: 422 },
-  });
+  const { reader, client } = setupTest();
+  vi.mocked(client.issues.get).mockRejectedValue({ status: 422 });
 
   await expect(reader.getWorkItem('1')).rejects.toMatchObject({ status: 422 });
 });
@@ -223,9 +223,8 @@ test('it returns plain body when no dependency metadata exists', async () => {
 });
 
 test('it throws on 404 for body fetch', async () => {
-  const { reader } = setupTest({
-    getIssueError: { status: 404 },
-  });
+  const { reader, client } = setupTest();
+  vi.mocked(client.issues.get).mockRejectedValue({ status: 404 });
 
   await expect(reader.getWorkItemBody('999')).rejects.toMatchObject({ status: 404 });
 });

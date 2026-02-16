@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vitest';
+import { createMockGitHubClient } from '../../../test-utils/create-mock-github-client.ts';
 import type { AgentReview } from '../../state-store/domain-type-stubs.ts';
-import type { RevisionWriterDeps, RevisionWriterOctokit } from './create-revision-writer.ts';
+import type { RevisionWriterConfig } from './create-revision-writer.ts';
 import { createRevisionWriter } from './create-revision-writer.ts';
 
 class OctokitNotFoundError extends Error {
@@ -12,47 +13,17 @@ class OctokitNotFoundError extends Error {
   }
 }
 
-function buildMockOctokit(): RevisionWriterOctokit {
-  return {
-    git: {
-      getRef: vi.fn(),
-      getCommit: vi.fn(),
-      createBlob: vi.fn(),
-      createTree: vi.fn(),
-      createCommit: vi.fn(),
-      createRef: vi.fn(),
-      updateRef: vi.fn(),
-    },
-    pulls: {
-      create: vi.fn(),
-      list: vi.fn(),
-      get: vi.fn(),
-      update: vi.fn(),
-      createReview: vi.fn(),
-      dismissReview: vi.fn(),
-    },
-    issues: {
-      get: vi.fn(),
-      createComment: vi.fn(),
-    },
-  };
+function buildConfig(): RevisionWriterConfig {
+  return { owner: 'test-owner', repo: 'test-repo', defaultBranch: 'main' };
 }
 
 function setupTest(): {
-  deps: RevisionWriterDeps;
-  octokit: RevisionWriterOctokit;
+  writer: ReturnType<typeof createRevisionWriter>;
+  client: ReturnType<typeof createMockGitHubClient>;
 } {
-  const octokit = buildMockOctokit();
-  const deps: RevisionWriterDeps = {
-    octokit,
-    config: {
-      owner: 'test-owner',
-      repo: 'test-repo',
-      defaultBranch: 'main',
-    },
-  };
-
-  return { deps, octokit };
+  const client = createMockGitHubClient();
+  const writer = createRevisionWriter({ client, config: buildConfig() });
+  return { writer, client };
 }
 
 const SIMPLE_PATCH: string = [
@@ -67,39 +38,39 @@ const SIMPLE_PATCH: string = [
   '+}',
 ].join('\n');
 
-function setupCreateFromPatchMocks(octokit: RevisionWriterOctokit): void {
-  vi.mocked(octokit.git.getRef).mockImplementation(async (params: { ref: string }) => {
+function setupCreateFromPatchMocks(client: ReturnType<typeof createMockGitHubClient>): void {
+  vi.mocked(client.git.getRef).mockImplementation(async (params) => {
     if (params.ref === 'heads/main') {
       return { data: { object: { sha: 'main-sha' } } };
     }
     throw new OctokitNotFoundError();
   });
 
-  vi.mocked(octokit.git.getCommit).mockResolvedValue({
+  vi.mocked(client.git.getCommit).mockResolvedValue({
     data: { sha: 'main-sha', tree: { sha: 'base-tree-sha' } },
   });
 
-  vi.mocked(octokit.git.createBlob).mockResolvedValue({
+  vi.mocked(client.git.createBlob).mockResolvedValue({
     data: { sha: 'blob-sha' },
   });
 
-  vi.mocked(octokit.git.createTree).mockResolvedValue({
+  vi.mocked(client.git.createTree).mockResolvedValue({
     data: { sha: 'new-tree-sha' },
   });
 
-  vi.mocked(octokit.git.createCommit).mockResolvedValue({
+  vi.mocked(client.git.createCommit).mockResolvedValue({
     data: { sha: 'new-commit-sha' },
   });
 
-  vi.mocked(octokit.git.createRef).mockResolvedValue({});
+  vi.mocked(client.git.createRef).mockResolvedValue({ data: {} });
 
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
+  vi.mocked(client.pulls.list).mockResolvedValue({ data: [] });
 
-  vi.mocked(octokit.issues.get).mockResolvedValue({
-    data: { title: 'Work item title' },
+  vi.mocked(client.issues.get).mockResolvedValue({
+    data: { number: 1, title: 'Work item title', body: null, labels: [], created_at: '' },
   });
 
-  vi.mocked(octokit.pulls.create).mockResolvedValue({
+  vi.mocked(client.pulls.create).mockResolvedValue({
     data: {
       number: 5,
       title: 'Work item title',
@@ -115,20 +86,19 @@ function setupCreateFromPatchMocks(octokit: RevisionWriterOctokit): void {
 // --- createFromPatch ---
 
 test('it creates a new branch and opens a pr when no pr exists for the work item', async () => {
-  const { deps, octokit } = setupTest();
-  setupCreateFromPatchMocks(octokit);
+  const { writer, client } = setupTest();
+  setupCreateFromPatchMocks(client);
 
-  const writer = createRevisionWriter(deps);
   const result = await writer.createFromPatch('42', SIMPLE_PATCH, 'decree/impl-42');
 
-  expect(octokit.git.createRef).toHaveBeenCalledWith(
+  expect(client.git.createRef).toHaveBeenCalledWith(
     expect.objectContaining({
       ref: 'refs/heads/decree/impl-42',
       sha: 'new-commit-sha',
     }),
   );
 
-  expect(octokit.pulls.create).toHaveBeenCalledWith(
+  expect(client.pulls.create).toHaveBeenCalledWith(
     expect.objectContaining({
       title: 'Work item title',
       body: 'Closes #42',
@@ -142,11 +112,11 @@ test('it creates a new branch and opens a pr when no pr exists for the work item
 });
 
 test('it updates the existing branch when a pr already exists for the same branch', async () => {
-  const { deps, octokit } = setupTest();
-  setupCreateFromPatchMocks(octokit);
+  const { writer, client } = setupTest();
+  setupCreateFromPatchMocks(client);
 
   // Override: branch exists
-  vi.mocked(octokit.git.getRef).mockImplementation(async (params: { ref: string }) => {
+  vi.mocked(client.git.getRef).mockImplementation(async (params) => {
     if (params.ref === 'heads/main') {
       return { data: { object: { sha: 'main-sha' } } };
     }
@@ -157,7 +127,7 @@ test('it updates the existing branch when a pr already exists for the same branc
   });
 
   // Existing PR for the branch
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
+  vi.mocked(client.pulls.list).mockResolvedValue({
     data: [
       {
         number: 3,
@@ -171,10 +141,9 @@ test('it updates the existing branch when a pr already exists for the same branc
     ],
   });
 
-  const writer = createRevisionWriter(deps);
   const result = await writer.createFromPatch('42', SIMPLE_PATCH, 'decree/impl-42');
 
-  expect(octokit.git.updateRef).toHaveBeenCalledWith(
+  expect(client.git.updateRef).toHaveBeenCalledWith(
     expect.objectContaining({
       ref: 'heads/decree/impl-42',
       sha: 'new-commit-sha',
@@ -183,17 +152,16 @@ test('it updates the existing branch when a pr already exists for the same branc
   );
 
   // No new PR should be created
-  expect(octokit.pulls.create).not.toHaveBeenCalled();
+  expect(client.pulls.create).not.toHaveBeenCalled();
 
   expect(result.id).toBe('3');
   expect(result.headSHA).toBe('new-commit-sha');
 });
 
 test('it returns a revision with all fields populated from create-from-patch', async () => {
-  const { deps, octokit } = setupTest();
-  setupCreateFromPatchMocks(octokit);
+  const { writer, client } = setupTest();
+  setupCreateFromPatchMocks(client);
 
-  const writer = createRevisionWriter(deps);
   const result = await writer.createFromPatch('42', SIMPLE_PATCH, 'decree/impl-42');
 
   expect(result).toMatchObject({
@@ -212,27 +180,25 @@ test('it returns a revision with all fields populated from create-from-patch', a
 });
 
 test('it applies the patch via git data api without local git binary', async () => {
-  const { deps, octokit } = setupTest();
-  setupCreateFromPatchMocks(octokit);
+  const { writer, client } = setupTest();
+  setupCreateFromPatchMocks(client);
 
-  const writer = createRevisionWriter(deps);
   await writer.createFromPatch('42', SIMPLE_PATCH, 'decree/impl-42');
 
-  expect(octokit.git.getRef).toHaveBeenCalled();
-  expect(octokit.git.getCommit).toHaveBeenCalled();
-  expect(octokit.git.createBlob).toHaveBeenCalled();
-  expect(octokit.git.createTree).toHaveBeenCalled();
-  expect(octokit.git.createCommit).toHaveBeenCalled();
+  expect(client.git.getRef).toHaveBeenCalled();
+  expect(client.git.getCommit).toHaveBeenCalled();
+  expect(client.git.createBlob).toHaveBeenCalled();
+  expect(client.git.createTree).toHaveBeenCalled();
+  expect(client.git.createCommit).toHaveBeenCalled();
 });
 
 test('it uses the correct commit message format', async () => {
-  const { deps, octokit } = setupTest();
-  setupCreateFromPatchMocks(octokit);
+  const { writer, client } = setupTest();
+  setupCreateFromPatchMocks(client);
 
-  const writer = createRevisionWriter(deps);
   await writer.createFromPatch('42', SIMPLE_PATCH, 'decree/impl-42');
 
-  expect(octokit.git.createCommit).toHaveBeenCalledWith(
+  expect(client.git.createCommit).toHaveBeenCalledWith(
     expect.objectContaining({
       message: 'decree: apply patch for #42',
     }),
@@ -240,10 +206,10 @@ test('it uses the correct commit message format', async () => {
 });
 
 test('it uses the branch tip as parent when the branch already exists', async () => {
-  const { deps, octokit } = setupTest();
-  setupCreateFromPatchMocks(octokit);
+  const { writer, client } = setupTest();
+  setupCreateFromPatchMocks(client);
 
-  vi.mocked(octokit.git.getRef).mockImplementation(async (params: { ref: string }) => {
+  vi.mocked(client.git.getRef).mockImplementation(async (params) => {
     if (params.ref === 'heads/main') {
       return { data: { object: { sha: 'main-sha' } } };
     }
@@ -253,12 +219,11 @@ test('it uses the branch tip as parent when the branch already exists', async ()
     throw new OctokitNotFoundError();
   });
 
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
+  vi.mocked(client.pulls.list).mockResolvedValue({ data: [] });
 
-  const writer = createRevisionWriter(deps);
   await writer.createFromPatch('42', SIMPLE_PATCH, 'decree/impl-42');
 
-  expect(octokit.git.createCommit).toHaveBeenCalledWith(
+  expect(client.git.createCommit).toHaveBeenCalledWith(
     expect.objectContaining({
       parents: ['branch-tip-sha'],
     }),
@@ -266,13 +231,12 @@ test('it uses the branch tip as parent when the branch already exists', async ()
 });
 
 test('it uses the default branch head as parent when the branch does not exist', async () => {
-  const { deps, octokit } = setupTest();
-  setupCreateFromPatchMocks(octokit);
+  const { writer, client } = setupTest();
+  setupCreateFromPatchMocks(client);
 
-  const writer = createRevisionWriter(deps);
   await writer.createFromPatch('42', SIMPLE_PATCH, 'decree/impl-42');
 
-  expect(octokit.git.createCommit).toHaveBeenCalledWith(
+  expect(client.git.createCommit).toHaveBeenCalledWith(
     expect.objectContaining({
       parents: ['main-sha'],
     }),
@@ -280,8 +244,8 @@ test('it uses the default branch head as parent when the branch does not exist',
 });
 
 test('it handles file deletions in the patch', async () => {
-  const { deps, octokit } = setupTest();
-  setupCreateFromPatchMocks(octokit);
+  const { writer, client } = setupTest();
+  setupCreateFromPatchMocks(client);
 
   const deletePatch = [
     'diff --git a/src/old.ts b/src/old.ts',
@@ -295,10 +259,9 @@ test('it handles file deletions in the patch', async () => {
     '-}',
   ].join('\n');
 
-  const writer = createRevisionWriter(deps);
   await writer.createFromPatch('42', deletePatch, 'decree/impl-42');
 
-  expect(octokit.git.createTree).toHaveBeenCalledWith(
+  expect(client.git.createTree).toHaveBeenCalledWith(
     expect.objectContaining({
       tree: expect.arrayContaining([
         expect.objectContaining({
@@ -313,9 +276,9 @@ test('it handles file deletions in the patch', async () => {
 // --- postReview ---
 
 test('it maps approve verdict to the approve github review event', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.pulls.createReview).mockResolvedValue({
+  vi.mocked(client.pulls.createReview).mockResolvedValue({
     data: { id: 100 },
   });
 
@@ -325,10 +288,9 @@ test('it maps approve verdict to the approve github review event', async () => {
     comments: [],
   };
 
-  const writer = createRevisionWriter(deps);
   const reviewID = await writer.postReview('5', review);
 
-  expect(octokit.pulls.createReview).toHaveBeenCalledWith(
+  expect(client.pulls.createReview).toHaveBeenCalledWith(
     expect.objectContaining({
       pull_number: 5,
       body: 'Looks good',
@@ -339,9 +301,9 @@ test('it maps approve verdict to the approve github review event', async () => {
 });
 
 test('it maps needs-changes verdict to request changes github review event', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.pulls.createReview).mockResolvedValue({
+  vi.mocked(client.pulls.createReview).mockResolvedValue({
     data: { id: 200 },
   });
 
@@ -351,10 +313,9 @@ test('it maps needs-changes verdict to request changes github review event', asy
     comments: [],
   };
 
-  const writer = createRevisionWriter(deps);
   await writer.postReview('5', review);
 
-  expect(octokit.pulls.createReview).toHaveBeenCalledWith(
+  expect(client.pulls.createReview).toHaveBeenCalledWith(
     expect.objectContaining({
       event: 'REQUEST_CHANGES',
     }),
@@ -362,9 +323,9 @@ test('it maps needs-changes verdict to request changes github review event', asy
 });
 
 test('it passes path, body, and line for inline review comments', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.pulls.createReview).mockResolvedValue({
+  vi.mocked(client.pulls.createReview).mockResolvedValue({
     data: { id: 300 },
   });
 
@@ -377,10 +338,9 @@ test('it passes path, body, and line for inline review comments', async () => {
     ],
   };
 
-  const writer = createRevisionWriter(deps);
   await writer.postReview('5', review);
 
-  expect(octokit.pulls.createReview).toHaveBeenCalledWith(
+  expect(client.pulls.createReview).toHaveBeenCalledWith(
     expect.objectContaining({
       comments: [
         { path: 'src/foo.ts', line: 10, body: 'Fix this' },
@@ -391,9 +351,9 @@ test('it passes path, body, and line for inline review comments', async () => {
 });
 
 test('it returns the review id as a string', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.pulls.createReview).mockResolvedValue({
+  vi.mocked(client.pulls.createReview).mockResolvedValue({
     data: { id: 12_345 },
   });
 
@@ -403,7 +363,6 @@ test('it returns the review id as a string', async () => {
     comments: [],
   };
 
-  const writer = createRevisionWriter(deps);
   const result = await writer.postReview('5', review);
 
   expect(result).toBe('12345');
@@ -412,10 +371,10 @@ test('it returns the review id as a string', async () => {
 // --- updateReview ---
 
 test('it dismisses the old review and creates a new one', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.pulls.dismissReview).mockResolvedValue({});
-  vi.mocked(octokit.pulls.createReview).mockResolvedValue({
+  vi.mocked(client.pulls.dismissReview).mockResolvedValue({ data: {} });
+  vi.mocked(client.pulls.createReview).mockResolvedValue({
     data: { id: 456 },
   });
 
@@ -425,10 +384,9 @@ test('it dismisses the old review and creates a new one', async () => {
     comments: [],
   };
 
-  const writer = createRevisionWriter(deps);
   await writer.updateReview('5', '123', review);
 
-  expect(octokit.pulls.dismissReview).toHaveBeenCalledWith(
+  expect(client.pulls.dismissReview).toHaveBeenCalledWith(
     expect.objectContaining({
       pull_number: 5,
       review_id: 123,
@@ -436,7 +394,7 @@ test('it dismisses the old review and creates a new one', async () => {
     }),
   );
 
-  expect(octokit.pulls.createReview).toHaveBeenCalledWith(
+  expect(client.pulls.createReview).toHaveBeenCalledWith(
     expect.objectContaining({
       pull_number: 5,
       body: 'Updated review',
@@ -448,14 +406,13 @@ test('it dismisses the old review and creates a new one', async () => {
 // --- postComment ---
 
 test('it posts a standalone issue comment on the pr', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.createComment).mockResolvedValue({});
+  vi.mocked(client.issues.createComment).mockResolvedValue({ data: {} });
 
-  const writer = createRevisionWriter(deps);
   await writer.postComment('5', 'This is a comment');
 
-  expect(octokit.issues.createComment).toHaveBeenCalledWith(
+  expect(client.issues.createComment).toHaveBeenCalledWith(
     expect.objectContaining({
       issue_number: 5,
       body: 'This is a comment',
@@ -466,23 +423,13 @@ test('it posts a standalone issue comment on the pr', async () => {
 // --- updateBody ---
 
 test('it replaces the pr body with the provided string', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.pulls.update).mockResolvedValue({
-    data: {
-      number: 5,
-      title: 'PR',
-      html_url: 'https://github.com/test/test/pull/5',
-      head: { sha: 'sha', ref: 'branch' },
-      user: null,
-      body: 'New body',
-    },
-  });
+  vi.mocked(client.pulls.update).mockResolvedValue({ data: {} });
 
-  const writer = createRevisionWriter(deps);
   await writer.updateBody('5', 'New body');
 
-  expect(octokit.pulls.update).toHaveBeenCalledWith(
+  expect(client.pulls.update).toHaveBeenCalledWith(
     expect.objectContaining({
       pull_number: 5,
       body: 'New body',
@@ -493,13 +440,13 @@ test('it replaces the pr body with the provided string', async () => {
 // --- retry wrapping ---
 
 test('it wraps create-from-patch api calls with the retry utility', async () => {
-  const { deps, octokit } = setupTest();
-  setupCreateFromPatchMocks(octokit);
+  const { writer, client } = setupTest();
+  setupCreateFromPatchMocks(client);
 
   const transientError = { status: 500 };
-  vi.mocked(octokit.git.getRef)
+  vi.mocked(client.git.getRef)
     .mockRejectedValueOnce(transientError)
-    .mockImplementation(async (params: { ref: string }) => {
+    .mockImplementation(async (params) => {
       if (params.ref === 'heads/main') {
         return { data: { object: { sha: 'main-sha' } } };
       }
@@ -508,7 +455,6 @@ test('it wraps create-from-patch api calls with the retry utility', async () => 
 
   vi.useFakeTimers();
 
-  const writer = createRevisionWriter(deps);
   const promise = writer.createFromPatch('42', SIMPLE_PATCH, 'decree/impl-42');
 
   await vi.advanceTimersByTimeAsync(3000);
@@ -517,12 +463,12 @@ test('it wraps create-from-patch api calls with the retry utility', async () => 
   const result = await promise;
 
   expect(result.id).toBe('5');
-  expect(octokit.git.getRef).toHaveBeenCalledTimes(3);
+  expect(client.git.getRef).toHaveBeenCalledTimes(3);
 });
 
 test('it handles a patch with file modification', async () => {
-  const { deps, octokit } = setupTest();
-  setupCreateFromPatchMocks(octokit);
+  const { writer, client } = setupTest();
+  setupCreateFromPatchMocks(client);
 
   const modifyPatch = [
     'diff --git a/src/hello.ts b/src/hello.ts',
@@ -536,10 +482,9 @@ test('it handles a patch with file modification', async () => {
     ' }',
   ].join('\n');
 
-  const writer = createRevisionWriter(deps);
   await writer.createFromPatch('42', modifyPatch, 'decree/impl-42');
 
-  expect(octokit.git.createBlob).toHaveBeenCalledWith(
+  expect(client.git.createBlob).toHaveBeenCalledWith(
     expect.objectContaining({
       content: "export function hello(): string {\n  return 'world';\n}",
       encoding: 'utf-8',

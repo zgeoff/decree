@@ -7,8 +7,22 @@
 // `RequestParameters` index signature without casts at the call site.
 
 // ---------------------------------------------------------------------------
+// Apps
+// ---------------------------------------------------------------------------
+
+export interface AppsGetAuthenticatedResult {
+  data: {
+    slug: string;
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Issues
 // ---------------------------------------------------------------------------
+
+export interface IssueLabel {
+  name?: string;
+}
 
 export interface IssuesGetParams {
   [key: string]: unknown;
@@ -21,7 +35,7 @@ export interface IssueData {
   number: number;
   title: string;
   body: string | null;
-  labels: (string | { name?: string })[];
+  labels: (string | IssueLabel)[];
   created_at: string;
 }
 
@@ -40,6 +54,45 @@ export interface IssuesListForRepoParams {
 
 export interface IssuesListForRepoResult {
   data: IssueData[];
+}
+
+export interface IssuesCreateParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  title: string;
+  body?: string;
+  labels?: string[];
+}
+
+export interface IssuesCreateResult {
+  data: IssueData;
+}
+
+export interface IssuesUpdateParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  issue_number: number;
+  body?: string;
+  state?: 'open' | 'closed';
+  labels?: string[];
+}
+
+export interface IssuesUpdateResult {
+  data: IssueData;
+}
+
+export interface IssuesListLabelsOnIssueParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  issue_number: number;
+  per_page: number;
+}
+
+export interface IssuesListLabelsOnIssueResult {
+  data: IssueLabel[];
 }
 
 export interface IssuesAddLabelsParams {
@@ -63,6 +116,18 @@ export interface IssuesRemoveLabelParams {
 }
 
 export interface IssuesRemoveLabelResult {
+  data: unknown;
+}
+
+export interface IssuesCreateCommentParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  issue_number: number;
+  body: string;
+}
+
+export interface IssuesCreateCommentResult {
   data: unknown;
 }
 
@@ -109,7 +174,9 @@ export interface PullData {
   title: string;
   changed_files: number;
   html_url: string;
+  user: { login: string } | null;
   head: PullHeadRef;
+  body: string | null;
   draft: boolean;
 }
 
@@ -148,6 +215,7 @@ export interface PullReview {
   user: { login: string } | null;
   state: string;
   body: string | null;
+  submitted_at?: string;
 }
 
 export interface PullsListReviewsResult {
@@ -172,6 +240,68 @@ export interface PullReviewComment {
 
 export interface PullsListReviewCommentsResult {
   data: PullReviewComment[];
+}
+
+export interface PullsCreateParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  title: string;
+  body: string;
+  head: string;
+  base: string;
+}
+
+export interface PullsCreateResult {
+  data: PullsListItem;
+}
+
+export interface PullsUpdateParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  pull_number: number;
+  body?: string;
+}
+
+export interface PullsUpdateResult {
+  data: unknown;
+}
+
+export interface PullsReviewComment {
+  path: string;
+  body: string;
+  line?: number;
+  side?: string;
+}
+
+export interface PullsCreateReviewParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  pull_number: number;
+  body: string;
+  event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
+  comments?: PullsReviewComment[];
+}
+
+export interface PullsCreateReviewResult {
+  data: {
+    id: number;
+  };
+}
+
+export interface PullsDismissReviewParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  pull_number: number;
+  review_id: number;
+  message: string;
+}
+
+export interface PullsDismissReviewResult {
+  data: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +333,7 @@ export interface ReposGetContentParams {
 }
 
 export interface ReposContentData {
+  sha?: string;
   content?: string;
 }
 
@@ -222,10 +353,10 @@ export interface ChecksListForRefParams {
 }
 
 export interface CheckRun {
-  name?: string;
+  name: string;
   status: string;
   conclusion: string | null;
-  details_url?: string;
+  details_url: string | null;
 }
 
 export interface ChecksListForRefData {
@@ -283,6 +414,115 @@ export interface GitGetRefResult {
   data: GitRefData;
 }
 
+export interface GitGetBlobParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  file_sha: string;
+}
+
+export interface GitGetBlobResult {
+  data: {
+    content: string;
+    encoding: string;
+  };
+}
+
+export interface GitGetCommitParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  commit_sha: string;
+}
+
+export interface GitGetCommitResult {
+  data: {
+    sha: string;
+    tree: {
+      sha: string;
+    };
+  };
+}
+
+export interface GitCreateBlobParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  content: string;
+  encoding: string;
+}
+
+export interface GitCreateBlobResult {
+  data: {
+    sha: string;
+  };
+}
+
+export type GitTreeMode = '100644' | '100755' | '040000' | '160000' | '120000';
+
+export type GitTreeType = 'tree' | 'blob' | 'commit';
+
+export interface GitCreateTreeEntry {
+  path: string;
+  mode: GitTreeMode;
+  type: GitTreeType;
+  sha: string | null;
+}
+
+export interface GitCreateTreeParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  base_tree: string;
+  tree: GitCreateTreeEntry[];
+}
+
+export interface GitCreateTreeResult {
+  data: {
+    sha: string;
+  };
+}
+
+export interface GitCreateCommitParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  message: string;
+  tree: string;
+  parents: string[];
+}
+
+export interface GitCreateCommitResult {
+  data: {
+    sha: string;
+  };
+}
+
+export interface GitCreateRefParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  ref: string;
+  sha: string;
+}
+
+export interface GitCreateRefResult {
+  data: unknown;
+}
+
+export interface GitUpdateRefParams {
+  [key: string]: unknown;
+  owner: string;
+  repo: string;
+  ref: string;
+  sha: string;
+  force?: boolean;
+}
+
+export interface GitUpdateRefResult {
+  data: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -298,11 +538,20 @@ export interface GitHubClientConfig {
 // ---------------------------------------------------------------------------
 
 export interface GitHubClient {
+  apps: {
+    getAuthenticated: () => Promise<AppsGetAuthenticatedResult>;
+  };
   issues: {
     get: (params: IssuesGetParams) => Promise<IssuesGetResult>;
     listForRepo: (params: IssuesListForRepoParams) => Promise<IssuesListForRepoResult>;
+    create: (params: IssuesCreateParams) => Promise<IssuesCreateResult>;
+    update: (params: IssuesUpdateParams) => Promise<IssuesUpdateResult>;
+    listLabelsOnIssue: (
+      params: IssuesListLabelsOnIssueParams,
+    ) => Promise<IssuesListLabelsOnIssueResult>;
     addLabels: (params: IssuesAddLabelsParams) => Promise<IssuesAddLabelsResult>;
     removeLabel: (params: IssuesRemoveLabelParams) => Promise<IssuesRemoveLabelResult>;
+    createComment: (params: IssuesCreateCommentParams) => Promise<IssuesCreateCommentResult>;
   };
   pulls: {
     list: (params: PullsListParams) => Promise<PullsListResult>;
@@ -312,6 +561,10 @@ export interface GitHubClient {
     listReviewComments: (
       params: PullsListReviewCommentsParams,
     ) => Promise<PullsListReviewCommentsResult>;
+    create: (params: PullsCreateParams) => Promise<PullsCreateResult>;
+    update: (params: PullsUpdateParams) => Promise<PullsUpdateResult>;
+    createReview: (params: PullsCreateReviewParams) => Promise<PullsCreateReviewResult>;
+    dismissReview: (params: PullsDismissReviewParams) => Promise<PullsDismissReviewResult>;
   };
   repos: {
     getCombinedStatusForRef: (
@@ -325,5 +578,12 @@ export interface GitHubClient {
   git: {
     getTree: (params: GitGetTreeParams) => Promise<GitGetTreeResult>;
     getRef: (params: GitGetRefParams) => Promise<GitGetRefResult>;
+    getBlob: (params: GitGetBlobParams) => Promise<GitGetBlobResult>;
+    getCommit: (params: GitGetCommitParams) => Promise<GitGetCommitResult>;
+    createBlob: (params: GitCreateBlobParams) => Promise<GitCreateBlobResult>;
+    createTree: (params: GitCreateTreeParams) => Promise<GitCreateTreeResult>;
+    createCommit: (params: GitCreateCommitParams) => Promise<GitCreateCommitResult>;
+    createRef: (params: GitCreateRefParams) => Promise<GitCreateRefResult>;
+    updateRef: (params: GitUpdateRefParams) => Promise<GitUpdateRefResult>;
   };
 }

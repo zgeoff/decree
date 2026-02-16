@@ -1,7 +1,8 @@
 import { expect, test, vi } from 'vitest';
+import { createMockGitHubClient } from '../../../test-utils/create-mock-github-client.ts';
 import type { TreeEntryOverrides } from '../test-utils/build-tree-entry.ts';
 import { buildTreeEntry } from '../test-utils/build-tree-entry.ts';
-import type { SpecReaderConfig, SpecReaderOctokit } from './create-spec-reader.ts';
+import type { SpecReaderConfig } from './create-spec-reader.ts';
 import { createSpecReader } from './create-spec-reader.ts';
 
 function buildConfig(): SpecReaderConfig {
@@ -26,39 +27,30 @@ function setupTest(overrides?: {
   treeSHA?: string;
   treeEntries?: TreeEntryOverrides[];
   blobContents?: Record<string, string>;
-  blobError?: { status: number };
 }): {
   reader: ReturnType<typeof createSpecReader>;
-  octokit: SpecReaderOctokit;
-  getContent: ReturnType<typeof vi.fn>;
-  getTree: ReturnType<typeof vi.fn>;
-  getBlob: ReturnType<typeof vi.fn>;
+  client: ReturnType<typeof createMockGitHubClient>;
 } {
   const dirSHA = overrides?.dirSHA ?? 'dir-sha-1';
   const treeSHA = overrides?.treeSHA ?? dirSHA;
   const entries = (overrides?.treeEntries ?? []).map((e) => buildTreeEntry(e));
   const blobContents = overrides?.blobContents ?? {};
 
-  const getContent = vi.fn().mockResolvedValue({ data: { sha: dirSHA } });
+  const client = createMockGitHubClient();
 
-  const getTree = vi.fn().mockResolvedValue({
+  vi.mocked(client.repos.getContent).mockResolvedValue({ data: { sha: dirSHA } });
+
+  vi.mocked(client.git.getTree).mockResolvedValue({
     data: { sha: treeSHA, tree: entries },
   });
 
-  const getBlob = overrides?.blobError
-    ? vi.fn().mockRejectedValue(overrides.blobError)
-    : vi.fn().mockImplementation(async (params: { file_sha: string }) => {
-        const content = blobContents[params.file_sha] ?? buildSpecContent('draft');
-        return { data: { content: encodeContent(content), encoding: 'base64' } };
-      });
+  vi.mocked(client.git.getBlob).mockImplementation(async (params) => {
+    const content = blobContents[params.file_sha] ?? buildSpecContent('draft');
+    return { data: { content: encodeContent(content), encoding: 'base64' } };
+  });
 
-  const octokit: SpecReaderOctokit = {
-    git: { getTree, getBlob },
-    repos: { getContent },
-  };
-
-  const reader = createSpecReader(octokit, buildConfig());
-  return { reader, octokit, getContent, getTree, getBlob };
+  const reader = createSpecReader({ client, config: buildConfig() });
+  return { reader, client };
 }
 
 // --- listSpecs ---
@@ -123,7 +115,7 @@ test('it excludes tree entries that are not blobs', async () => {
 });
 
 test('it returns cached result when tree SHA is unchanged', async () => {
-  const { reader, getBlob } = setupTest({
+  const { reader, client } = setupTest({
     dirSHA: 'stable-sha',
     treeEntries: [{ path: 'workflow.md', sha: 'sha-1', type: 'blob' }],
   });
@@ -132,48 +124,46 @@ test('it returns cached result when tree SHA is unchanged', async () => {
   const result2 = await reader.listSpecs();
 
   expect(result1).toStrictEqual(result2);
-  expect(getBlob).toHaveBeenCalledTimes(1);
+  expect(client.git.getBlob).toHaveBeenCalledTimes(1);
 });
 
 test('it re-fetches when tree SHA changes', async () => {
+  const client = createMockGitHubClient();
+
   let callCount = 0;
-  const getContent = vi.fn().mockImplementation(async () => {
+  vi.mocked(client.repos.getContent).mockImplementation(async () => {
     callCount += 1;
     return { data: { sha: `dir-sha-${callCount}` } };
   });
 
-  const getTree = vi.fn().mockResolvedValue({
+  vi.mocked(client.git.getTree).mockResolvedValue({
     data: {
       sha: 'tree-sha',
       tree: [buildTreeEntry({ path: 'workflow.md', sha: 'sha-1', type: 'blob' })],
     },
   });
 
-  const getBlob = vi.fn().mockResolvedValue({
+  vi.mocked(client.git.getBlob).mockResolvedValue({
     data: { content: encodeContent(buildSpecContent('draft')), encoding: 'base64' },
   });
 
-  const octokit: SpecReaderOctokit = {
-    git: { getTree, getBlob },
-    repos: { getContent },
-  };
-
-  const reader = createSpecReader(octokit, buildConfig());
+  const reader = createSpecReader({ client, config: buildConfig() });
 
   await reader.listSpecs();
   await reader.listSpecs();
 
-  expect(getBlob).toHaveBeenCalledTimes(2);
+  expect(client.git.getBlob).toHaveBeenCalledTimes(2);
 });
 
 test('it fails entirely when any file content fetch fails after retries', async () => {
-  const { reader } = setupTest({
+  const { reader, client } = setupTest({
     treeEntries: [
       { path: 'good.md', sha: 'sha-1', type: 'blob' },
       { path: 'bad.md', sha: 'sha-2', type: 'blob' },
     ],
-    blobError: { status: 422 },
   });
+
+  vi.mocked(client.git.getBlob).mockRejectedValue({ status: 422 });
 
   await expect(reader.listSpecs()).rejects.toMatchObject({ status: 422 });
 });

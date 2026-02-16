@@ -1,199 +1,16 @@
+import type {
+  GitCreateTreeEntry,
+  GitHubClient,
+  PullsListItem,
+  PullsReviewComment,
+} from '../../github-client/types.ts';
 import type { AgentReview, Revision } from '../../state-store/domain-type-stubs.ts';
+import { isNotFoundError } from '../is-not-found-error.ts';
 import type { GitHubPRInput } from '../mapping/map-pr-to-revision.ts';
 import { mapPRToRevision } from '../mapping/map-pr-to-revision.ts';
 import { matchClosingKeywords } from '../mapping/match-closing-keywords.ts';
 import { retryWithBackoff } from '../retry-with-backoff.ts';
 import type { RevisionProviderWriter } from '../types.ts';
-
-// --- Narrow Octokit interface types ---
-
-interface GitRef {
-  data: {
-    object: {
-      sha: string;
-    };
-  };
-}
-
-interface GitCommit {
-  data: {
-    sha: string;
-    tree: {
-      sha: string;
-    };
-  };
-}
-
-interface GitBlob {
-  data: {
-    sha: string;
-  };
-}
-
-interface TreeEntry {
-  path: string;
-  mode: string;
-  type: string;
-  sha: string | null;
-}
-
-interface GitTree {
-  data: {
-    sha: string;
-  };
-}
-
-interface GitCreateCommit {
-  data: {
-    sha: string;
-  };
-}
-
-interface PRResponse {
-  data: {
-    number: number;
-    title: string;
-    html_url: string;
-    head: {
-      sha: string;
-      ref: string;
-    };
-    user: {
-      login: string;
-    } | null;
-    body: string | null;
-    draft?: boolean;
-  };
-}
-
-interface PRListItem {
-  number: number;
-  title: string;
-  html_url: string;
-  head: {
-    sha: string;
-    ref: string;
-  };
-  user: {
-    login: string;
-  } | null;
-  body: string | null;
-  draft?: boolean;
-}
-
-interface PRListResponse {
-  data: PRListItem[];
-}
-
-interface IssueResponse {
-  data: {
-    title: string;
-  };
-}
-
-interface ReviewResponse {
-  data: {
-    id: number;
-  };
-}
-
-interface ReviewComment {
-  path: string;
-  body: string;
-  line?: number;
-}
-
-interface OctokitGit {
-  getRef: (params: { owner: string; repo: string; ref: string }) => Promise<GitRef>;
-  getCommit: (params: { owner: string; repo: string; commit_sha: string }) => Promise<GitCommit>;
-  createBlob: (params: {
-    owner: string;
-    repo: string;
-    content: string;
-    encoding: string;
-  }) => Promise<GitBlob>;
-  createTree: (params: {
-    owner: string;
-    repo: string;
-    base_tree: string;
-    tree: TreeEntry[];
-  }) => Promise<GitTree>;
-  createCommit: (params: {
-    owner: string;
-    repo: string;
-    message: string;
-    tree: string;
-    parents: string[];
-  }) => Promise<GitCreateCommit>;
-  createRef: (params: {
-    owner: string;
-    repo: string;
-    ref: string;
-    sha: string;
-  }) => Promise<unknown>;
-  updateRef: (params: {
-    owner: string;
-    repo: string;
-    ref: string;
-    sha: string;
-    force: boolean;
-  }) => Promise<unknown>;
-}
-
-interface OctokitPulls {
-  create: (params: {
-    owner: string;
-    repo: string;
-    title: string;
-    body: string;
-    head: string;
-    base: string;
-  }) => Promise<PRResponse>;
-  list: (params: {
-    owner: string;
-    repo: string;
-    state: string;
-    per_page: number;
-  }) => Promise<PRListResponse>;
-  get: (params: { owner: string; repo: string; pull_number: number }) => Promise<PRResponse>;
-  update: (params: {
-    owner: string;
-    repo: string;
-    pull_number: number;
-    body: string;
-  }) => Promise<PRResponse>;
-  createReview: (params: {
-    owner: string;
-    repo: string;
-    pull_number: number;
-    body: string;
-    event: string;
-    comments?: ReviewComment[];
-  }) => Promise<ReviewResponse>;
-  dismissReview: (params: {
-    owner: string;
-    repo: string;
-    pull_number: number;
-    review_id: number;
-    message: string;
-  }) => Promise<unknown>;
-}
-
-interface OctokitIssues {
-  get: (params: { owner: string; repo: string; issue_number: number }) => Promise<IssueResponse>;
-  createComment: (params: {
-    owner: string;
-    repo: string;
-    issue_number: number;
-    body: string;
-  }) => Promise<unknown>;
-}
-
-export interface RevisionWriterOctokit {
-  git: OctokitGit;
-  pulls: OctokitPulls;
-  issues: OctokitIssues;
-}
 
 export interface RevisionWriterConfig {
   owner: string;
@@ -202,7 +19,7 @@ export interface RevisionWriterConfig {
 }
 
 export interface RevisionWriterDeps {
-  octokit: RevisionWriterOctokit;
+  client: GitHubClient;
   config: RevisionWriterConfig;
 }
 
@@ -247,7 +64,7 @@ async function createFromPatch(
 ): Promise<Revision> {
   // Step 1: Fetch default branch HEAD commit and its tree
   const headRef = await retryWithBackoff(() =>
-    deps.octokit.git.getRef({
+    deps.client.git.getRef({
       owner: deps.config.owner,
       repo: deps.config.repo,
       ref: `heads/${deps.config.defaultBranch}`,
@@ -257,7 +74,7 @@ async function createFromPatch(
   const defaultBranchSHA = headRef.data.object.sha;
 
   const headCommit = await retryWithBackoff(() =>
-    deps.octokit.git.getCommit({
+    deps.client.git.getCommit({
       owner: deps.config.owner,
       repo: deps.config.repo,
       commit_sha: defaultBranchSHA,
@@ -270,7 +87,7 @@ async function createFromPatch(
   const diffFiles = parseUnifiedDiff(patch);
 
   // Step 3: Create blobs and build the tree
-  const treeEntries: TreeEntry[] = [];
+  const treeEntries: GitCreateTreeEntry[] = [];
 
   for (const file of diffFiles) {
     if (file.action === 'delete') {
@@ -284,7 +101,7 @@ async function createFromPatch(
       const fileContent = file.content;
       // biome-ignore lint/performance/noAwaitInLoops: sequential blob creation required for tree construction
       const blob = await retryWithBackoff(() =>
-        deps.octokit.git.createBlob({
+        deps.client.git.createBlob({
           owner: deps.config.owner,
           repo: deps.config.repo,
           content: fileContent,
@@ -302,7 +119,7 @@ async function createFromPatch(
   }
 
   const newTree = await retryWithBackoff(() =>
-    deps.octokit.git.createTree({
+    deps.client.git.createTree({
       owner: deps.config.owner,
       repo: deps.config.repo,
       base_tree: baseTreeSHA,
@@ -316,7 +133,7 @@ async function createFromPatch(
 
   try {
     const branchRef = await retryWithBackoff(() =>
-      deps.octokit.git.getRef({
+      deps.client.git.getRef({
         owner: deps.config.owner,
         repo: deps.config.repo,
         ref: `heads/${branchName}`,
@@ -337,7 +154,7 @@ async function createFromPatch(
   const commitMessage = `decree: apply patch for #${workItemID}`;
 
   const newCommit = await retryWithBackoff(() =>
-    deps.octokit.git.createCommit({
+    deps.client.git.createCommit({
       owner: deps.config.owner,
       repo: deps.config.repo,
       message: commitMessage,
@@ -349,7 +166,7 @@ async function createFromPatch(
   // Step 6: Create or update the branch ref
   if (branchExists) {
     await retryWithBackoff(() =>
-      deps.octokit.git.updateRef({
+      deps.client.git.updateRef({
         owner: deps.config.owner,
         repo: deps.config.repo,
         ref: `heads/${branchName}`,
@@ -359,7 +176,7 @@ async function createFromPatch(
     );
   } else {
     await retryWithBackoff(() =>
-      deps.octokit.git.createRef({
+      deps.client.git.createRef({
         owner: deps.config.owner,
         repo: deps.config.repo,
         ref: `refs/heads/${branchName}`,
@@ -370,7 +187,7 @@ async function createFromPatch(
 
   // Step 7: Check for existing PR
   const prs = await retryWithBackoff(() =>
-    deps.octokit.pulls.list({
+    deps.client.pulls.list({
       owner: deps.config.owner,
       repo: deps.config.repo,
       state: 'open',
@@ -378,7 +195,7 @@ async function createFromPatch(
     }),
   );
 
-  let existingPR: PRListItem | null = null;
+  let existingPR: PullsListItem | null = null;
 
   // First: look for branch-name match
   for (const pr of prs.data) {
@@ -415,7 +232,7 @@ async function createFromPatch(
       },
       user: existingPR.user,
       body: existingPR.body,
-      draft: existingPR.draft ?? false,
+      draft: existingPR.draft,
     };
 
     return mapPRToRevision(prInput, { pipeline: null, reviewID: null });
@@ -423,7 +240,7 @@ async function createFromPatch(
 
   // Step 8: No existing PR — create one
   const issueResponse = await retryWithBackoff(() =>
-    deps.octokit.issues.get({
+    deps.client.issues.get({
       owner: deps.config.owner,
       repo: deps.config.repo,
       issue_number: Number(workItemID),
@@ -433,7 +250,7 @@ async function createFromPatch(
   const prBody = `Closes #${workItemID}`;
 
   const newPR = await retryWithBackoff(() =>
-    deps.octokit.pulls.create({
+    deps.client.pulls.create({
       owner: deps.config.owner,
       repo: deps.config.repo,
       title: issueResponse.data.title,
@@ -453,7 +270,7 @@ async function createFromPatch(
     },
     user: newPR.data.user,
     body: newPR.data.body,
-    draft: newPR.data.draft ?? false,
+    draft: newPR.data.draft,
   };
 
   return mapPRToRevision(prInput, { pipeline: null, reviewID: null });
@@ -467,7 +284,7 @@ async function updateBody(
   const pullNumber = Number(revisionID);
 
   await retryWithBackoff(() =>
-    deps.octokit.pulls.update({
+    deps.client.pulls.update({
       owner: deps.config.owner,
       repo: deps.config.repo,
       pull_number: pullNumber,
@@ -476,7 +293,9 @@ async function updateBody(
   );
 }
 
-const VERDICT_MAP: Record<string, string> = {
+type ReviewEvent = 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
+
+const VERDICT_MAP: Record<string, ReviewEvent> = {
   approve: 'APPROVE',
   'needs-changes': 'REQUEST_CHANGES',
 };
@@ -489,7 +308,7 @@ async function postReview(
   const pullNumber = Number(revisionID);
   const event = VERDICT_MAP[review.verdict] ?? 'COMMENT';
 
-  const comments: ReviewComment[] = review.comments.map(buildReviewComment);
+  const comments: PullsReviewComment[] = review.comments.map(buildReviewComment);
 
   const baseParams = {
     owner: deps.config.owner,
@@ -501,7 +320,7 @@ async function postReview(
 
   const reviewParams = comments.length > 0 ? { ...baseParams, comments } : baseParams;
 
-  const response = await retryWithBackoff(() => deps.octokit.pulls.createReview(reviewParams));
+  const response = await retryWithBackoff(() => deps.client.pulls.createReview(reviewParams));
 
   return String(response.data.id);
 }
@@ -516,7 +335,7 @@ async function updateReviewFn(
   const reviewIDNum = Number(reviewID);
 
   await retryWithBackoff(() =>
-    deps.octokit.pulls.dismissReview({
+    deps.client.pulls.dismissReview({
       owner: deps.config.owner,
       repo: deps.config.repo,
       pull_number: pullNumber,
@@ -536,7 +355,7 @@ async function postComment(
   const pullNumber = Number(revisionID);
 
   await retryWithBackoff(() =>
-    deps.octokit.issues.createComment({
+    deps.client.issues.createComment({
       owner: deps.config.owner,
       repo: deps.config.repo,
       issue_number: pullNumber,
@@ -549,8 +368,8 @@ function buildReviewComment(comment: {
   path: string;
   line: number | null;
   body: string;
-}): ReviewComment {
-  const result: ReviewComment = {
+}): PullsReviewComment {
+  const result: PullsReviewComment = {
     path: comment.path,
     body: comment.body,
   };
@@ -722,15 +541,4 @@ function collectHunkContent(lines: string[], startIndex: number): HunkResult {
   }
 
   return { contentLines, nextIndex: i };
-}
-
-const STATUS_NOT_FOUND = 404;
-
-function isNotFoundError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'status' in error &&
-    error.status === STATUS_NOT_FOUND
-  );
 }

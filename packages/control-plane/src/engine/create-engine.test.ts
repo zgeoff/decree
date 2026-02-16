@@ -177,7 +177,9 @@ function setupMockGitHubClient(
     title: `PR for #${issue.number}`,
     changed_files: 3,
     html_url: `https://github.com/owner/repo/pull/${100 + index}`,
+    user: null,
     head: { sha: `sha-${issue.number}`, ref: `issue-${issue.number}-branch` },
+    body: null,
     draft: false,
   }));
   vi.mocked(octokit.pulls.list).mockResolvedValue({ data: mockPRListItems });
@@ -187,7 +189,9 @@ function setupMockGitHubClient(
       title: 'PR',
       changed_files: 0,
       html_url: '',
+      user: null,
       head: { sha: 'sha', ref: 'branch' },
+      body: null,
       draft: false,
     };
     return { data: mockPRDetails.find((p) => p.number === params.pull_number) ?? defaultPR };
@@ -235,13 +239,10 @@ function createMockWorktreeManager(): WorktreeManager {
 
 interface SetupOptions {
   issues?: ReturnType<typeof buildMockIssueData>[];
-  autoComplete?: boolean;
   shutdownTimeout?: number;
 }
 
-function setupTest(
-  issueOverridesOrOptions?: ReturnType<typeof buildMockIssueData>[] | SetupOptions,
-): {
+function setupTest(options?: SetupOptions): {
   engine: ReturnType<typeof createEngine>;
   events: EngineEvent[];
   octokit: ReturnType<typeof createMockGitHubClient>;
@@ -251,44 +252,27 @@ function setupTest(
   config: ReturnType<typeof buildValidConfig>;
   worktreeManager: WorktreeManager;
 } {
-  const options: SetupOptions = Array.isArray(issueOverridesOrOptions)
-    ? { issues: issueOverridesOrOptions }
-    : (issueOverridesOrOptions ?? {});
-
-  const issues = options.issues ?? [];
-  const autoComplete = options.autoComplete ?? true;
+  const issues = options?.issues ?? [];
 
   const octokit = createMockGitHubClient();
   const mockQueries: MockQuery[] = [];
   const capturedQueryParams: QueryFactoryParams[] = [];
   const worktreeManager = createMockWorktreeManager();
 
-  const queryFactory: QueryFactory = async (params: QueryFactoryParams) => {
+  const queryFactory: QueryFactory = vi.fn(async (params: QueryFactoryParams) => {
     capturedQueryParams.push(params);
     const q = createMockQuery();
-    if (autoComplete) {
-      // Auto-complete the session immediately
-      q.pushMessage({
-        type: 'system',
-        subtype: 'init',
-        session_id: `session-${mockQueries.length + 1}`,
-      });
-      q.pushMessage({ type: 'result', subtype: 'success' });
-      q.end();
-    } else {
-      // Send init but leave session open for manual control
-      q.pushMessage({
-        type: 'system',
-        subtype: 'init',
-        session_id: `session-${mockQueries.length + 1}`,
-      });
-    }
+    q.pushMessage({
+      type: 'system',
+      subtype: 'init',
+      session_id: `session-${mockQueries.length + 1}`,
+    });
     mockQueries.push(q);
     return q;
-  };
+  });
 
   const config = buildValidConfig(
-    options.shutdownTimeout !== undefined
+    options?.shutdownTimeout !== undefined
       ? { shutdownTimeout: options.shutdownTimeout }
       : undefined,
   );
@@ -328,7 +312,7 @@ function setupTest(
 
 test('it resolves with issue count and recoveries after startup', async () => {
   const issues = [buildMockIssueData(1, 'pending'), buildMockIssueData(2, 'review')];
-  const { engine } = setupTest(issues);
+  const { engine } = setupTest({ issues });
 
   const result = await engine.start();
 
@@ -390,7 +374,7 @@ test('it performs startup recovery for in-progress issues', async () => {
 
 test('it runs the first issue poller cycle during startup', async () => {
   const issues = [buildMockIssueData(1, 'pending')];
-  const { engine, events } = setupTest(issues);
+  const { engine, events } = setupTest({ issues });
 
   await engine.start();
 
@@ -420,7 +404,7 @@ test('it runs the first spec poller cycle during startup', async () => {
 
 test('it forwards events from all components through the event emitter', async () => {
   const issues = [buildMockIssueData(1, 'pending')];
-  const { engine, events } = setupTest(issues);
+  const { engine, events } = setupTest({ issues });
 
   await engine.start();
 
@@ -461,7 +445,7 @@ test('it is a no-op when dispatching an implementor for an issue not in the snap
 
 test('it is a no-op when dispatching an implementor for an issue not in user-dispatch status', async () => {
   const issues = [buildMockIssueData(42, 'review')];
-  const { engine, mockQueries } = setupTest(issues);
+  const { engine, mockQueries } = setupTest({ issues });
 
   await engine.start();
 
@@ -477,7 +461,7 @@ test('it is a no-op when dispatching an implementor for an issue not in user-dis
 
 test('it dispatches an implementor for an in-progress issue with no running agent', async () => {
   const issues = [buildMockIssueData(42, 'in-progress')];
-  const { engine, events, mockQueries } = setupTest({ issues, autoComplete: true });
+  const { engine, events, mockQueries } = setupTest({ issues });
 
   await engine.start();
 
@@ -497,7 +481,7 @@ test('it dispatches an implementor for an in-progress issue with no running agen
 
 test('it skips dispatching an implementor for an in-progress issue with a running agent', async () => {
   const issues = [buildMockIssueData(42, 'in-progress')];
-  const { engine, events } = setupTest({ issues, autoComplete: false });
+  const { engine, events } = setupTest({ issues });
 
   await engine.start();
 
@@ -529,7 +513,7 @@ test('it skips dispatching an implementor for an in-progress issue with a runnin
 
 test('it passes a sonnet model override when dispatching an implementor for a simple-complexity issue', async () => {
   const issues = [buildMockIssueData(42, 'pending', { complexity: 'complexity:simple' })];
-  const { engine, capturedQueryParams } = setupTest({ issues, autoComplete: true });
+  const { engine, capturedQueryParams } = setupTest({ issues });
 
   await engine.start();
 
@@ -546,7 +530,7 @@ test('it passes a sonnet model override when dispatching an implementor for a si
 
 test('it passes an opus model override when dispatching an implementor for a complex-complexity issue', async () => {
   const issues = [buildMockIssueData(42, 'pending', { complexity: 'complexity:complex' })];
-  const { engine, capturedQueryParams } = setupTest({ issues, autoComplete: true });
+  const { engine, capturedQueryParams } = setupTest({ issues });
 
   await engine.start();
 
@@ -563,7 +547,7 @@ test('it passes an opus model override when dispatching an implementor for a com
 
 test('it does not pass a model override when dispatching an implementor for an issue without a complexity label', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, capturedQueryParams } = setupTest({ issues, autoComplete: true });
+  const { engine, capturedQueryParams } = setupTest({ issues });
 
   await engine.start();
 
@@ -584,7 +568,7 @@ test('it does not pass a model override when dispatching an implementor for an i
 
 test('it does not auto-dispatch a reviewer when the issue is in review status at startup', async () => {
   const issues = [buildMockIssueData(42, 'review')];
-  const { engine, events } = setupTest(issues);
+  const { engine, events } = setupTest({ issues });
 
   await engine.start();
 
@@ -630,7 +614,9 @@ test('it auto-dispatches a reviewer when an issue transitions to review external
       title: 'PR for #42',
       changed_files: 3,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'sha-42', ref: 'issue-42-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -725,7 +711,9 @@ test('it does not auto-dispatch a reviewer when an agent is already running for 
       title: 'PR for #42',
       changed_files: 3,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'sha-42', ref: 'issue-42-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -831,7 +819,9 @@ test('it auto-dispatches an implementor when an issue transitions to unblocked',
       title: 'PR for #42',
       changed_files: 3,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'sha-42', ref: 'issue-42-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -898,7 +888,7 @@ test('it auto-dispatches an implementor when an issue transitions to unblocked',
 
 test('it does not auto-dispatch an implementor when the issue is unblocked at startup', async () => {
   const issues = [buildMockIssueData(42, 'unblocked')];
-  const { engine, events } = setupTest(issues);
+  const { engine, events } = setupTest({ issues });
 
   await engine.start();
 
@@ -944,7 +934,9 @@ test('it does not auto-dispatch an implementor when an agent is already running 
       title: 'PR for #42',
       changed_files: 3,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'sha-42', ref: 'issue-42-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -1040,7 +1032,7 @@ test('it does not auto-dispatch an implementor when an agent is already running 
 
 test('it is a no-op when dispatching a reviewer for an issue not in review status', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, mockQueries } = setupTest(issues);
+  const { engine, mockQueries } = setupTest({ issues });
 
   await engine.start();
   const queriesAfterStart = mockQueries.length;
@@ -1066,10 +1058,7 @@ test('it is a no-op when dispatching a reviewer for an issue not in snapshot', a
 
 test('it passes fetchRemote: true when dispatching a reviewer with a linked PR', async () => {
   const issues = [buildMockIssueData(42, 'review')];
-  const { engine, events, octokit, worktreeManager } = setupTest({
-    issues,
-    autoComplete: false,
-  });
+  const { engine, events, octokit, worktreeManager, mockQueries } = setupTest({ issues });
 
   vi.mocked(octokit.pulls.list).mockResolvedValue({
     data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
@@ -1080,7 +1069,9 @@ test('it passes fetchRemote: true when dispatching a reviewer with a linked PR',
       title: 'PR for issue 42',
       changed_files: 5,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'pr-sha-1', ref: 'issue-42-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -1095,6 +1086,11 @@ test('it passes fetchRemote: true when dispatching a reviewer with a linked PR',
     );
     expect(agentStarted.length).toBe(1);
   });
+
+  const query = mockQueries[0];
+  invariant(query, 'expected a query to have been dispatched');
+  query.pushMessage({ type: 'result', subtype: 'success' });
+  query.end();
 
   expect(worktreeManager.createForBranch).toHaveBeenCalledWith({
     branchName: 'issue-42-branch',
@@ -1158,7 +1154,7 @@ test('it is a no-op when cancelling the planner when none is running', async () 
 
 test('it delegates getIssueDetails to the queries module', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, octokit } = setupTest(issues);
+  const { engine, octokit } = setupTest({ issues });
 
   await engine.start();
 
@@ -1243,7 +1239,7 @@ test('it does not crash when a poll cycle throws a github API error', async () =
 
 test('it dispatches an implementor agent when the issue is in a user-dispatch status', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, mockQueries } = setupTest({ issues, autoComplete: true });
+  const { engine, events, mockQueries } = setupTest({ issues });
 
   await engine.start();
 
@@ -1255,6 +1251,11 @@ test('it dispatches an implementor agent when the issue is in a user-dispatch st
     expect(mockQueries.length).toBeGreaterThan(queriesBeforeDispatch);
   });
 
+  const lastQuery = mockQueries.at(-1);
+  invariant(lastQuery, 'expected at least one query to have been dispatched');
+  lastQuery.pushMessage({ type: 'result', subtype: 'success' });
+  lastQuery.end();
+
   const agentStarted = events.filter(
     (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
   );
@@ -1263,7 +1264,7 @@ test('it dispatches an implementor agent when the issue is in a user-dispatch st
 
 test('it cancels a running agent and emits an agent-failed event', async () => {
   const issues = [buildMockIssueData(42, 'review')];
-  const { engine, events } = setupTest({ issues, autoComplete: false });
+  const { engine, events, mockQueries } = setupTest({ issues });
 
   await engine.start();
 
@@ -1278,6 +1279,9 @@ test('it cancels a running agent and emits an agent-failed event', async () => {
   });
 
   engine.send({ command: 'cancelAgent', issueNumber: 42 });
+  const query = mockQueries[0];
+  invariant(query, 'expected a query to have been dispatched');
+  query.end();
 
   await vi.waitFor(() => {
     const agentFailed = events.filter(
@@ -1293,9 +1297,8 @@ test('it cancels running agents after shutdown timeout expires', async () => {
   vi.useFakeTimers();
 
   const issues = [buildMockIssueData(42, 'review')];
-  const { engine, events } = setupTest({
+  const { engine, events, mockQueries } = setupTest({
     issues,
-    autoComplete: false,
     shutdownTimeout: 5,
   });
 
@@ -1314,6 +1317,9 @@ test('it cancels running agents after shutdown timeout expires', async () => {
 
   // Advance past the shutdown timeout (5 seconds)
   await vi.advanceTimersByTimeAsync(6000);
+  const query = mockQueries[0];
+  invariant(query, 'expected a query to have been dispatched');
+  query.end();
 
   const agentFailed = events.filter(
     (e): e is AgentFailedEvent =>
@@ -1358,7 +1364,9 @@ test('it cancels a running agent when its issue is removed from the poller snaps
       title: 'PR for #42',
       changed_files: 3,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'sha-42', ref: 'issue-42-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -1550,9 +1558,8 @@ test('it reports only changed files when the cache has a different tree', async 
     },
     commitSHA: 'old-commit-sha',
   };
-  const { engine, events, octokit } = setupCacheTest({
+  const { engine, events, octokit, mockQueries } = setupCacheTest({
     cacheEntry,
-    autoComplete: true,
   });
 
   // SpecPoller: first call finds specs dir with a new tree SHA
@@ -1600,10 +1607,16 @@ test('it reports only changed files when the cache has a different tree', async 
       frontmatterStatus: 'approved',
     });
   });
+
+  // Complete any planner queries that were dispatched due to spec changes
+  for (const q of mockQueries) {
+    q.pushMessage({ type: 'result', subtype: 'success' });
+    q.end();
+  }
 });
 
 test('it writes the cache file when the planner completes successfully', async () => {
-  const { engine, octokit, events } = setupCacheTest({ autoComplete: true });
+  const { engine, octokit, events, mockQueries } = setupCacheTest();
 
   // Set up SpecPoller to detect changes (which triggers planner dispatch)
   vi.mocked(octokit.git.getTree).mockImplementation(async (params) => {
@@ -1633,6 +1646,15 @@ test('it writes the cache file when the planner completes successfully', async (
 
   await engine.start();
 
+  // Wait for the planner query to be created, then complete it
+  await vi.waitFor(() => {
+    expect(mockQueries.length).toBeGreaterThan(0);
+  });
+  const plannerQuery = mockQueries[0];
+  invariant(plannerQuery, 'planner query must exist');
+  plannerQuery.pushMessage({ type: 'result', subtype: 'success' });
+  plannerQuery.end();
+
   await vi.waitFor(async () => {
     // Verify the planner completed
     const completed = events.filter(
@@ -1652,7 +1674,7 @@ test('it writes the cache file when the planner completes successfully', async (
 });
 
 test('it does not write the cache file when the planner fails', async () => {
-  const { engine, octokit, events, mockQueries } = setupCacheTest({ autoComplete: false });
+  const { engine, octokit, events, mockQueries } = setupCacheTest();
 
   // Set up SpecPoller to detect changes
   vi.mocked(octokit.git.getTree).mockImplementation(async (params) => {
@@ -2098,7 +2120,7 @@ test('it treats a corrupt cache file as a cold start', async () => {
 
 test('it preserves the commit SHA when no-change poll cycles follow a change cycle', async () => {
   vi.useFakeTimers();
-  const { engine, octokit, mockQueries } = setupTest({ autoComplete: false });
+  const { engine, octokit, mockQueries } = setupTest();
 
   // SpecPoller: poll 1 returns tree-sha-A (spec-a), poll 2 returns tree-sha-B (adds spec-b),
   // poll 3+ returns tree-sha-B again (no change → EMPTY_RESULT)
@@ -2160,6 +2182,12 @@ test('it preserves the commit SHA when no-change poll cycles follow a change cyc
   // Second dispatch must use commit-2 (from poll 2 when spec-b was detected), not ''
   expect(plannerRefs).toContain('commit-2');
 
+  // Complete the second planner query so it doesn't hang
+  const q2 = mockQueries[1];
+  invariant(q2, 'second planner query must exist');
+  q2.pushMessage({ type: 'result', subtype: 'success' });
+  q2.end();
+
   engine.send({ command: 'shutdown' });
 });
 
@@ -2171,7 +2199,6 @@ test('it dispatches the reviewer when an implementor completes with a linked non
   const issues = [buildMockIssueData(42, 'in-progress')];
   const { engine, events, octokit, mockQueries, capturedQueryParams } = setupTest({
     issues,
-    autoComplete: false,
   });
 
   // Set up a linked non-draft PR for issue #42
@@ -2184,7 +2211,9 @@ test('it dispatches the reviewer when an implementor completes with a linked non
       title: 'PR for issue 42',
       changed_files: 5,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'pr-sha-1', ref: 'issue-42' },
+      body: null,
       draft: false,
     },
   });
@@ -2214,6 +2243,12 @@ test('it dispatches the reviewer when an implementor completes with a linked non
     expect(reviewerParams.length).toBeGreaterThan(0);
   });
 
+  // Complete the reviewer query so it doesn't hang
+  const reviewerQuery = mockQueries.at(-1);
+  invariant(reviewerQuery, 'reviewer query must exist');
+  reviewerQuery.pushMessage({ type: 'result', subtype: 'success' });
+  reviewerQuery.end();
+
   // Verify status:review was set via GitHub API
   expect(octokit.issues.removeLabel).toHaveBeenCalledWith(
     expect.objectContaining({ issue_number: 42, name: 'status:in-progress' }),
@@ -2239,7 +2274,6 @@ test('it passes fetchRemote: true when dispatching reviewer after implementor co
   const issues = [buildMockIssueData(42, 'in-progress')];
   const { engine, events, octokit, mockQueries, worktreeManager } = setupTest({
     issues,
-    autoComplete: false,
   });
 
   vi.mocked(octokit.pulls.list).mockResolvedValue({
@@ -2251,7 +2285,9 @@ test('it passes fetchRemote: true when dispatching reviewer after implementor co
       title: 'PR for issue 42',
       changed_files: 5,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'pr-sha-1', ref: 'issue-42-completion-branch' },
+      body: null,
       draft: false,
     },
   });
@@ -2280,6 +2316,12 @@ test('it passes fetchRemote: true when dispatching reviewer after implementor co
     expect(agentStarted.length).toBe(2);
   });
 
+  // Complete the reviewer query so it doesn't hang
+  const reviewerQuery = mockQueries.at(-1);
+  invariant(reviewerQuery, 'reviewer query must exist');
+  reviewerQuery.pushMessage({ type: 'result', subtype: 'success' });
+  reviewerQuery.end();
+
   const createForBranchCalls = vi.mocked(worktreeManager.createForBranch).mock.calls;
   const reviewerCall = createForBranchCalls.filter(
     (call) => call[0]?.branchName === 'issue-42-completion-branch',
@@ -2300,10 +2342,7 @@ test('it passes fetchRemote: true when dispatching reviewer after implementor co
 
 test('it does not emit a duplicate status change when the poller runs after completion-dispatch', async () => {
   const issues = [buildMockIssueData(42, 'in-progress')];
-  const { engine, events, octokit, mockQueries } = setupTest({
-    issues,
-    autoComplete: false,
-  });
+  const { engine, events, octokit, mockQueries } = setupTest({ issues });
 
   // Set up a linked non-draft PR for issue #42
   vi.mocked(octokit.pulls.list).mockResolvedValue({
@@ -2315,7 +2354,9 @@ test('it does not emit a duplicate status change when the poller runs after comp
       title: 'PR for issue 42',
       changed_files: 5,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'pr-sha-1', ref: 'issue-42' },
+      body: null,
       draft: false,
     },
   });
@@ -2377,7 +2418,6 @@ test('it does not dispatch a reviewer when an implementor completes with no link
   const issues = [buildMockIssueData(42, 'in-progress')];
   const { engine, events, octokit, mockQueries, capturedQueryParams } = setupTest({
     issues,
-    autoComplete: false,
   });
 
   // No PRs linked to issue #42
@@ -2442,7 +2482,6 @@ test('it does not check for a PR or dispatch a reviewer when an implementor fail
   const issues = [buildMockIssueData(42, 'in-progress')];
   const { engine, events, octokit, mockQueries, capturedQueryParams } = setupTest({
     issues,
-    autoComplete: false,
   });
 
   // Set up a linked non-draft PR (should NOT be checked for failures)
@@ -2505,7 +2544,7 @@ test('it does not check for a PR or dispatch a reviewer when an implementor fail
 
 test('it calls getPRForIssue with includeDrafts when dispatching an implementor', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit } = setupTest({ issues, autoComplete: true });
+  const { engine, events, octokit, mockQueries } = setupTest({ issues });
 
   // No linked PR
   vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
@@ -2524,15 +2563,17 @@ test('it calls getPRForIssue with includeDrafts when dispatching an implementor'
   // getPRForIssue calls octokit.pulls.list — verify it was called
   expect(octokit.pulls.list).toHaveBeenCalled();
 
+  const query = mockQueries.at(-1);
+  invariant(query, 'query must exist');
+  query.pushMessage({ type: 'result', subtype: 'success' });
+  query.end();
+
   engine.send({ command: 'shutdown' });
 });
 
 test('it uses a fresh branch with timestamp when no linked PR exists', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit, worktreeManager } = setupTest({
-    issues,
-    autoComplete: true,
-  });
+  const { engine, events, octokit, worktreeManager, mockQueries } = setupTest({ issues });
 
   // No linked PR
   vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
@@ -2556,15 +2597,17 @@ test('it uses a fresh branch with timestamp when no linked PR exists', async () 
     }),
   );
 
+  const query = mockQueries.at(-1);
+  invariant(query, 'query must exist');
+  query.pushMessage({ type: 'result', subtype: 'success' });
+  query.end();
+
   engine.send({ command: 'shutdown' });
 });
 
 test('it uses the PR branch when a linked PR exists', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit, worktreeManager } = setupTest({
-    issues,
-    autoComplete: true,
-  });
+  const { engine, events, octokit, worktreeManager, mockQueries } = setupTest({ issues });
 
   // Linked PR with headRefName 'issue-42-1738000000'
   vi.mocked(octokit.pulls.list).mockResolvedValue({
@@ -2576,7 +2619,9 @@ test('it uses the PR branch when a linked PR exists', async () => {
       title: 'PR for issue 42',
       changed_files: 5,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'pr-sha-1', ref: 'issue-42-1738000000' },
+      body: null,
       draft: true,
     },
   });
@@ -2597,6 +2642,11 @@ test('it uses the PR branch when a linked PR exists', async () => {
     branchName: 'issue-42-1738000000',
   });
 
+  const query = mockQueries.at(-1);
+  invariant(query, 'query must exist');
+  query.pushMessage({ type: 'result', subtype: 'success' });
+  query.end();
+
   engine.send({ command: 'shutdown' });
 });
 
@@ -2606,7 +2656,7 @@ test('it uses the PR branch when a linked PR exists', async () => {
 
 test('it calls getIssueDetails before every implementor dispatch', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit } = setupTest({ issues, autoComplete: true });
+  const { engine, events, octokit, mockQueries } = setupTest({ issues });
 
   // No linked PR
   vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
@@ -2625,12 +2675,17 @@ test('it calls getIssueDetails before every implementor dispatch', async () => {
   // getIssueDetails calls octokit.issues.get — verify it was called with the issue number
   expect(octokit.issues.get).toHaveBeenCalledWith(expect.objectContaining({ issue_number: 42 }));
 
+  const query = mockQueries.at(-1);
+  invariant(query, 'query must exist');
+  query.pushMessage({ type: 'result', subtype: 'success' });
+  query.end();
+
   engine.send({ command: 'shutdown' });
 });
 
 test('it builds an enriched prompt with issue details only when no linked PR exists', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, capturedQueryParams, octokit } = setupTest({ issues, autoComplete: true });
+  const { engine, capturedQueryParams, octokit, mockQueries } = setupTest({ issues });
 
   // No linked PR
   vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
@@ -2661,12 +2716,17 @@ test('it builds an enriched prompt with issue details only when no linked PR exi
   expect(prompt).not.toContain('### Prior Reviews');
   expect(prompt).not.toContain('### Prior Inline Comments');
 
+  const query = mockQueries.at(-1);
+  invariant(query, 'query must exist');
+  query.pushMessage({ type: 'result', subtype: 'success' });
+  query.end();
+
   engine.send({ command: 'shutdown' });
 });
 
 test('it builds an enriched prompt with PR data when a linked PR exists', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, capturedQueryParams, octokit } = setupTest({ issues, autoComplete: true });
+  const { engine, capturedQueryParams, octokit, mockQueries } = setupTest({ issues });
 
   // Linked PR
   vi.mocked(octokit.pulls.list).mockResolvedValue({
@@ -2678,7 +2738,9 @@ test('it builds an enriched prompt with PR data when a linked PR exists', async 
       title: 'Fix issue 42',
       changed_files: 2,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'pr-sha-1', ref: 'issue-42-branch' },
+      body: null,
       draft: true,
     },
   });
@@ -2740,12 +2802,17 @@ test('it builds an enriched prompt with PR data when a linked PR exists', async 
   expect(prompt).toContain('src/foo.ts:5 — reviewer1');
   expect(prompt).toContain('This line is wrong');
 
+  const query = mockQueries.at(-1);
+  invariant(query, 'query must exist');
+  query.pushMessage({ type: 'result', subtype: 'success' });
+  query.end();
+
   engine.send({ command: 'shutdown' });
 });
 
 test('it calls getPRFiles and getPRReviews when a linked PR exists during implementor dispatch', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit } = setupTest({ issues, autoComplete: true });
+  const { engine, events, octokit, mockQueries } = setupTest({ issues });
 
   // Linked PR
   vi.mocked(octokit.pulls.list).mockResolvedValue({
@@ -2757,7 +2824,9 @@ test('it calls getPRFiles and getPRReviews when a linked PR exists during implem
       title: 'PR for issue 42',
       changed_files: 1,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'pr-sha-1', ref: 'issue-42-branch' },
+      body: null,
       draft: true,
     },
   });
@@ -2788,12 +2857,17 @@ test('it calls getPRFiles and getPRReviews when a linked PR exists during implem
     expect.objectContaining({ pull_number: 100 }),
   );
 
+  const query = mockQueries.at(-1);
+  invariant(query, 'query must exist');
+  query.pushMessage({ type: 'result', subtype: 'success' });
+  query.end();
+
   engine.send({ command: 'shutdown' });
 });
 
 test('it omits review sections when a linked PR has no prior reviews or comments', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, capturedQueryParams, octokit } = setupTest({ issues, autoComplete: true });
+  const { engine, capturedQueryParams, octokit, mockQueries } = setupTest({ issues });
 
   // Linked PR with no reviews or comments
   vi.mocked(octokit.pulls.list).mockResolvedValue({
@@ -2805,7 +2879,9 @@ test('it omits review sections when a linked PR has no prior reviews or comments
       title: 'PR for issue 42',
       changed_files: 1,
       html_url: 'https://github.com/owner/repo/pull/100',
+      user: null,
       head: { sha: 'pr-sha-1', ref: 'issue-42-branch' },
+      body: null,
       draft: true,
     },
   });
@@ -2839,15 +2915,17 @@ test('it omits review sections when a linked PR has no prior reviews or comments
   expect(prompt).not.toContain('### Prior Reviews');
   expect(prompt).not.toContain('### Prior Inline Comments');
 
+  const query = mockQueries.at(-1);
+  invariant(query, 'query must exist');
+  query.pushMessage({ type: 'result', subtype: 'success' });
+  query.end();
+
   engine.send({ command: 'shutdown' });
 });
 
 test('it fails the implementor dispatch when getIssueDetails throws', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit, capturedQueryParams } = setupTest({
-    issues,
-    autoComplete: true,
-  });
+  const { engine, events, octokit, capturedQueryParams } = setupTest({ issues });
 
   // No linked PR
   vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
@@ -2882,7 +2960,7 @@ test('it fails the implementor dispatch when getIssueDetails throws', async () =
 
 test('it only emits events from the valid event type set', async () => {
   const issues = [buildMockIssueData(1, 'pending')];
-  const { engine, events } = setupTest(issues);
+  const { engine, events } = setupTest({ issues });
 
   await engine.start();
 
@@ -2936,7 +3014,7 @@ test('it clears the PR Poller timer during shutdown', async () => {
 
 test('it emits a CI status changed event with a linked issue number when CI status changes', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit } = setupTest(issues);
+  const { engine, events, octokit } = setupTest({ issues });
 
   // Set up PRs: one PR linked to issue #42 with CI failure
   const prItem = buildPullsListItem({ number: 100, body: 'Closes #42', draft: false });
@@ -2969,7 +3047,7 @@ test('it emits a CI status changed event with a linked issue number when CI stat
 
 test('it emits a CI status changed event with no issue number for unlinked PRs', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit } = setupTest(issues);
+  const { engine, events, octokit } = setupTest({ issues });
 
   // PR body does NOT contain closing keyword for any tracked issue
   const prItem = buildPullsListItem({ number: 200, body: 'Some unrelated PR', draft: false });
@@ -3005,7 +3083,7 @@ test('it emits a CI status changed event with no issue number for unlinked PRs',
 
 test('it emits a prLinked event when a new PR is detected with a tracked issue', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit } = setupTest(issues);
+  const { engine, events, octokit } = setupTest({ issues });
 
   // Set up a PR linked to issue #42 with closing keyword
   const prItem = buildPullsListItem({
@@ -3045,7 +3123,7 @@ test('it emits a prLinked event when a new PR is detected with a tracked issue',
 
 test('it does not emit a prLinked event when a new PR has no matching tracked issue', async () => {
   const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit } = setupTest(issues);
+  const { engine, events, octokit } = setupTest({ issues });
 
   // PR body does NOT contain closing keyword for any tracked issue
   const prItem = buildPullsListItem({ number: 200, body: 'Some unrelated PR', draft: false });
@@ -3072,7 +3150,7 @@ test('it does not emit a prLinked event when a new PR has no matching tracked is
 
 test('it emits prLinked only for the matching issue when multiple tracked issues exist', async () => {
   const issues = [buildMockIssueData(10, 'pending'), buildMockIssueData(20, 'pending')];
-  const { engine, events, octokit } = setupTest(issues);
+  const { engine, events, octokit } = setupTest({ issues });
 
   // PR linked only to issue #20
   const prItem = buildPullsListItem({
@@ -3090,7 +3168,10 @@ test('it emits prLinked only for the matching issue when multiple tracked issues
   });
   vi.mocked(octokit.checks.listForRef).mockClear();
   vi.mocked(octokit.checks.listForRef).mockResolvedValue({
-    data: { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+    data: {
+      total_count: 1,
+      check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success', details_url: null }],
+    },
   });
 
   await engine.start();

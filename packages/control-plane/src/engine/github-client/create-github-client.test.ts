@@ -2,7 +2,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
 import { expect, test, vi } from 'vitest';
 import { createGitHubClient } from './create-github-client.ts';
-import type { GitHubClientConfig } from './types.ts';
+import type { GitCreateTreeParams, GitHubClientConfig, PullsCreateReviewParams } from './types.ts';
 
 vi.mock('@octokit/rest', () => ({
   Octokit: vi.fn(),
@@ -15,17 +15,41 @@ vi.mock('@octokit/auth-app', () => ({
 type MockFn = ReturnType<typeof vi.fn>;
 
 interface MockOctokitShape {
-  issues: { get: MockFn; listForRepo: MockFn; addLabels: MockFn; removeLabel: MockFn };
+  apps: { getAuthenticated: MockFn };
+  issues: {
+    get: MockFn;
+    listForRepo: MockFn;
+    create: MockFn;
+    update: MockFn;
+    listLabelsOnIssue: MockFn;
+    addLabels: MockFn;
+    removeLabel: MockFn;
+    createComment: MockFn;
+  };
   pulls: {
     list: MockFn;
     get: MockFn;
     listFiles: MockFn;
     listReviews: MockFn;
     listReviewComments: MockFn;
+    create: MockFn;
+    update: MockFn;
+    createReview: MockFn;
+    dismissReview: MockFn;
   };
   repos: { getCombinedStatusForRef: MockFn; getContent: MockFn };
   checks: { listForRef: MockFn };
-  git: { getTree: MockFn; getRef: MockFn };
+  git: {
+    getTree: MockFn;
+    getRef: MockFn;
+    getBlob: MockFn;
+    getCommit: MockFn;
+    createBlob: MockFn;
+    createTree: MockFn;
+    createCommit: MockFn;
+    createRef: MockFn;
+    updateRef: MockFn;
+  };
 }
 
 const mockedOctokit: ReturnType<typeof vi.mocked<typeof Octokit>> = vi.mocked(Octokit);
@@ -36,11 +60,18 @@ function setupTest(): {
   config: GitHubClientConfig;
 } {
   const mockOctokit: MockOctokitShape = {
+    apps: {
+      getAuthenticated: vi.fn(),
+    },
     issues: {
       get: vi.fn(),
       listForRepo: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      listLabelsOnIssue: vi.fn(),
       addLabels: vi.fn(),
       removeLabel: vi.fn(),
+      createComment: vi.fn(),
     },
     pulls: {
       list: vi.fn(),
@@ -48,6 +79,10 @@ function setupTest(): {
       listFiles: vi.fn(),
       listReviews: vi.fn(),
       listReviewComments: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      createReview: vi.fn(),
+      dismissReview: vi.fn(),
     },
     repos: {
       getCombinedStatusForRef: vi.fn(),
@@ -59,6 +94,13 @@ function setupTest(): {
     git: {
       getTree: vi.fn(),
       getRef: vi.fn(),
+      getBlob: vi.fn(),
+      getCommit: vi.fn(),
+      createBlob: vi.fn(),
+      createTree: vi.fn(),
+      createCommit: vi.fn(),
+      createRef: vi.fn(),
+      updateRef: vi.fn(),
     },
   };
 
@@ -105,6 +147,23 @@ test('it creates the client with app auth using the provided credentials', () =>
       installationId: 99,
     },
   });
+});
+
+// ---------------------------------------------------------------------------
+// Apps
+// ---------------------------------------------------------------------------
+
+test('it delegates app authentication and returns the slug', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.apps.getAuthenticated.mockResolvedValue({
+    data: { slug: 'my-app', id: 123 },
+  });
+
+  const result = await client.apps.getAuthenticated();
+
+  expect(mockOctokit.apps.getAuthenticated).toHaveBeenCalled();
+  expect(result.data.slug).toBe('my-app');
 });
 
 // ---------------------------------------------------------------------------
@@ -189,6 +248,66 @@ test('it delegates issue listing and returns the narrowed result', async () => {
   expect(result.data[1]?.body).toBeNull();
 });
 
+test('it delegates issue creation and returns the narrowed result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.issues.create.mockResolvedValue({
+    data: {
+      number: 99,
+      title: 'New issue',
+      body: 'Issue body',
+      labels: [{ name: 'bug' }],
+      created_at: '2026-01-01T00:00:00Z',
+      extra_field: 'ignored',
+    },
+  });
+
+  const params = { owner: 'o', repo: 'r', title: 'New issue', body: 'Issue body' };
+  const result = await client.issues.create(params);
+
+  expect(mockOctokit.issues.create).toHaveBeenCalledWith(params);
+  expect(result.data.number).toBe(99);
+  expect(result.data.title).toBe('New issue');
+});
+
+test('it delegates issue update and returns the narrowed result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.issues.update.mockResolvedValue({
+    data: {
+      number: 42,
+      title: 'Updated',
+      body: 'New body',
+      labels: [],
+      created_at: '2026-01-01T00:00:00Z',
+    },
+  });
+
+  const params = { owner: 'o', repo: 'r', issue_number: 42, body: 'New body' };
+  const result = await client.issues.update(params);
+
+  expect(mockOctokit.issues.update).toHaveBeenCalledWith(params);
+  expect(result.data.number).toBe(42);
+  expect(result.data.body).toBe('New body');
+});
+
+test('it delegates listing labels on an issue and returns the narrowed result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.issues.listLabelsOnIssue.mockResolvedValue({
+    data: [
+      { id: 1, name: 'bug', color: 'ff0000', description: 'Bug label' },
+      { id: 2, name: 'feature', color: '00ff00', description: 'Feature label' },
+    ],
+  });
+
+  const params = { owner: 'o', repo: 'r', issue_number: 42, per_page: 100 };
+  const result = await client.issues.listLabelsOnIssue(params);
+
+  expect(mockOctokit.issues.listLabelsOnIssue).toHaveBeenCalledWith(params);
+  expect(result.data).toStrictEqual([{ name: 'bug' }, { name: 'feature' }]);
+});
+
 test('it delegates adding labels and returns the result', async () => {
   const { client, mockOctokit } = setupTest();
 
@@ -211,6 +330,18 @@ test('it delegates removing a label and returns the result', async () => {
 
   expect(mockOctokit.issues.removeLabel).toHaveBeenCalledWith(params);
   expect(result.data).toStrictEqual([]);
+});
+
+test('it delegates creating a comment and returns the result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.issues.createComment.mockResolvedValue({ data: { id: 555 } });
+
+  const params = { owner: 'o', repo: 'r', issue_number: 42, body: 'Nice work!' };
+  const result = await client.issues.createComment(params);
+
+  expect(mockOctokit.issues.createComment).toHaveBeenCalledWith(params);
+  expect(result.data).toStrictEqual({ id: 555 });
 });
 
 // ---------------------------------------------------------------------------
@@ -277,7 +408,9 @@ test('it delegates pull request retrieval and returns the narrowed result', asyn
       title: 'Fix bug',
       changed_files: 3,
       html_url: 'https://github.com/o/r/pull/10',
+      user: { login: 'dev' },
       head: { sha: 'abc123', ref: 'feature-branch' },
+      body: 'Closes #5',
     },
   });
 
@@ -288,7 +421,9 @@ test('it delegates pull request retrieval and returns the narrowed result', asyn
   expect(result.data.number).toBe(10);
   expect(result.data.title).toBe('Fix bug');
   expect(result.data.changed_files).toBe(3);
+  expect(result.data.user).toStrictEqual({ login: 'dev' });
   expect(result.data.head.sha).toBe('abc123');
+  expect(result.data.body).toBe('Closes #5');
 });
 
 test('it delegates pull request files listing and returns the narrowed result', async () => {
@@ -351,8 +486,10 @@ test('it delegates pull request reviews listing and returns the narrowed result'
   expect(result.data[0]?.user).toStrictEqual({ login: 'reviewer1' });
   expect(result.data[0]?.state).toBe('APPROVED');
   expect(result.data[0]?.body).toBe('Looks good');
+  expect(result.data[0]?.submitted_at).toBe('2026-01-01T00:00:00Z');
   expect(result.data[1]?.id).toBe(2);
   expect(result.data[1]?.body).toBeNull();
+  expect(result.data[1]?.submitted_at).toBe('2026-01-02T00:00:00Z');
 });
 
 test('it delegates pull request review comments listing and returns the narrowed result', async () => {
@@ -393,6 +530,91 @@ test('it delegates pull request review comments listing and returns the narrowed
   expect(result.data[1]?.line).toBeNull();
 });
 
+test('it delegates pull request creation and returns the narrowed result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.pulls.create.mockResolvedValue({
+    data: {
+      number: 5,
+      title: 'New PR',
+      html_url: 'https://github.com/o/r/pull/5',
+      user: { login: 'author' },
+      head: { sha: 'sha123', ref: 'feature-branch' },
+      body: 'Closes #1',
+      draft: false,
+      extra_field: 'ignored',
+    },
+  });
+
+  const params = {
+    owner: 'o',
+    repo: 'r',
+    title: 'New PR',
+    body: 'Closes #1',
+    head: 'feature-branch',
+    base: 'main',
+  };
+  const result = await client.pulls.create(params);
+
+  expect(mockOctokit.pulls.create).toHaveBeenCalledWith(params);
+  expect(result.data.number).toBe(5);
+  expect(result.data.title).toBe('New PR');
+  expect(result.data.head.sha).toBe('sha123');
+  expect(result.data.draft).toBe(false);
+});
+
+test('it delegates pull request update and returns the result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.pulls.update.mockResolvedValue({
+    data: { number: 5, body: 'Updated body' },
+  });
+
+  const params = { owner: 'o', repo: 'r', pull_number: 5, body: 'Updated body' };
+  const result = await client.pulls.update(params);
+
+  expect(mockOctokit.pulls.update).toHaveBeenCalledWith(params);
+  expect(result.data).toStrictEqual({ number: 5, body: 'Updated body' });
+});
+
+test('it delegates review creation and returns the narrowed result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.pulls.createReview.mockResolvedValue({
+    data: { id: 789, node_id: 'ignored' },
+  });
+
+  const params: PullsCreateReviewParams = {
+    owner: 'o',
+    repo: 'r',
+    pull_number: 5,
+    body: 'Looks good',
+    event: 'APPROVE',
+  };
+  const result = await client.pulls.createReview(params);
+
+  expect(mockOctokit.pulls.createReview).toHaveBeenCalledWith(params);
+  expect(result.data).toStrictEqual({ id: 789 });
+});
+
+test('it delegates review dismissal and returns the result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.pulls.dismissReview.mockResolvedValue({ data: { id: 789 } });
+
+  const params = {
+    owner: 'o',
+    repo: 'r',
+    pull_number: 5,
+    review_id: 789,
+    message: 'Replaced',
+  };
+  const result = await client.pulls.dismissReview(params);
+
+  expect(mockOctokit.pulls.dismissReview).toHaveBeenCalledWith(params);
+  expect(result.data).toStrictEqual({ id: 789 });
+});
+
 // ---------------------------------------------------------------------------
 // Repos
 // ---------------------------------------------------------------------------
@@ -412,11 +634,11 @@ test('it delegates combined status retrieval and returns the narrowed result', a
   expect(result.data.total_count).toBe(2);
 });
 
-test('it delegates content retrieval and returns the content field', async () => {
+test('it delegates content retrieval and returns content and sha', async () => {
   const { client, mockOctokit } = setupTest();
 
   mockOctokit.repos.getContent.mockResolvedValue({
-    data: { content: 'base64content', encoding: 'base64', type: 'file' },
+    data: { sha: 'file-sha-1', content: 'base64content', encoding: 'base64', type: 'file' },
   });
 
   const params = { owner: 'o', repo: 'r', path: 'docs/spec.md', ref: 'main' };
@@ -424,9 +646,28 @@ test('it delegates content retrieval and returns the content field', async () =>
 
   expect(mockOctokit.repos.getContent).toHaveBeenCalledWith(params);
   expect(result.data.content).toBe('base64content');
+  expect(result.data.sha).toBe('file-sha-1');
 });
 
-test('it returns an empty data object when content is not present in the response', async () => {
+test('it returns sha without content for directory responses', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.repos.getContent.mockResolvedValue({
+    data: { sha: 'dir-sha-1', type: 'dir' },
+  });
+
+  const result = await client.repos.getContent({
+    owner: 'o',
+    repo: 'r',
+    path: 'docs/',
+    ref: 'main',
+  });
+
+  expect(result.data.sha).toBe('dir-sha-1');
+  expect(result.data.content).toBeUndefined();
+});
+
+test('it returns an empty data object when neither content nor sha is present', async () => {
   const { client, mockOctokit } = setupTest();
 
   mockOctokit.repos.getContent.mockResolvedValue({
@@ -441,21 +682,27 @@ test('it returns an empty data object when content is not present in the respons
   });
 
   expect(result.data.content).toBeUndefined();
+  expect(result.data.sha).toBeUndefined();
 });
 
 // ---------------------------------------------------------------------------
 // Checks
 // ---------------------------------------------------------------------------
 
-test('it delegates check runs listing and returns the narrowed result', async () => {
+test('it delegates check runs listing and returns the narrowed result with name and details url', async () => {
   const { client, mockOctokit } = setupTest();
 
   mockOctokit.checks.listForRef.mockResolvedValue({
     data: {
       total_count: 2,
       check_runs: [
-        { status: 'completed', conclusion: 'success', name: 'CI' },
-        { status: 'in_progress', conclusion: null, name: 'Lint' },
+        {
+          status: 'completed',
+          conclusion: 'success',
+          name: 'CI',
+          details_url: 'https://ci.example.com/1',
+        },
+        { status: 'in_progress', conclusion: null, name: 'Lint', details_url: undefined },
       ],
     },
   });
@@ -466,8 +713,11 @@ test('it delegates check runs listing and returns the narrowed result', async ()
   expect(mockOctokit.checks.listForRef).toHaveBeenCalledWith(params);
   expect(result.data.total_count).toBe(2);
   expect(result.data.check_runs).toHaveLength(2);
-  expect(result.data.check_runs[0]?.status).toBe('completed');
+  expect(result.data.check_runs[0]?.name).toBe('CI');
+  expect(result.data.check_runs[0]?.details_url).toBe('https://ci.example.com/1');
   expect(result.data.check_runs[0]?.conclusion).toBe('success');
+  expect(result.data.check_runs[1]?.name).toBe('Lint');
+  expect(result.data.check_runs[1]?.details_url).toBeNull();
   expect(result.data.check_runs[1]?.conclusion).toBeNull();
 });
 
@@ -514,6 +764,126 @@ test('it delegates ref retrieval and returns the narrowed result', async () => {
 
   expect(mockOctokit.git.getRef).toHaveBeenCalledWith(params);
   expect(result.data.object.sha).toBe('commit-sha-1');
+});
+
+test('it delegates blob retrieval and returns the narrowed result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.git.getBlob.mockResolvedValue({
+    data: {
+      content: 'base64data',
+      encoding: 'base64',
+      sha: 'blob-sha',
+      size: 42,
+    },
+  });
+
+  const params = { owner: 'o', repo: 'r', file_sha: 'blob-sha' };
+  const result = await client.git.getBlob(params);
+
+  expect(mockOctokit.git.getBlob).toHaveBeenCalledWith(params);
+  expect(result.data.content).toBe('base64data');
+  expect(result.data.encoding).toBe('base64');
+});
+
+test('it delegates commit retrieval and returns the narrowed result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.git.getCommit.mockResolvedValue({
+    data: {
+      sha: 'commit-sha',
+      tree: { sha: 'tree-sha', url: 'https://api.github.com/...' },
+      message: 'test commit',
+    },
+  });
+
+  const params = { owner: 'o', repo: 'r', commit_sha: 'commit-sha' };
+  const result = await client.git.getCommit(params);
+
+  expect(mockOctokit.git.getCommit).toHaveBeenCalledWith(params);
+  expect(result.data.sha).toBe('commit-sha');
+  expect(result.data.tree.sha).toBe('tree-sha');
+});
+
+test('it delegates blob creation and returns the narrowed result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.git.createBlob.mockResolvedValue({
+    data: { sha: 'new-blob-sha', url: 'https://api.github.com/...' },
+  });
+
+  const params = { owner: 'o', repo: 'r', content: 'file content', encoding: 'utf-8' };
+  const result = await client.git.createBlob(params);
+
+  expect(mockOctokit.git.createBlob).toHaveBeenCalledWith(params);
+  expect(result.data.sha).toBe('new-blob-sha');
+});
+
+test('it delegates tree creation and returns the narrowed result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.git.createTree.mockResolvedValue({
+    data: { sha: 'new-tree-sha', url: 'https://api.github.com/...' },
+  });
+
+  const params: GitCreateTreeParams = {
+    owner: 'o',
+    repo: 'r',
+    base_tree: 'base-sha',
+    tree: [{ path: 'src/index.ts', mode: '100644', type: 'blob', sha: 'blob-sha' }],
+  };
+  const result = await client.git.createTree(params);
+
+  expect(mockOctokit.git.createTree).toHaveBeenCalledWith(params);
+  expect(result.data.sha).toBe('new-tree-sha');
+});
+
+test('it delegates commit creation and returns the narrowed result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.git.createCommit.mockResolvedValue({
+    data: { sha: 'new-commit-sha', url: 'https://api.github.com/...' },
+  });
+
+  const params = {
+    owner: 'o',
+    repo: 'r',
+    message: 'test commit',
+    tree: 'tree-sha',
+    parents: ['parent-sha'],
+  };
+  const result = await client.git.createCommit(params);
+
+  expect(mockOctokit.git.createCommit).toHaveBeenCalledWith(params);
+  expect(result.data.sha).toBe('new-commit-sha');
+});
+
+test('it delegates ref creation and returns the result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.git.createRef.mockResolvedValue({
+    data: { ref: 'refs/heads/new-branch', object: { sha: 'sha' } },
+  });
+
+  const params = { owner: 'o', repo: 'r', ref: 'refs/heads/new-branch', sha: 'sha' };
+  const result = await client.git.createRef(params);
+
+  expect(mockOctokit.git.createRef).toHaveBeenCalledWith(params);
+  expect(result.data).toStrictEqual({ ref: 'refs/heads/new-branch', object: { sha: 'sha' } });
+});
+
+test('it delegates ref update and returns the result', async () => {
+  const { client, mockOctokit } = setupTest();
+
+  mockOctokit.git.updateRef.mockResolvedValue({
+    data: { ref: 'refs/heads/branch', object: { sha: 'new-sha' } },
+  });
+
+  const params = { owner: 'o', repo: 'r', ref: 'heads/branch', sha: 'new-sha', force: true };
+  const result = await client.git.updateRef(params);
+
+  expect(mockOctokit.git.updateRef).toHaveBeenCalledWith(params);
+  expect(result.data).toStrictEqual({ ref: 'refs/heads/branch', object: { sha: 'new-sha' } });
 });
 
 // ---------------------------------------------------------------------------

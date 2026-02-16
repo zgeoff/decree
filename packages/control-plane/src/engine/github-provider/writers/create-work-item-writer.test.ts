@@ -1,117 +1,98 @@
 import { expect, test, vi } from 'vitest';
-import type { WorkItemWriterDeps, WorkItemWriterOctokit } from './create-work-item-writer.ts';
+import { createMockGitHubClient } from '../../../test-utils/create-mock-github-client.ts';
+import type { WorkItemWriterConfig } from './create-work-item-writer.ts';
 import { createWorkItemWriter } from './create-work-item-writer.ts';
 
-function buildMockOctokit(): WorkItemWriterOctokit {
-  return {
-    issues: {
-      get: vi.fn(),
-      create: vi.fn(),
-      update: vi.fn(),
-      listLabelsOnIssue: vi.fn(),
-      addLabels: vi.fn(),
-      removeLabel: vi.fn(),
-    },
-  };
+function buildConfig(): WorkItemWriterConfig {
+  return { owner: 'test-owner', repo: 'test-repo' };
 }
 
 function setupTest(): {
-  deps: WorkItemWriterDeps;
-  octokit: WorkItemWriterOctokit;
+  writer: ReturnType<typeof createWorkItemWriter>;
+  client: ReturnType<typeof createMockGitHubClient>;
 } {
-  const octokit = buildMockOctokit();
-  const deps: WorkItemWriterDeps = {
-    octokit,
-    config: {
-      owner: 'test-owner',
-      repo: 'test-repo',
-    },
-  };
-
-  return { deps, octokit };
+  const client = createMockGitHubClient();
+  const writer = createWorkItemWriter({ client, config: buildConfig() });
+  return { writer, client };
 }
 
 // --- transitionStatus ---
 
 test('it removes the old status label and adds the new one when transitioning status', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.listLabelsOnIssue).mockResolvedValue({
+  vi.mocked(client.issues.listLabelsOnIssue).mockResolvedValue({
     data: [{ name: 'status:pending' }, { name: 'task:implement' }],
   });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({});
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({});
+  vi.mocked(client.issues.removeLabel).mockResolvedValue({ data: {} });
+  vi.mocked(client.issues.addLabels).mockResolvedValue({ data: {} });
 
-  const writer = createWorkItemWriter(deps);
   await writer.transitionStatus('42', 'in-progress');
 
-  expect(octokit.issues.removeLabel).toHaveBeenCalledWith(
+  expect(client.issues.removeLabel).toHaveBeenCalledWith(
     expect.objectContaining({ issue_number: 42, name: 'status:pending' }),
   );
-  expect(octokit.issues.addLabels).toHaveBeenCalledWith(
+  expect(client.issues.addLabels).toHaveBeenCalledWith(
     expect.objectContaining({ issue_number: 42, labels: ['status:in-progress'] }),
   );
 });
 
 test('it closes the issue when transitioning to closed status', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.listLabelsOnIssue).mockResolvedValue({
+  vi.mocked(client.issues.listLabelsOnIssue).mockResolvedValue({
     data: [{ name: 'status:review' }],
   });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({});
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({});
-  vi.mocked(octokit.issues.update).mockResolvedValue({
+  vi.mocked(client.issues.removeLabel).mockResolvedValue({ data: {} });
+  vi.mocked(client.issues.addLabels).mockResolvedValue({ data: {} });
+  vi.mocked(client.issues.update).mockResolvedValue({
     data: { number: 42, title: 'Test', labels: [], body: '', created_at: '' },
   });
 
-  const writer = createWorkItemWriter(deps);
   await writer.transitionStatus('42', 'closed');
 
-  expect(octokit.issues.addLabels).toHaveBeenCalledWith(
+  expect(client.issues.addLabels).toHaveBeenCalledWith(
     expect.objectContaining({ labels: ['status:closed'] }),
   );
-  expect(octokit.issues.update).toHaveBeenCalledWith(
+  expect(client.issues.update).toHaveBeenCalledWith(
     expect.objectContaining({ issue_number: 42, state: 'closed' }),
   );
 });
 
 test('it does not close the issue when transitioning to a non-closed status', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.listLabelsOnIssue).mockResolvedValue({
+  vi.mocked(client.issues.listLabelsOnIssue).mockResolvedValue({
     data: [{ name: 'status:pending' }],
   });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({});
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({});
+  vi.mocked(client.issues.removeLabel).mockResolvedValue({ data: {} });
+  vi.mocked(client.issues.addLabels).mockResolvedValue({ data: {} });
 
-  const writer = createWorkItemWriter(deps);
   await writer.transitionStatus('42', 'in-progress');
 
-  expect(octokit.issues.update).not.toHaveBeenCalled();
+  expect(client.issues.update).not.toHaveBeenCalled();
 });
 
 test('it removes multiple status labels when more than one exists', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.listLabelsOnIssue).mockResolvedValue({
+  vi.mocked(client.issues.listLabelsOnIssue).mockResolvedValue({
     data: [{ name: 'status:pending' }, { name: 'status:blocked' }],
   });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({});
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({});
+  vi.mocked(client.issues.removeLabel).mockResolvedValue({ data: {} });
+  vi.mocked(client.issues.addLabels).mockResolvedValue({ data: {} });
 
-  const writer = createWorkItemWriter(deps);
   await writer.transitionStatus('5', 'review');
 
-  expect(octokit.issues.removeLabel).toHaveBeenCalledTimes(2);
+  expect(client.issues.removeLabel).toHaveBeenCalledTimes(2);
 });
 
 // --- createWorkItem ---
 
 test('it appends dependency metadata comment when blockedBy is non-empty', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.create).mockResolvedValue({
+  vi.mocked(client.issues.create).mockResolvedValue({
     data: {
       number: 99,
       title: 'New task',
@@ -121,10 +102,9 @@ test('it appends dependency metadata comment when blockedBy is non-empty', async
     },
   });
 
-  const writer = createWorkItemWriter(deps);
   await writer.createWorkItem('New task', 'Task body', [], ['42', '43']);
 
-  expect(octokit.issues.create).toHaveBeenCalledWith(
+  expect(client.issues.create).toHaveBeenCalledWith(
     expect.objectContaining({
       body: 'Task body\n\n<!-- decree:blockedBy #42 #43 -->',
       labels: ['task:implement'],
@@ -133,9 +113,9 @@ test('it appends dependency metadata comment when blockedBy is non-empty', async
 });
 
 test('it does not include a dependency metadata comment when blockedBy is empty', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.create).mockResolvedValue({
+  vi.mocked(client.issues.create).mockResolvedValue({
     data: {
       number: 100,
       title: 'Simple task',
@@ -145,10 +125,9 @@ test('it does not include a dependency metadata comment when blockedBy is empty'
     },
   });
 
-  const writer = createWorkItemWriter(deps);
   await writer.createWorkItem('Simple task', 'Simple body', [], []);
 
-  expect(octokit.issues.create).toHaveBeenCalledWith(
+  expect(client.issues.create).toHaveBeenCalledWith(
     expect.objectContaining({
       body: 'Simple body',
     }),
@@ -156,9 +135,9 @@ test('it does not include a dependency metadata comment when blockedBy is empty'
 });
 
 test('it always includes the task:implement label in created issues', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.create).mockResolvedValue({
+  vi.mocked(client.issues.create).mockResolvedValue({
     data: {
       number: 101,
       title: 'Task',
@@ -168,10 +147,9 @@ test('it always includes the task:implement label in created issues', async () =
     },
   });
 
-  const writer = createWorkItemWriter(deps);
   await writer.createWorkItem('Task', 'Body', ['custom-label'], []);
 
-  expect(octokit.issues.create).toHaveBeenCalledWith(
+  expect(client.issues.create).toHaveBeenCalledWith(
     expect.objectContaining({
       labels: ['task:implement', 'custom-label'],
     }),
@@ -179,9 +157,9 @@ test('it always includes the task:implement label in created issues', async () =
 });
 
 test('it returns the created issue as a mapped work item', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.create).mockResolvedValue({
+  vi.mocked(client.issues.create).mockResolvedValue({
     data: {
       number: 50,
       title: 'Created task',
@@ -191,7 +169,6 @@ test('it returns the created issue as a mapped work item', async () => {
     },
   });
 
-  const writer = createWorkItemWriter(deps);
   const result = await writer.createWorkItem('Created task', 'Task content', [], ['10']);
 
   expect(result).toStrictEqual({
@@ -209,9 +186,9 @@ test('it returns the created issue as a mapped work item', async () => {
 // --- updateWorkItem ---
 
 test('it preserves existing dependency metadata when updating the body', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.get).mockResolvedValue({
+  vi.mocked(client.issues.get).mockResolvedValue({
     data: {
       number: 42,
       title: 'Test',
@@ -220,14 +197,13 @@ test('it preserves existing dependency metadata when updating the body', async (
       created_at: '',
     },
   });
-  vi.mocked(octokit.issues.update).mockResolvedValue({
+  vi.mocked(client.issues.update).mockResolvedValue({
     data: { number: 42, title: 'Test', labels: [], body: '', created_at: '' },
   });
 
-  const writer = createWorkItemWriter(deps);
   await writer.updateWorkItem('42', 'New content', null);
 
-  expect(octokit.issues.update).toHaveBeenCalledWith(
+  expect(client.issues.update).toHaveBeenCalledWith(
     expect.objectContaining({
       body: 'New content\n\n<!-- decree:blockedBy #10 #20 -->',
     }),
@@ -235,30 +211,28 @@ test('it preserves existing dependency metadata when updating the body', async (
 });
 
 test('it makes no api calls when both body and labels are null', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  const writer = createWorkItemWriter(deps);
   await writer.updateWorkItem('42', null, null);
 
-  expect(octokit.issues.get).not.toHaveBeenCalled();
-  expect(octokit.issues.update).not.toHaveBeenCalled();
-  expect(octokit.issues.listLabelsOnIssue).not.toHaveBeenCalled();
+  expect(client.issues.get).not.toHaveBeenCalled();
+  expect(client.issues.update).not.toHaveBeenCalled();
+  expect(client.issues.listLabelsOnIssue).not.toHaveBeenCalled();
 });
 
 test('it preserves reserved labels when updating labels', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.listLabelsOnIssue).mockResolvedValue({
+  vi.mocked(client.issues.listLabelsOnIssue).mockResolvedValue({
     data: [{ name: 'task:implement' }, { name: 'status:in-progress' }, { name: 'old-label' }],
   });
-  vi.mocked(octokit.issues.update).mockResolvedValue({
+  vi.mocked(client.issues.update).mockResolvedValue({
     data: { number: 42, title: 'Test', labels: [], body: '', created_at: '' },
   });
 
-  const writer = createWorkItemWriter(deps);
   await writer.updateWorkItem('42', null, ['new-label']);
 
-  expect(octokit.issues.update).toHaveBeenCalledWith(
+  expect(client.issues.update).toHaveBeenCalledWith(
     expect.objectContaining({
       labels: ['task:implement', 'status:in-progress', 'new-label'],
     }),
@@ -266,9 +240,9 @@ test('it preserves reserved labels when updating labels', async () => {
 });
 
 test('it updates only the body when labels is null', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.get).mockResolvedValue({
+  vi.mocked(client.issues.get).mockResolvedValue({
     data: {
       number: 42,
       title: 'Test',
@@ -277,34 +251,32 @@ test('it updates only the body when labels is null', async () => {
       created_at: '',
     },
   });
-  vi.mocked(octokit.issues.update).mockResolvedValue({
+  vi.mocked(client.issues.update).mockResolvedValue({
     data: { number: 42, title: 'Test', labels: [], body: '', created_at: '' },
   });
 
-  const writer = createWorkItemWriter(deps);
   await writer.updateWorkItem('42', 'Updated body', null);
 
-  expect(octokit.issues.update).toHaveBeenCalledWith(
+  expect(client.issues.update).toHaveBeenCalledWith(
     expect.objectContaining({ body: 'Updated body' }),
   );
-  expect(octokit.issues.listLabelsOnIssue).not.toHaveBeenCalled();
+  expect(client.issues.listLabelsOnIssue).not.toHaveBeenCalled();
 });
 
 test('it updates only the labels when body is null', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.listLabelsOnIssue).mockResolvedValue({
+  vi.mocked(client.issues.listLabelsOnIssue).mockResolvedValue({
     data: [{ name: 'status:pending' }],
   });
-  vi.mocked(octokit.issues.update).mockResolvedValue({
+  vi.mocked(client.issues.update).mockResolvedValue({
     data: { number: 42, title: 'Test', labels: [], body: '', created_at: '' },
   });
 
-  const writer = createWorkItemWriter(deps);
   await writer.updateWorkItem('42', null, ['feature']);
 
-  expect(octokit.issues.get).not.toHaveBeenCalled();
-  expect(octokit.issues.update).toHaveBeenCalledWith(
+  expect(client.issues.get).not.toHaveBeenCalled();
+  expect(client.issues.update).toHaveBeenCalledWith(
     expect.objectContaining({
       labels: ['status:pending', 'feature'],
     }),
@@ -312,9 +284,9 @@ test('it updates only the labels when body is null', async () => {
 });
 
 test('it preserves body without metadata when issue has no dependency comment', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
-  vi.mocked(octokit.issues.get).mockResolvedValue({
+  vi.mocked(client.issues.get).mockResolvedValue({
     data: {
       number: 42,
       title: 'Test',
@@ -323,35 +295,33 @@ test('it preserves body without metadata when issue has no dependency comment', 
       created_at: '',
     },
   });
-  vi.mocked(octokit.issues.update).mockResolvedValue({
+  vi.mocked(client.issues.update).mockResolvedValue({
     data: { number: 42, title: 'Test', labels: [], body: '', created_at: '' },
   });
 
-  const writer = createWorkItemWriter(deps);
   await writer.updateWorkItem('42', 'New content', null);
 
-  expect(octokit.issues.update).toHaveBeenCalledWith(
+  expect(client.issues.update).toHaveBeenCalledWith(
     expect.objectContaining({ body: 'New content' }),
   );
 });
 
 test('it wraps api calls with the retry utility', async () => {
-  const { deps, octokit } = setupTest();
+  const { writer, client } = setupTest();
 
   const transientError = { status: 500 };
-  vi.mocked(octokit.issues.listLabelsOnIssue)
+  vi.mocked(client.issues.listLabelsOnIssue)
     .mockRejectedValueOnce(transientError)
     .mockResolvedValue({ data: [] });
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({});
+  vi.mocked(client.issues.addLabels).mockResolvedValue({ data: {} });
 
   vi.useFakeTimers();
 
-  const writer = createWorkItemWriter(deps);
   const promise = writer.transitionStatus('1', 'ready');
 
   await vi.advanceTimersByTimeAsync(3000);
 
   await promise;
 
-  expect(octokit.issues.listLabelsOnIssue).toHaveBeenCalledTimes(2);
+  expect(client.issues.listLabelsOnIssue).toHaveBeenCalledTimes(2);
 });

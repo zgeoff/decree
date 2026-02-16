@@ -48,7 +48,7 @@ function buildSuccessCIResponse(): {
     checkRuns: {
       data: {
         total_count: 1,
-        check_runs: [{ status: 'completed', conclusion: 'success' }],
+        check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success', details_url: null }],
       },
     },
   };
@@ -63,7 +63,7 @@ function buildPendingCIResponse(): {
     checkRuns: {
       data: {
         total_count: 1,
-        check_runs: [{ status: 'in_progress', conclusion: null }],
+        check_runs: [{ name: 'ci', status: 'in_progress', conclusion: null, details_url: null }],
       },
     },
   };
@@ -78,7 +78,7 @@ function buildFailureCIResponse(): {
     checkRuns: {
       data: {
         total_count: 1,
-        check_runs: [{ status: 'completed', conclusion: 'failure' }],
+        check_runs: [{ name: 'ci', status: 'completed', conclusion: 'failure', details_url: null }],
       },
     },
   };
@@ -705,8 +705,8 @@ test('it derives failure when a check run has a failure conclusion', async () =>
     data: {
       total_count: 2,
       check_runs: [
-        { status: 'completed', conclusion: 'success' },
-        { status: 'completed', conclusion: 'failure' },
+        { name: 'ci', status: 'completed', conclusion: 'success', details_url: null },
+        { name: 'ci', status: 'completed', conclusion: 'failure', details_url: null },
       ],
     },
   });
@@ -730,7 +730,7 @@ test('it derives failure when a check run has a cancelled conclusion', async () 
   vi.mocked(client.checks.listForRef).mockResolvedValue({
     data: {
       total_count: 1,
-      check_runs: [{ status: 'completed', conclusion: 'cancelled' }],
+      check_runs: [{ name: 'ci', status: 'completed', conclusion: 'cancelled', details_url: null }],
     },
   });
 
@@ -753,7 +753,7 @@ test('it derives failure when a check run has a timed out conclusion', async () 
   vi.mocked(client.checks.listForRef).mockResolvedValue({
     data: {
       total_count: 1,
-      check_runs: [{ status: 'completed', conclusion: 'timed_out' }],
+      check_runs: [{ name: 'ci', status: 'completed', conclusion: 'timed_out', details_url: null }],
     },
   });
 
@@ -776,7 +776,7 @@ test('it derives pending when a check run is not yet completed', async () => {
   vi.mocked(client.checks.listForRef).mockResolvedValue({
     data: {
       total_count: 1,
-      check_runs: [{ status: 'queued', conclusion: null }],
+      check_runs: [{ name: 'ci', status: 'queued', conclusion: null, details_url: null }],
     },
   });
 
@@ -819,7 +819,7 @@ test('it derives pending when combined status is pending with real statuses', as
   vi.mocked(client.checks.listForRef).mockResolvedValue({
     data: {
       total_count: 1,
-      check_runs: [{ status: 'completed', conclusion: 'success' }],
+      check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success', details_url: null }],
     },
   });
 
@@ -880,11 +880,19 @@ test('it tracks CI status independently for each PR', async () => {
   vi.mocked(client.checks.listForRef).mockImplementation(async (params) => {
     if (params.ref === 'sha-1') {
       return {
-        data: { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+        data: {
+          total_count: 1,
+          check_runs: [
+            { name: 'ci', status: 'completed', conclusion: 'success', details_url: null },
+          ],
+        },
       };
     }
     return {
-      data: { total_count: 1, check_runs: [{ status: 'in_progress', conclusion: null }] },
+      data: {
+        total_count: 1,
+        check_runs: [{ name: 'ci', status: 'in_progress', conclusion: null, details_url: null }],
+      },
     };
   });
 
