@@ -582,7 +582,7 @@ test('it does not pass a model override when dispatching an implementor for an i
 // Command routing: dispatchReviewer
 // ---------------------------------------------------------------------------
 
-test('it does not auto-dispatch a reviewer when the issue is in review status', async () => {
+test('it does not auto-dispatch a reviewer when the issue is in review status at startup', async () => {
   const issues = [buildMockIssueData(42, 'review')];
   const { engine, events } = setupTest(issues);
 
@@ -592,6 +592,450 @@ test('it does not auto-dispatch a reviewer when the issue is in review status', 
     const agentStarted = events.filter((e) => e.type === 'agentStarted');
     expect(agentStarted.length).toBe(0);
   });
+});
+
+test('it auto-dispatches a reviewer when an issue transitions to review externally', async () => {
+  vi.useFakeTimers();
+
+  const octokit = createMockGitHubClient();
+  const mockQueries: MockQuery[] = [];
+  const worktreeManager = createMockWorktreeManager();
+
+  let pollCount = 0;
+  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
+    if (params.labels.includes('status:in-progress')) {
+      return { data: [] };
+    }
+    pollCount += 1;
+    if (pollCount === 1) {
+      return { data: [buildMockIssueData(42, 'in-progress')] };
+    }
+    // Second poll: external transition to review
+    return { data: [buildMockIssueData(42, 'review')] };
+  });
+  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
+  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
+  vi.mocked(octokit.git.getTree).mockResolvedValue({
+    data: { sha: 'tree-sha-1', tree: [] },
+  });
+  vi.mocked(octokit.git.getRef).mockResolvedValue({
+    data: { object: { sha: 'commit-sha-1' } },
+  });
+  vi.mocked(octokit.pulls.list).mockResolvedValue({
+    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
+  });
+  vi.mocked(octokit.pulls.get).mockResolvedValue({
+    data: {
+      number: 100,
+      title: 'PR for #42',
+      changed_files: 3,
+      html_url: 'https://github.com/owner/repo/pull/100',
+      head: { sha: 'sha-42', ref: 'issue-42-branch' },
+      draft: false,
+    },
+  });
+  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
+    data: { state: 'pending', total_count: 0 },
+  });
+  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
+    data: { total_count: 0, check_runs: [] },
+  });
+  vi.mocked(octokit.repos.getContent).mockResolvedValue({ data: { content: '' } });
+  vi.mocked(octokit.issues.get).mockResolvedValue({
+    data: buildMockIssueData(42, 'review'),
+  });
+  vi.mocked(octokit.pulls.listFiles).mockResolvedValue({ data: [] });
+  vi.mocked(octokit.pulls.listReviews).mockResolvedValue({ data: [] });
+  vi.mocked(octokit.pulls.listReviewComments).mockResolvedValue({ data: [] });
+
+  const queryFactory: QueryFactory = async () => {
+    const q = createMockQuery();
+    q.pushMessage({
+      type: 'system',
+      subtype: 'init',
+      session_id: `session-${mockQueries.length + 1}`,
+    });
+    mockQueries.push(q);
+    return q;
+  };
+
+  const config = buildValidConfig({ issuePoller: { pollInterval: 1 } });
+
+  const engine = createEngine(config, {
+    octokit,
+    queryFactory,
+    repoRoot: '/tmp/test-repo',
+    worktreeManager,
+    execCommand: async (): Promise<void> => {
+      // Mock yarn install — always succeeds in tests
+    },
+  });
+
+  const events: EngineEvent[] = [];
+  engine.on((event) => {
+    events.push(event);
+  });
+
+  await engine.start();
+
+  // Advance past the poll interval to trigger the second cycle (status: review)
+  await vi.advanceTimersByTimeAsync(1500);
+
+  const reviewerStarted = events.filter(
+    (e) => e.type === 'agentStarted' && 'agentType' in e && e.agentType === 'reviewer',
+  );
+  expect(reviewerStarted.length).toBe(1);
+
+  engine.send({ command: 'shutdown' });
+});
+
+test('it does not auto-dispatch a reviewer when an agent is already running for the issue', async () => {
+  vi.useFakeTimers();
+
+  const octokit = createMockGitHubClient();
+  const mockQueries: MockQuery[] = [];
+  const worktreeManager = createMockWorktreeManager();
+
+  let pollCount = 0;
+  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
+    if (params.labels.includes('status:in-progress')) {
+      return { data: [] };
+    }
+    pollCount += 1;
+    if (pollCount === 1) {
+      return { data: [buildMockIssueData(42, 'pending')] };
+    }
+    // Second poll: transition to review
+    return { data: [buildMockIssueData(42, 'review')] };
+  });
+  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
+  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
+  vi.mocked(octokit.git.getTree).mockResolvedValue({
+    data: { sha: 'tree-sha-1', tree: [] },
+  });
+  vi.mocked(octokit.git.getRef).mockResolvedValue({
+    data: { object: { sha: 'commit-sha-1' } },
+  });
+  vi.mocked(octokit.pulls.list).mockResolvedValue({
+    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
+  });
+  vi.mocked(octokit.pulls.get).mockResolvedValue({
+    data: {
+      number: 100,
+      title: 'PR for #42',
+      changed_files: 3,
+      html_url: 'https://github.com/owner/repo/pull/100',
+      head: { sha: 'sha-42', ref: 'issue-42-branch' },
+      draft: false,
+    },
+  });
+  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
+    data: { state: 'pending', total_count: 0 },
+  });
+  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
+    data: { total_count: 0, check_runs: [] },
+  });
+  vi.mocked(octokit.repos.getContent).mockResolvedValue({ data: { content: '' } });
+  vi.mocked(octokit.issues.get).mockResolvedValue({
+    data: buildMockIssueData(42, 'review'),
+  });
+  vi.mocked(octokit.pulls.listFiles).mockResolvedValue({ data: [] });
+  vi.mocked(octokit.pulls.listReviews).mockResolvedValue({ data: [] });
+  vi.mocked(octokit.pulls.listReviewComments).mockResolvedValue({ data: [] });
+
+  const queryFactory: QueryFactory = async () => {
+    const q = createMockQuery();
+    // Send init but don't auto-complete — agent stays running
+    q.pushMessage({
+      type: 'system',
+      subtype: 'init',
+      session_id: `session-${mockQueries.length + 1}`,
+    });
+    mockQueries.push(q);
+    return q;
+  };
+
+  const config = buildValidConfig({ issuePoller: { pollInterval: 1 } });
+
+  const engine = createEngine(config, {
+    octokit,
+    queryFactory,
+    repoRoot: '/tmp/test-repo',
+    worktreeManager,
+    execCommand: async (): Promise<void> => {
+      // Mock yarn install — always succeeds in tests
+    },
+  });
+
+  const events: EngineEvent[] = [];
+  engine.on((event) => {
+    events.push(event);
+  });
+
+  await engine.start();
+
+  // Manually dispatch an implementor — it stays running (no auto-complete)
+  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
+  await vi.advanceTimersByTimeAsync(0);
+
+  const implementorStarted = events.filter(
+    (e) => e.type === 'agentStarted' && 'agentType' in e && e.agentType === 'implementor',
+  );
+  expect(implementorStarted.length).toBe(1);
+
+  // Advance past the poll interval — issue transitions to review but agent is running
+  await vi.advanceTimersByTimeAsync(1500);
+
+  const reviewerStarted = events.filter(
+    (e) => e.type === 'agentStarted' && 'agentType' in e && e.agentType === 'reviewer',
+  );
+  expect(reviewerStarted.length).toBe(0);
+
+  engine.send({ command: 'shutdown' });
+});
+
+test('it auto-dispatches an implementor when an issue transitions to unblocked', async () => {
+  vi.useFakeTimers();
+
+  const octokit = createMockGitHubClient();
+  const mockQueries: MockQuery[] = [];
+  const capturedQueryParams: QueryFactoryParams[] = [];
+  const worktreeManager = createMockWorktreeManager();
+
+  let pollCount = 0;
+  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
+    if (params.labels.includes('status:in-progress')) {
+      return { data: [] };
+    }
+    pollCount += 1;
+    if (pollCount === 1) {
+      return { data: [buildMockIssueData(42, 'blocked')] };
+    }
+    // Second poll: external transition to unblocked
+    return { data: [buildMockIssueData(42, 'unblocked')] };
+  });
+  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
+  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
+  vi.mocked(octokit.git.getTree).mockResolvedValue({
+    data: { sha: 'tree-sha-1', tree: [] },
+  });
+  vi.mocked(octokit.git.getRef).mockResolvedValue({
+    data: { object: { sha: 'commit-sha-1' } },
+  });
+  vi.mocked(octokit.pulls.list).mockResolvedValue({
+    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
+  });
+  vi.mocked(octokit.pulls.get).mockResolvedValue({
+    data: {
+      number: 100,
+      title: 'PR for #42',
+      changed_files: 3,
+      html_url: 'https://github.com/owner/repo/pull/100',
+      head: { sha: 'sha-42', ref: 'issue-42-branch' },
+      draft: false,
+    },
+  });
+  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
+    data: { state: 'pending', total_count: 0 },
+  });
+  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
+    data: { total_count: 0, check_runs: [] },
+  });
+  vi.mocked(octokit.repos.getContent).mockResolvedValue({ data: { content: '' } });
+  vi.mocked(octokit.issues.get).mockResolvedValue({
+    data: buildMockIssueData(42, 'unblocked'),
+  });
+  vi.mocked(octokit.pulls.listFiles).mockResolvedValue({ data: [] });
+  vi.mocked(octokit.pulls.listReviews).mockResolvedValue({ data: [] });
+  vi.mocked(octokit.pulls.listReviewComments).mockResolvedValue({ data: [] });
+
+  const queryFactory: QueryFactory = async (params: QueryFactoryParams) => {
+    capturedQueryParams.push(params);
+    const q = createMockQuery();
+    q.pushMessage({
+      type: 'system',
+      subtype: 'init',
+      session_id: `session-${mockQueries.length + 1}`,
+    });
+    q.pushMessage({ type: 'result', subtype: 'success' });
+    q.end();
+    mockQueries.push(q);
+    return q;
+  };
+
+  const config = buildValidConfig({ issuePoller: { pollInterval: 1 } });
+
+  const engine = createEngine(config, {
+    octokit,
+    queryFactory,
+    repoRoot: '/tmp/test-repo',
+    worktreeManager,
+    execCommand: async (): Promise<void> => {
+      // Mock yarn install — always succeeds in tests
+    },
+  });
+
+  const events: EngineEvent[] = [];
+  engine.on((event) => {
+    events.push(event);
+  });
+
+  await engine.start();
+
+  // Advance past the poll interval to trigger the second cycle (status: unblocked)
+  await vi.advanceTimersByTimeAsync(1500);
+
+  const implementorStarted = events.filter(
+    (e) => e.type === 'agentStarted' && 'agentType' in e && e.agentType === 'implementor',
+  );
+  expect(implementorStarted.length).toBe(1);
+
+  const implementorParams = capturedQueryParams.filter((p) => p.agent === 'implementor');
+  expect(implementorParams.length).toBe(1);
+
+  engine.send({ command: 'shutdown' });
+});
+
+test('it does not auto-dispatch an implementor when the issue is unblocked at startup', async () => {
+  const issues = [buildMockIssueData(42, 'unblocked')];
+  const { engine, events } = setupTest(issues);
+
+  await engine.start();
+
+  await vi.waitFor(() => {
+    const agentStarted = events.filter((e) => e.type === 'agentStarted');
+    expect(agentStarted.length).toBe(0);
+  });
+});
+
+test('it does not auto-dispatch an implementor when an agent is already running for the issue', async () => {
+  vi.useFakeTimers();
+
+  const octokit = createMockGitHubClient();
+  const mockQueries: MockQuery[] = [];
+  const worktreeManager = createMockWorktreeManager();
+
+  let pollCount = 0;
+  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
+    if (params.labels.includes('status:in-progress')) {
+      return { data: [] };
+    }
+    pollCount += 1;
+    if (pollCount === 1) {
+      return { data: [buildMockIssueData(42, 'blocked')] };
+    }
+    // Second poll: transition to unblocked
+    return { data: [buildMockIssueData(42, 'unblocked')] };
+  });
+  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
+  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
+  vi.mocked(octokit.git.getTree).mockResolvedValue({
+    data: { sha: 'tree-sha-1', tree: [] },
+  });
+  vi.mocked(octokit.git.getRef).mockResolvedValue({
+    data: { object: { sha: 'commit-sha-1' } },
+  });
+  vi.mocked(octokit.pulls.list).mockResolvedValue({
+    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
+  });
+  vi.mocked(octokit.pulls.get).mockResolvedValue({
+    data: {
+      number: 100,
+      title: 'PR for #42',
+      changed_files: 3,
+      html_url: 'https://github.com/owner/repo/pull/100',
+      head: { sha: 'sha-42', ref: 'issue-42-branch' },
+      draft: false,
+    },
+  });
+  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
+    data: { state: 'pending', total_count: 0 },
+  });
+  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
+    data: { total_count: 0, check_runs: [] },
+  });
+  vi.mocked(octokit.repos.getContent).mockResolvedValue({ data: { content: '' } });
+  vi.mocked(octokit.issues.get).mockResolvedValue({
+    data: buildMockIssueData(42, 'unblocked'),
+  });
+  vi.mocked(octokit.pulls.listFiles).mockResolvedValue({ data: [] });
+  vi.mocked(octokit.pulls.listReviews).mockResolvedValue({ data: [] });
+  vi.mocked(octokit.pulls.listReviewComments).mockResolvedValue({ data: [] });
+
+  // Use a second issue to have a running agent on issue 42
+  // We'll dispatch a reviewer on issue 42 manually first, then the unblocked transition
+  // should not dispatch another agent.
+  // Actually — simpler: start with issue in blocked + a second issue in review.
+  // Dispatch a reviewer on 42 manually, then transition 42 to unblocked.
+  // But the reviewer won't dispatch because 42 is blocked not review.
+  // Simpler approach: use the queryFactory to keep agents running.
+
+  const queryFactory: QueryFactory = async () => {
+    const q = createMockQuery();
+    // Send init but don't auto-complete — agent stays running
+    q.pushMessage({
+      type: 'system',
+      subtype: 'init',
+      session_id: `session-${mockQueries.length + 1}`,
+    });
+    mockQueries.push(q);
+    return q;
+  };
+
+  const config = buildValidConfig({ issuePoller: { pollInterval: 1 } });
+
+  const engine = createEngine(config, {
+    octokit,
+    queryFactory,
+    repoRoot: '/tmp/test-repo',
+    worktreeManager,
+    execCommand: async (): Promise<void> => {
+      // Mock yarn install — always succeeds in tests
+    },
+  });
+
+  const events: EngineEvent[] = [];
+  engine.on((event) => {
+    events.push(event);
+  });
+
+  await engine.start();
+
+  // Transition issue to unblocked on next poll — but first we need an agent running.
+  // Change the mock so first poll returns 'pending' (dispatchable) then second returns 'unblocked'.
+  // Reset pollCount and mock to: poll 1 = pending, poll 2 = unblocked
+  pollCount = 0;
+  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
+    if (params.labels.includes('status:in-progress')) {
+      return { data: [] };
+    }
+    pollCount += 1;
+    if (pollCount === 1) {
+      return { data: [buildMockIssueData(42, 'pending')] };
+    }
+    return { data: [buildMockIssueData(42, 'unblocked')] };
+  });
+
+  // Force a re-poll to pick up the 'pending' status
+  await vi.advanceTimersByTimeAsync(1500);
+
+  // Manually dispatch an implementor that stays running
+  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
+  await vi.advanceTimersByTimeAsync(0);
+
+  const implementorStarted = events.filter(
+    (e) => e.type === 'agentStarted' && 'agentType' in e && e.agentType === 'implementor',
+  );
+  expect(implementorStarted.length).toBe(1);
+
+  // Next poll: transition to unblocked while implementor is still running
+  await vi.advanceTimersByTimeAsync(1500);
+
+  // Should NOT have dispatched a second agent
+  const allStarted = events.filter((e) => e.type === 'agentStarted');
+  expect(allStarted.length).toBe(1);
+
+  engine.send({ command: 'shutdown' });
 });
 
 test('it is a no-op when dispatching a reviewer for an issue not in review status', async () => {

@@ -453,6 +453,42 @@ function buildEventHandler(deps: EventHandlerDeps): (event: EngineEvent) => Prom
       await deps.agentManager.cancelAgent(event.issueNumber);
     }
 
+    // Auto-dispatch: when an issue transitions to status:review externally (not via
+    // completion-dispatch and not on first detection), dispatch a Reviewer if one isn't
+    // already running for the issue.
+    if (
+      event.type === 'issueStatusChanged' &&
+      event.oldStatus !== null &&
+      event.newStatus === 'review' &&
+      !event.isEngineTransition &&
+      !deps.agentManager.isRunning(event.issueNumber)
+    ) {
+      await handleDispatchReviewer({
+        issueNumber: event.issueNumber,
+        issuePoller: deps.issuePoller,
+        agentManager: deps.agentManager,
+        queriesConfig: deps.queriesConfig,
+        logger: deps.logger,
+      });
+    }
+
+    // Auto-dispatch: when an issue transitions to status:unblocked (not on first
+    // detection), dispatch an Implementor if one isn't already running for the issue.
+    if (
+      event.type === 'issueStatusChanged' &&
+      event.oldStatus !== null &&
+      event.newStatus === 'unblocked' &&
+      !deps.agentManager.isRunning(event.issueNumber)
+    ) {
+      await handleDispatchImplementor({
+        issueNumber: event.issueNumber,
+        issuePoller: deps.issuePoller,
+        agentManager: deps.agentManager,
+        queriesConfig: deps.queriesConfig,
+        logger: deps.logger,
+      });
+    }
+
     if (event.type === 'agentCompleted' && event.agentType === 'planner') {
       await handlePlannerCompleted(deps);
     }
