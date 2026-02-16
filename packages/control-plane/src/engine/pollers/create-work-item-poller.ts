@@ -1,10 +1,15 @@
-import type { WorkItem, WorkItemChanged } from '../state-store/domain-type-stubs.ts';
+import equal from 'fast-deep-equal';
+import type { WorkItem, WorkItemChanged } from '../state-store/types.ts';
+import { buildChangedItemEvent } from '../utils/build-changed-item-event.ts';
+import { buildNewItemEvent } from '../utils/build-new-item-event.ts';
+import { buildRemovedItemEvent } from '../utils/build-removed-item-event.ts';
 import type { WorkItemPoller, WorkItemPollerConfig } from './types.ts';
 
 const MILLISECONDS_PER_SECOND = 1000;
 
 export function createWorkItemPoller(config: WorkItemPollerConfig): WorkItemPoller {
   let timer: ReturnType<typeof setInterval> | null = null;
+  let started = false;
 
   async function poll(): Promise<void> {
     try {
@@ -22,6 +27,13 @@ export function createWorkItemPoller(config: WorkItemPollerConfig): WorkItemPoll
     } catch {
       // Provider reader failed — skip this cycle, next interval proceeds normally
     }
+
+    if (!started) {
+      started = true;
+      timer = setInterval(async () => {
+        await poll();
+      }, config.interval * MILLISECONDS_PER_SECOND);
+    }
   }
 
   function stop(): void {
@@ -30,10 +42,6 @@ export function createWorkItemPoller(config: WorkItemPollerConfig): WorkItemPoll
       timer = null;
     }
   }
-
-  timer = setInterval(async () => {
-    await poll();
-  }, config.interval * MILLISECONDS_PER_SECOND);
 
   return { poll, stop };
 }
@@ -52,7 +60,7 @@ function detectNewAndChangedItems(
 
     if (!storedItem) {
       enqueue(buildNewItemEvent(providerItem));
-    } else if (!isStructurallyEqual(providerItem, storedItem)) {
+    } else if (!equal(providerItem, storedItem)) {
       enqueue(buildChangedItemEvent(providerItem, storedItem));
     }
   }
@@ -68,65 +76,4 @@ function detectRemovedItems(
       enqueue(buildRemovedItemEvent(storedItem));
     }
   }
-}
-
-function buildNewItemEvent(item: WorkItem): WorkItemChanged {
-  return {
-    type: 'workItemChanged',
-    workItemID: item.id,
-    workItem: item,
-    title: item.title,
-    oldStatus: null,
-    newStatus: item.status,
-    priority: item.priority,
-  };
-}
-
-function buildChangedItemEvent(providerItem: WorkItem, storedItem: WorkItem): WorkItemChanged {
-  return {
-    type: 'workItemChanged',
-    workItemID: providerItem.id,
-    workItem: providerItem,
-    title: providerItem.title,
-    oldStatus: storedItem.status,
-    newStatus: providerItem.status,
-    priority: providerItem.priority,
-  };
-}
-
-function buildRemovedItemEvent(storedItem: WorkItem): WorkItemChanged {
-  return {
-    type: 'workItemChanged',
-    workItemID: storedItem.id,
-    workItem: storedItem,
-    title: storedItem.title,
-    oldStatus: storedItem.status,
-    newStatus: null,
-    priority: storedItem.priority,
-  };
-}
-
-function isStructurallyEqual(a: WorkItem, b: WorkItem): boolean {
-  return (
-    a.id === b.id &&
-    a.title === b.title &&
-    a.status === b.status &&
-    a.priority === b.priority &&
-    a.complexity === b.complexity &&
-    a.createdAt === b.createdAt &&
-    a.linkedRevision === b.linkedRevision &&
-    areBlockedByEqual(a.blockedBy, b.blockedBy)
-  );
-}
-
-function areBlockedByEqual(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) {
-      return false;
-    }
-  }
-  return true;
 }

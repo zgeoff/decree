@@ -185,6 +185,7 @@ const RAW_RUNTIME_STATE =
           ["@types/memoizee", "npm:0.4.12"],\
           ["@types/node", "npm:25.2.2"],\
           ["@types/react", "npm:19.2.13"],\
+          ["fast-deep-equal", "npm:3.1.3"],\
           ["gray-matter", "npm:4.0.3"],\
           ["ink", "virtual:75d118f835cd2246e206e063aaf68da1970f1ec8d47b22f53ef8bfb00ea9ebf27d8c00e54b0d632d703d1a21b89f97efdebd36ca0b5d1eeb4c30d5e3a4163d54#npm:5.2.0"],\
           ["ink-link", "virtual:75d118f835cd2246e206e063aaf68da1970f1ec8d47b22f53ef8bfb00ea9ebf27d8c00e54b0d632d703d1a21b89f97efdebd36ca0b5d1eeb4c30d5e3a4163d54#npm:5.0.0"],\
@@ -2541,6 +2542,15 @@ const RAW_RUNTIME_STATE =
         "packageLocation": "./.yarn/cache/fast-content-type-parse-npm-3.0.0-5ed865fa49-06251880c8.zip/node_modules/fast-content-type-parse/",\
         "packageDependencies": [\
           ["fast-content-type-parse", "npm:3.0.0"]\
+        ],\
+        "linkType": "HARD"\
+      }]\
+    ]],\
+    ["fast-deep-equal", [\
+      ["npm:3.1.3", {\
+        "packageLocation": "./.yarn/cache/fast-deep-equal-npm-3.1.3-790edcfcf5-40dedc862e.zip/node_modules/fast-deep-equal/",\
+        "packageDependencies": [\
+          ["fast-deep-equal", "npm:3.1.3"]\
         ],\
         "linkType": "HARD"\
       }]\

@@ -1,54 +1,45 @@
 import { expect, test, vi } from 'vitest';
-import type { WorkItem, WorkItemChanged } from '../state-store/domain-type-stubs.ts';
-import type { EngineState } from '../state-store/types.ts';
+import { buildWorkItem } from '../../test-utils/build-work-item.ts';
+import type { WorkItem, WorkItemChanged } from '../state-store/types.ts';
 import { createWorkItemPoller } from './create-work-item-poller.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildWorkItem(overrides: Partial<WorkItem> & { id: string }): WorkItem {
-  return {
-    title: `Work item ${overrides.id}`,
-    status: 'pending',
-    priority: null,
-    complexity: null,
-    blockedBy: [],
-    createdAt: '2026-02-01T00:00:00Z',
-    linkedRevision: null,
-    ...overrides,
+interface SetupTestResult {
+  reader: { listWorkItems: ReturnType<typeof vi.fn> };
+  state: {
+    workItems: Map<string, WorkItem>;
+    revisions: Map<never, never>;
+    specs: Map<never, never>;
+    agentRuns: Map<never, never>;
+    errors: never[];
+    lastPlannedSHAs: Map<never, never>;
   };
-}
-
-function buildEmptyState(): EngineState {
-  return {
-    workItems: new Map<string, WorkItem>(),
-    revisions: new Map(),
-    specs: new Map(),
-    agentRuns: new Map(),
-    errors: [],
-    lastPlannedSHAs: new Map(),
-  };
-}
-
-function setupTest(options: { providerItems?: WorkItem[]; storedItems?: WorkItem[] } = {}): {
-  reader: {
-    listWorkItems: ReturnType<typeof vi.fn>;
-    getWorkItem: ReturnType<typeof vi.fn>;
-    getWorkItemBody: ReturnType<typeof vi.fn>;
-  };
-  state: EngineState;
   events: WorkItemChanged[];
   enqueue: ReturnType<typeof vi.fn>;
-  poller: ReturnType<typeof createWorkItemPoller>;
-} {
+  createPoller: () => ReturnType<typeof createWorkItemPoller>;
+}
+
+function setupTest(
+  options: { providerItems?: WorkItem[]; storedItems?: WorkItem[] } = {},
+): SetupTestResult {
   const reader = {
     listWorkItems: vi.fn(),
     getWorkItem: vi.fn(),
     getWorkItemBody: vi.fn(),
   };
 
-  const state = buildEmptyState();
+  const state = {
+    workItems: new Map<string, WorkItem>(),
+    revisions: new Map<never, never>(),
+    specs: new Map<never, never>(),
+    agentRuns: new Map<never, never>(),
+    errors: [] as never[],
+    lastPlannedSHAs: new Map<never, never>(),
+  };
+
   if (options.storedItems) {
     for (const item of options.storedItems) {
       state.workItems.set(item.id, item);
@@ -62,14 +53,16 @@ function setupTest(options: { providerItems?: WorkItem[]; storedItems?: WorkItem
     events.push(event);
   });
 
-  const poller = createWorkItemPoller({
-    reader,
-    getState: () => state,
-    enqueue,
-    interval: 60,
-  });
+  function createPoller(): ReturnType<typeof createWorkItemPoller> {
+    return createWorkItemPoller({
+      reader,
+      getState: () => state,
+      enqueue,
+      interval: 60,
+    });
+  }
 
-  return { reader, state, events, enqueue, poller };
+  return { reader, state, events, enqueue, createPoller };
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +75,8 @@ test('it emits a work item changed event with null old status for each item on t
     buildWorkItem({ id: 'wi-2', title: 'Second task', status: 'review', priority: 'high' }),
   ];
 
-  const { events, poller } = setupTest({ providerItems: items });
+  const { events, createPoller } = setupTest({ providerItems: items });
+  const poller = createPoller();
   await poller.poll();
   poller.stop();
 
@@ -117,11 +111,12 @@ test('it emits a work item changed event when the status changes between polls',
   const storedItem = buildWorkItem({ id: 'wi-1', status: 'pending' });
   const providerItem = buildWorkItem({ id: 'wi-1', status: 'in-progress' });
 
-  const { events, poller } = setupTest({
+  const { events, createPoller } = setupTest({
     providerItems: [providerItem],
     storedItems: [storedItem],
   });
 
+  const poller = createPoller();
   await poller.poll();
   poller.stop();
 
@@ -145,11 +140,12 @@ test('it emits a work item changed event when the title changes but status does 
   const storedItem = buildWorkItem({ id: 'wi-1', title: 'Original title', status: 'pending' });
   const providerItem = buildWorkItem({ id: 'wi-1', title: 'Updated title', status: 'pending' });
 
-  const { events, poller } = setupTest({
+  const { events, createPoller } = setupTest({
     providerItems: [providerItem],
     storedItems: [storedItem],
   });
 
+  const poller = createPoller();
   await poller.poll();
   poller.stop();
 
@@ -172,11 +168,12 @@ test('it emits a work item changed event when the title changes but status does 
 test('it emits a work item changed event with null new status when an item disappears from the provider', async () => {
   const storedItem = buildWorkItem({ id: 'wi-1', status: 'in-progress', priority: 'high' });
 
-  const { events, poller } = setupTest({
+  const { events, createPoller } = setupTest({
     providerItems: [],
     storedItems: [storedItem],
   });
 
+  const poller = createPoller();
   await poller.poll();
   poller.stop();
 
@@ -199,11 +196,12 @@ test('it emits a work item changed event with null new status when an item disap
 test('it emits no events when the provider result is identical to the store', async () => {
   const item = buildWorkItem({ id: 'wi-1' });
 
-  const { events, poller } = setupTest({
+  const { events, createPoller } = setupTest({
     providerItems: [item],
     storedItems: [item],
   });
 
+  const poller = createPoller();
   await poller.poll();
   poller.stop();
 
@@ -215,10 +213,11 @@ test('it emits no events when the provider result is identical to the store', as
 // ---------------------------------------------------------------------------
 
 test('it skips the cycle and emits no events when the provider reader throws', async () => {
-  const { reader, events, poller } = setupTest();
+  const { reader, events, createPoller } = setupTest();
 
   reader.listWorkItems.mockRejectedValue(new Error('Network error'));
 
+  const poller = createPoller();
   await poller.poll();
   poller.stop();
 
@@ -231,7 +230,9 @@ test('it skips the cycle and emits no events when the provider reader throws', a
 
 test('it proceeds normally on the next cycle after a provider error', async () => {
   const item = buildWorkItem({ id: 'wi-1' });
-  const { reader, events, poller } = setupTest();
+  const { reader, events, createPoller } = setupTest();
+
+  const poller = createPoller();
 
   // First poll fails
   reader.listWorkItems.mockRejectedValueOnce(new Error('Transient failure'));
@@ -256,20 +257,39 @@ test('it proceeds normally on the next cycle after a provider error', async () =
 // WorkItemPoller — first cycle is a direct invocation
 // ---------------------------------------------------------------------------
 
-test('it supports direct invocation of poll and awaits completion', async () => {
-  const items = [buildWorkItem({ id: 'wi-1' })];
-  const { events, poller } = setupTest({ providerItems: items });
+test('it does not start the interval timer before the first poll is invoked', async () => {
+  vi.useFakeTimers();
 
-  // Direct invocation — not via interval
-  await poller.poll();
+  const { reader, createPoller } = setupTest({ providerItems: [buildWorkItem({ id: 'wi-1' })] });
+  const poller = createPoller();
+
+  // Advance past one interval without calling poll — no timer should exist yet
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(reader.listWorkItems).not.toHaveBeenCalled();
+
   poller.stop();
+  vi.useRealTimers();
+});
 
-  expect(events).toHaveLength(1);
-  expect(events[0]).toMatchObject({
-    type: 'workItemChanged',
-    workItemID: 'wi-1',
-    oldStatus: null,
+test('it starts interval-based polling only after the first direct poll completes', async () => {
+  vi.useFakeTimers();
+
+  const { reader, events, createPoller } = setupTest({
+    providerItems: [buildWorkItem({ id: 'wi-1' })],
   });
+  const poller = createPoller();
+
+  // Direct invocation — first cycle
+  await poller.poll();
+  expect(reader.listWorkItems).toHaveBeenCalledTimes(1);
+  expect(events).toHaveLength(1);
+
+  // Advance past one interval — second cycle should fire automatically
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(reader.listWorkItems).toHaveBeenCalledTimes(2);
+
+  poller.stop();
+  vi.useRealTimers();
 });
 
 // ---------------------------------------------------------------------------
@@ -277,7 +297,8 @@ test('it supports direct invocation of poll and awaits completion', async () => 
 // ---------------------------------------------------------------------------
 
 test('it exposes poll and stop methods on the returned interface', () => {
-  const { poller } = setupTest();
+  const { createPoller } = setupTest();
+  const poller = createPoller();
 
   expect(typeof poller.poll).toBe('function');
   expect(typeof poller.stop).toBe('function');
@@ -286,23 +307,41 @@ test('it exposes poll and stop methods on the returned interface', () => {
 });
 
 // ---------------------------------------------------------------------------
-// WorkItemPoller — stop clears the interval timer
+// WorkItemPoller — stop prevents subsequent interval polls
 // ---------------------------------------------------------------------------
 
-test('it clears the interval timer when stop is called', () => {
+test('it prevents subsequent interval polls when stop is called after the first poll', async () => {
   vi.useFakeTimers();
 
-  const { reader, poller } = setupTest();
+  const { reader, createPoller } = setupTest({
+    providerItems: [buildWorkItem({ id: 'wi-1' })],
+  });
+  const poller = createPoller();
 
+  // First direct poll starts the interval timer
+  await poller.poll();
+  expect(reader.listWorkItems).toHaveBeenCalledTimes(1);
+
+  // Stop the poller
   poller.stop();
 
-  // Advance time past the interval — poll should not be called
-  vi.advanceTimersByTime(120_000);
-
-  // listWorkItems should not have been called since we stopped before any interval fired
-  expect(reader.listWorkItems).not.toHaveBeenCalled();
+  // Advance time past the interval — no further polls should occur
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(reader.listWorkItems).toHaveBeenCalledTimes(1);
 
   vi.useRealTimers();
+});
+
+// ---------------------------------------------------------------------------
+// WorkItemPoller — stop is safe to call before any poll
+// ---------------------------------------------------------------------------
+
+test('it is safe to call stop before any poll has been invoked', () => {
+  const { createPoller } = setupTest();
+  const poller = createPoller();
+
+  // Should not throw
+  poller.stop();
 });
 
 // ---------------------------------------------------------------------------
@@ -313,11 +352,12 @@ test('it emits a work item changed event when blocked-by dependencies change', a
   const storedItem = buildWorkItem({ id: 'wi-1', blockedBy: ['wi-2'] });
   const providerItem = buildWorkItem({ id: 'wi-1', blockedBy: ['wi-2', 'wi-3'] });
 
-  const { events, poller } = setupTest({
+  const { events, createPoller } = setupTest({
     providerItems: [providerItem],
     storedItems: [storedItem],
   });
 
+  const poller = createPoller();
   await poller.poll();
   poller.stop();
 
@@ -338,11 +378,12 @@ test('it emits a work item changed event when the linked revision changes', asyn
   const storedItem = buildWorkItem({ id: 'wi-1', linkedRevision: null });
   const providerItem = buildWorkItem({ id: 'wi-1', linkedRevision: 'rev-1' });
 
-  const { events, poller } = setupTest({
+  const { events, createPoller } = setupTest({
     providerItems: [providerItem],
     storedItems: [storedItem],
   });
 
+  const poller = createPoller();
   await poller.poll();
   poller.stop();
 
@@ -366,11 +407,12 @@ test('it handles new, changed, and removed items in a single poll cycle', async 
   const providerChanged = buildWorkItem({ id: 'wi-2', status: 'in-progress' });
   const providerNew = buildWorkItem({ id: 'wi-4', status: 'pending' });
 
-  const { events, poller } = setupTest({
+  const { events, createPoller } = setupTest({
     providerItems: [providerUnchanged, providerChanged, providerNew],
     storedItems: [storedUnchanged, storedChanged, storedRemoved],
   });
 
+  const poller = createPoller();
   await poller.poll();
   poller.stop();
 
@@ -401,7 +443,8 @@ test('it handles new, changed, and removed items in a single poll cycle', async 
 // ---------------------------------------------------------------------------
 
 test('it emits no events when both the provider and store are empty', async () => {
-  const { events, poller } = setupTest();
+  const { events, createPoller } = setupTest();
+  const poller = createPoller();
 
   await poller.poll();
   poller.stop();
@@ -410,20 +453,27 @@ test('it emits no events when both the provider and store are empty', async () =
 });
 
 // ---------------------------------------------------------------------------
-// WorkItemPoller — interval fires poll automatically
+// WorkItemPoller — interval fires poll automatically after first direct poll
 // ---------------------------------------------------------------------------
 
-test('it fires poll automatically via the interval timer', async () => {
+test('it fires multiple automatic polls via the interval timer', async () => {
   vi.useFakeTimers();
 
   const item = buildWorkItem({ id: 'wi-1' });
-  const { reader, events, poller } = setupTest({ providerItems: [item] });
+  const { reader, createPoller } = setupTest({ providerItems: [item] });
+  const poller = createPoller();
 
-  // Advance past one interval (60s = 60000ms)
-  await vi.advanceTimersByTimeAsync(60_000);
-
+  // First direct poll to start the interval
+  await poller.poll();
   expect(reader.listWorkItems).toHaveBeenCalledTimes(1);
-  expect(events).toHaveLength(1);
+
+  // Advance past first interval — second poll
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(reader.listWorkItems).toHaveBeenCalledTimes(2);
+
+  // Advance past second interval — third poll
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(reader.listWorkItems).toHaveBeenCalledTimes(3);
 
   poller.stop();
   vi.useRealTimers();
