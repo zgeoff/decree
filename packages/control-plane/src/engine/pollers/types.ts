@@ -1,7 +1,7 @@
 import type { SpecPollerBatchResult } from '../../types.ts';
 import type { GitHubClient } from '../github-client/types.ts';
-import type { WorkProviderReader } from '../github-provider/types.ts';
-import type { WorkItemChanged } from '../state-store/domain-type-stubs.ts';
+import type { RevisionProviderReader, WorkProviderReader } from '../github-provider/types.ts';
+import type { RevisionChanged, WorkItemChanged } from '../state-store/domain-type-stubs.ts';
 import type { EngineState } from '../state-store/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -97,4 +97,20 @@ export interface PRPollerConfig {
   ) => void;
   onPRDetected?: (prNumber: number) => void;
   onPRRemoved: (prNumber: number) => void;
+}
+
+// ---------------------------------------------------------------------------
+// RevisionPoller
+// ---------------------------------------------------------------------------
+
+export interface RevisionPoller {
+  poll: () => Promise<void>;
+  stop: () => void;
+}
+
+export interface RevisionPollerConfig {
+  reader: RevisionProviderReader;
+  getState: () => EngineState;
+  enqueue: (event: RevisionChanged) => void;
+  interval: number;
 }
