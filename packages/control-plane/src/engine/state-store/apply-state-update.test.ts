@@ -1,266 +1,30 @@
 import { expect, test } from 'vitest';
 import type { StoreApi } from 'zustand';
+import { buildCommandFailedEvent } from '../../test-utils/build-command-failed-event.ts';
+import { buildCommandRejectedEvent } from '../../test-utils/build-command-rejected-event.ts';
+import { buildImplementorCompletedEvent } from '../../test-utils/build-implementor-completed-event.ts';
+import { buildImplementorFailedEvent } from '../../test-utils/build-implementor-failed-event.ts';
+import { buildImplementorRequestedEvent } from '../../test-utils/build-implementor-requested-event.ts';
+import { buildImplementorStartedEvent } from '../../test-utils/build-implementor-started-event.ts';
+import { buildPlannerCompletedEvent } from '../../test-utils/build-planner-completed-event.ts';
+import { buildPlannerFailedEvent } from '../../test-utils/build-planner-failed-event.ts';
+import { buildPlannerRequestedEvent } from '../../test-utils/build-planner-requested-event.ts';
+import { buildPlannerStartedEvent } from '../../test-utils/build-planner-started-event.ts';
+import { buildReviewerCompletedEvent } from '../../test-utils/build-reviewer-completed-event.ts';
+import { buildReviewerFailedEvent } from '../../test-utils/build-reviewer-failed-event.ts';
+import { buildReviewerRequestedEvent } from '../../test-utils/build-reviewer-requested-event.ts';
+import { buildReviewerStartedEvent } from '../../test-utils/build-reviewer-started-event.ts';
+import { buildRevisionChangedEvent } from '../../test-utils/build-revision-changed-event.ts';
+import { buildSpecChangedEvent } from '../../test-utils/build-spec-changed-event.ts';
+import { buildWorkItemChangedRemoval } from '../../test-utils/build-work-item-changed-removal.ts';
+import { buildWorkItemChangedUpsert } from '../../test-utils/build-work-item-changed-upsert.ts';
 import { applyStateUpdate } from './apply-state-update.ts';
 import { createEngineStore } from './create-engine-store.ts';
-import type {
-  CommandFailed,
-  CommandRejected,
-  EngineCommand,
-  EngineState,
-  ImplementorCompleted,
-  ImplementorFailed,
-  ImplementorRequested,
-  ImplementorStarted,
-  PlannerCompleted,
-  PlannerFailed,
-  PlannerRequested,
-  PlannerStarted,
-  ReviewerCompleted,
-  ReviewerFailed,
-  ReviewerRequested,
-  ReviewerStarted,
-  RevisionChanged,
-  SpecChanged,
-  WorkItemChanged,
-} from './types.ts';
+import type { CommandRejected, EngineState } from './types.ts';
 
 function setupTest(): { store: StoreApi<EngineState> } {
   const store = createEngineStore();
   return { store };
-}
-
-function buildWorkItemChangedUpsert(overrides?: Partial<WorkItemChanged>): WorkItemChanged {
-  return {
-    type: 'workItemChanged',
-    workItemID: 'wi-1',
-    workItem: {
-      id: 'wi-1',
-      title: 'Test work item',
-      status: 'pending',
-      priority: null,
-      complexity: null,
-      blockedBy: [],
-      createdAt: '2026-01-01T00:00:00.000Z',
-      linkedRevision: null,
-    },
-    title: 'Test work item',
-    oldStatus: null,
-    newStatus: 'pending',
-    priority: null,
-    ...overrides,
-  };
-}
-
-function buildWorkItemChangedRemoval(workItemID: string): WorkItemChanged {
-  return {
-    type: 'workItemChanged',
-    workItemID,
-    workItem: {
-      id: workItemID,
-      title: 'Removed item',
-      status: 'pending',
-      priority: null,
-      complexity: null,
-      blockedBy: [],
-      createdAt: '2026-01-01T00:00:00.000Z',
-      linkedRevision: null,
-    },
-    title: 'Removed item',
-    oldStatus: 'pending',
-    newStatus: null,
-    priority: null,
-  };
-}
-
-function buildRevisionChangedEvent(overrides?: Partial<RevisionChanged>): RevisionChanged {
-  return {
-    type: 'revisionChanged',
-    revisionID: 'rev-1',
-    workItemID: 'wi-1',
-    revision: {
-      id: 'rev-1',
-      title: 'Test revision',
-      url: 'https://example.com/pr/1',
-      headSHA: 'abc123',
-      headRef: 'feature/test',
-      author: 'test-user',
-      body: 'Test body',
-      isDraft: false,
-      workItemID: 'wi-1',
-      pipeline: null,
-      reviewID: null,
-    },
-    oldPipelineStatus: null,
-    newPipelineStatus: null,
-    ...overrides,
-  };
-}
-
-function buildSpecChangedEvent(overrides?: Partial<SpecChanged>): SpecChanged {
-  return {
-    type: 'specChanged',
-    filePath: 'docs/specs/test.md',
-    blobSHA: 'sha-1',
-    frontmatterStatus: 'approved',
-    changeType: 'added',
-    commitSHA: 'commit-1',
-    ...overrides,
-  };
-}
-
-function buildPlannerRequestedEvent(overrides?: Partial<PlannerRequested>): PlannerRequested {
-  return {
-    type: 'plannerRequested',
-    specPaths: ['docs/specs/a.md', 'docs/specs/b.md'],
-    sessionID: 'session-planner-1',
-    ...overrides,
-  };
-}
-
-function buildPlannerStartedEvent(overrides?: Partial<PlannerStarted>): PlannerStarted {
-  return {
-    type: 'plannerStarted',
-    sessionID: 'session-planner-1',
-    logFilePath: '/logs/planner.log',
-    ...overrides,
-  };
-}
-
-function buildPlannerCompletedEvent(overrides?: Partial<PlannerCompleted>): PlannerCompleted {
-  return {
-    type: 'plannerCompleted',
-    specPaths: ['docs/specs/a.md', 'docs/specs/b.md'],
-    sessionID: 'session-planner-1',
-    result: { role: 'planner', create: [], close: [], update: [] },
-    logFilePath: '/logs/planner.log',
-    ...overrides,
-  };
-}
-
-function buildPlannerFailedEvent(overrides?: Partial<PlannerFailed>): PlannerFailed {
-  return {
-    type: 'plannerFailed',
-    specPaths: ['docs/specs/a.md'],
-    sessionID: 'session-planner-1',
-    error: 'Planner crashed',
-    logFilePath: '/logs/planner.log',
-    ...overrides,
-  };
-}
-
-function buildImplementorRequestedEvent(
-  overrides?: Partial<ImplementorRequested>,
-): ImplementorRequested {
-  return {
-    type: 'implementorRequested',
-    workItemID: 'wi-1',
-    sessionID: 'session-impl-1',
-    branchName: 'feature/wi-1',
-    ...overrides,
-  };
-}
-
-function buildImplementorStartedEvent(overrides?: Partial<ImplementorStarted>): ImplementorStarted {
-  return {
-    type: 'implementorStarted',
-    sessionID: 'session-impl-1',
-    logFilePath: '/logs/implementor.log',
-    ...overrides,
-  };
-}
-
-function buildImplementorCompletedEvent(
-  overrides?: Partial<ImplementorCompleted>,
-): ImplementorCompleted {
-  return {
-    type: 'implementorCompleted',
-    workItemID: 'wi-1',
-    sessionID: 'session-impl-1',
-    branchName: 'feature/wi-1',
-    result: { role: 'implementor', outcome: 'completed', patch: 'diff', summary: 'Done' },
-    logFilePath: '/logs/implementor.log',
-    ...overrides,
-  };
-}
-
-function buildImplementorFailedEvent(overrides?: Partial<ImplementorFailed>): ImplementorFailed {
-  return {
-    type: 'implementorFailed',
-    workItemID: 'wi-1',
-    sessionID: 'session-impl-1',
-    branchName: 'feature/wi-1',
-    error: 'Implementor crashed',
-    logFilePath: '/logs/implementor.log',
-    ...overrides,
-  };
-}
-
-function buildReviewerRequestedEvent(overrides?: Partial<ReviewerRequested>): ReviewerRequested {
-  return {
-    type: 'reviewerRequested',
-    workItemID: 'wi-1',
-    revisionID: 'rev-1',
-    sessionID: 'session-reviewer-1',
-    ...overrides,
-  };
-}
-
-function buildReviewerStartedEvent(overrides?: Partial<ReviewerStarted>): ReviewerStarted {
-  return {
-    type: 'reviewerStarted',
-    sessionID: 'session-reviewer-1',
-    logFilePath: '/logs/reviewer.log',
-    ...overrides,
-  };
-}
-
-function buildReviewerCompletedEvent(overrides?: Partial<ReviewerCompleted>): ReviewerCompleted {
-  return {
-    type: 'reviewerCompleted',
-    workItemID: 'wi-1',
-    revisionID: 'rev-1',
-    sessionID: 'session-reviewer-1',
-    result: {
-      role: 'reviewer',
-      review: { verdict: 'approve', summary: 'Looks good', comments: [] },
-    },
-    logFilePath: '/logs/reviewer.log',
-    ...overrides,
-  };
-}
-
-function buildReviewerFailedEvent(overrides?: Partial<ReviewerFailed>): ReviewerFailed {
-  return {
-    type: 'reviewerFailed',
-    workItemID: 'wi-1',
-    revisionID: 'rev-1',
-    sessionID: 'session-reviewer-1',
-    error: 'Reviewer crashed',
-    logFilePath: '/logs/reviewer.log',
-    ...overrides,
-  };
-}
-
-function buildDummyCommand(): EngineCommand {
-  return { command: 'cancelPlannerRun' };
-}
-
-function buildCommandRejectedEvent(overrides?: Partial<CommandRejected>): CommandRejected {
-  return {
-    type: 'commandRejected',
-    command: buildDummyCommand(),
-    reason: 'Concurrency guard: planner already running',
-    ...overrides,
-  };
-}
-
-function buildCommandFailedEvent(overrides?: Partial<CommandFailed>): CommandFailed {
-  return {
-    type: 'commandFailed',
-    command: buildDummyCommand(),
-    error: 'Provider call failed',
-    ...overrides,
-  };
 }
 
 // --- WorkItemChanged tests ---
@@ -281,7 +45,7 @@ test('it deletes a work item when new status is null', () => {
   applyStateUpdate(store, buildWorkItemChangedUpsert({ workItemID: 'wi-1' }));
   expect(store.getState().workItems.size).toBe(1);
 
-  applyStateUpdate(store, buildWorkItemChangedRemoval('wi-1'));
+  applyStateUpdate(store, buildWorkItemChangedRemoval({ workItemID: 'wi-1' }));
 
   const state = store.getState();
   expect(state.workItems.size).toBe(0);
