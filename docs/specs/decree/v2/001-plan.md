@@ -1,7 +1,7 @@
 ---
 title: Architecture v2 — Plan
-version: 0.3.0
-last_updated: 2026-02-15
+version: 0.4.0
+last_updated: 2026-02-16
 status: draft
 ---
 
@@ -12,7 +12,7 @@ made and the phases of work. Once each phase is complete, this document gets cle
 
 ## Phases
 
-- [ ] **Phase 1: Architecture spec** — Write the architecture spec capturing the target
+- [x] **Phase 1: Architecture spec** — Write the architecture spec capturing the target
       architecture.
 - [ ] **Phase 2: Migration plan** — Write the migration plan with sequenced incremental refactors.
       Each step identifies: what changes, affected modules, verification criteria, and spec impact
@@ -188,32 +188,63 @@ spec author doesn't have to discover them independently.
   runtime adapter, or a separate component. The artifact-based interface changes how worktrees
   relate to agent execution.
 
-## Existing specs
+## Spec catalog
 
-For reference, these are the current specs that will be evaluated during phase 2:
+Disposition of all specs through the v2 migration. Phase 2 sequences these into migration steps.
 
-| Spec                                             | Scope                    |
-| ------------------------------------------------ | ------------------------ |
-| `control-plane.md`                               | Overall architecture     |
-| `control-plane-engine.md`                        | Engine internals         |
-| `control-plane-engine-agent-manager.md`          | Agent lifecycle          |
-| `control-plane-engine-agent-session-logging.md`  | Session logging          |
-| `control-plane-engine-context-precomputation.md` | Trigger prompts          |
-| `control-plane-engine-issue-poller.md`           | Issue polling            |
-| `control-plane-engine-planner-cache.md`          | Planner cache            |
-| `control-plane-engine-pr-poller.md`              | PR polling               |
-| `control-plane-engine-spec-poller.md`            | Spec polling             |
-| `control-plane-engine-recovery.md`               | Recovery                 |
-| `control-plane-tui.md`                           | TUI                      |
-| `workflow.md`                                    | Workflow phases/roles    |
-| `workflow-contracts.md`                          | Interface contracts      |
-| `agent-planner.md`                               | Planner agent            |
-| `agent-implementor.md`                           | Implementor agent        |
-| `agent-reviewer.md`                              | Reviewer agent           |
-| `agent-hook-bash-validator.md`                   | Bash validation rules    |
-| `agent-hook-bash-validator-script.md`            | Bash validation script   |
-| `github-cli.md`                                  | GitHub CLI operations    |
-| `script-label-setup.md`                          | Label setup script       |
-| `skill-spec-writing.md`                          | Spec writing skill       |
-| `skill-agent-spec-writing.md`                    | Agent spec writing skill |
-| `skill-github-workflow.md`                       | GitHub workflow skill    |
+### REWORK — Engine
+
+| Spec                                    | Current Scope        | v2 Change                                                               |
+| --------------------------------------- | -------------------- | ----------------------------------------------------------------------- |
+| `control-plane.md`                      | Overall architecture | Update for provider abstraction + broker boundary                       |
+| `control-plane-engine.md`               | Engine internals     | Major rework — new processing loop, handler-based dispatch, state store |
+| `control-plane-tui.md`                  | TUI                  | Subscription model, user events, no direct provider access              |
+| `control-plane-engine-issue-poller.md`  | Issue polling        | Rename Issue → WorkItem, implement WorkProviderReader interface         |
+| `control-plane-engine-pr-poller.md`     | PR polling           | Rename PR → Revision, implement RevisionProviderReader interface        |
+| `control-plane-engine-spec-poller.md`   | Spec polling         | Implement SpecProviderReader interface, minor changes                   |
+| `control-plane-engine-agent-manager.md` | Agent lifecycle      | Becomes runtime adapter — structured output, no side effects            |
+
+### REWORK — Agents
+
+| Spec                   | Current Scope     | v2 Change                                                     |
+| ---------------------- | ----------------- | ------------------------------------------------------------- |
+| `agent-planner.md`     | Planner agent     | Structured PlannerResult output, no direct GitHub operations  |
+| `agent-implementor.md` | Implementor agent | Structured ImplementorResult, patch-based output, no git push |
+| `agent-reviewer.md`    | Reviewer agent    | Structured ReviewerResult, no direct PR review posting        |
+
+### REWORK — Workflow
+
+| Spec                    | Current Scope         | v2 Change                                                    |
+| ----------------------- | --------------------- | ------------------------------------------------------------ |
+| `workflow.md`           | Workflow phases/roles | Update terminology (WorkItem, Revision), align with v2 roles |
+| `workflow-contracts.md` | Interface contracts   | Output formats change to structured AgentResult types        |
+| `script-label-setup.md` | Label setup script    | Labels change to match new WorkItemStatus values             |
+
+### DELETE
+
+| Spec                                             | Current Scope   | Reason                                                                     |
+| ------------------------------------------------ | --------------- | -------------------------------------------------------------------------- |
+| `control-plane-engine-recovery.md`               | Recovery        | Recovery is now handleOrphanedWorkItem + initial poll — no separate module |
+| `control-plane-engine-planner-cache.md`          | Planner cache   | Replaced by `lastPlannedSHAs` in engine state store                        |
+| `control-plane-engine-context-precomputation.md` | Trigger prompts | Context assembly becomes a runtime adapter concern                         |
+
+### NEW
+
+| Spec            | Scope                                                                                              |
+| --------------- | -------------------------------------------------------------------------------------------------- |
+| GitHub provider | Concrete implementation mapping GitHub API → domain types, composes all 5 reader/writer interfaces |
+| CommandExecutor | Broker boundary, policy gate, concurrency guards, command translation, compound commands           |
+| Handlers        | Handler catalog with per-handler behavior — triggers, emitted commands, edge cases                 |
+| State store     | Zustand store shape, state update functions, selectors                                             |
+
+### KEEP (unchanged or minimal impact)
+
+| Spec                                            | Notes                                           |
+| ----------------------------------------------- | ----------------------------------------------- |
+| `control-plane-engine-agent-session-logging.md` | Orthogonal to engine redesign, stays standalone |
+| `github-cli.md`                                 | Used by Human role and skills, not agents       |
+| `agent-hook-bash-validator.md`                  | Safety hooks still relevant                     |
+| `agent-hook-bash-validator-script.md`           | Same                                            |
+| `skill-spec-writing.md`                         | Not affected by engine redesign                 |
+| `skill-agent-spec-writing.md`                   | Not affected                                    |
+| `skill-github-workflow.md`                      | Used by Human role, not engine                  |
