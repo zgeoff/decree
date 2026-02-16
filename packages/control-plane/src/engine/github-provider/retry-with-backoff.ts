@@ -1,21 +1,3 @@
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 1000;
-const MAX_DELAY_MS = 30_000;
-const MS_PER_SECOND = 1000;
-const STATUS_RATE_LIMITED = 429;
-const STATUS_INTERNAL_SERVER_ERROR = 500;
-const STATUS_BAD_GATEWAY = 502;
-const STATUS_SERVICE_UNAVAILABLE = 503;
-const STATUS_GATEWAY_TIMEOUT = 504;
-
-const RETRYABLE_STATUS_CODES: Set<number> = new Set([
-  STATUS_RATE_LIMITED,
-  STATUS_INTERNAL_SERVER_ERROR,
-  STATUS_BAD_GATEWAY,
-  STATUS_SERVICE_UNAVAILABLE,
-  STATUS_GATEWAY_TIMEOUT,
-]);
-
 interface ErrorWithStatus {
   status?: number;
   response?: {
@@ -31,10 +13,11 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>): Promise<T> {
       // biome-ignore lint/performance/noAwaitInLoops: retry loop requires sequential awaits
       return await fn();
     } catch (error) {
-      const errorWithStatus = error as ErrorWithStatus;
-      const status = errorWithStatus.status;
+      if (!isErrorWithStatus(error)) {
+        throw error;
+      }
 
-      if (status === undefined || !RETRYABLE_STATUS_CODES.has(status)) {
+      if (!RETRYABLE_STATUS_CODES.has(error.status)) {
         throw error;
       }
 
@@ -42,14 +25,23 @@ export async function retryWithBackoff<T>(fn: () => Promise<T>): Promise<T> {
         throw error;
       }
 
-      const delayMS = computeDelay(errorWithStatus, attempt);
+      const delayMS = computeDelay(error, attempt);
       await sleep(delayMS);
       attempt += 1;
     }
   }
 }
 
-function computeDelay(error: ErrorWithStatus, attempt: number): number {
+function isErrorWithStatus(error: unknown): error is ErrorWithStatus & { status: number } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'status' in error &&
+    typeof error.status === 'number'
+  );
+}
+
+function computeDelay(error: ErrorWithStatus & { status: number }, attempt: number): number {
   if (error.status === STATUS_RATE_LIMITED) {
     const retryAfter = error.response?.headers?.['retry-after'];
     if (retryAfter !== undefined) {
@@ -72,3 +64,21 @@ async function sleep(ms: number): Promise<void> {
     setTimeout(resolve, ms);
   });
 }
+
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 1000;
+const MAX_DELAY_MS = 30_000;
+const MS_PER_SECOND = 1000;
+const STATUS_RATE_LIMITED = 429;
+const STATUS_INTERNAL_SERVER_ERROR = 500;
+const STATUS_BAD_GATEWAY = 502;
+const STATUS_SERVICE_UNAVAILABLE = 503;
+const STATUS_GATEWAY_TIMEOUT = 504;
+
+const RETRYABLE_STATUS_CODES: Set<number> = new Set([
+  STATUS_RATE_LIMITED,
+  STATUS_INTERNAL_SERVER_ERROR,
+  STATUS_BAD_GATEWAY,
+  STATUS_SERVICE_UNAVAILABLE,
+  STATUS_GATEWAY_TIMEOUT,
+]);
