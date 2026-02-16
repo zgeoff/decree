@@ -157,15 +157,15 @@ made and the phases of work. Once each phase is complete, this document gets cle
 
 ### Documentation strategy
 
-19. **Per-component specs.** The new architecture is conducive to one spec per component boundary.
+20. **Per-component specs.** The new architecture is conducive to one spec per component boundary.
     The migration plan (phase 2) identifies for each step: new specs to write, existing specs that
     become redundant, and existing specs that need modification.
 
-20. **Spec-driven implementation.** Migration follows: read architecture spec and migration plan →
+21. **Spec-driven implementation.** Migration follows: read architecture spec and migration plan →
     read relevant existing specs → update/write affected specs → implementor implements → mark step
     done in migration plan.
 
-21. **Three-layer documentation:**
+22. **Three-layer documentation:**
     - Architecture spec — target state, stable, rarely updated.
     - Migration plan — sequenced steps, living document with progress tracking.
     - Component specs — updated per migration step, remain the source of truth for current state.

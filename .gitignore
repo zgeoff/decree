@@ -35,7 +35,7 @@ scripts/workflow/.token-expiry
 
 # Claude Code
 .claude/settings.local.json
-.agentic-workflow-cache.json
+.decree-cache.json
 
 # IDE
 .idea/
