@@ -7,16 +7,18 @@ import { createWorkItemPoller } from './create-work-item-poller.ts';
 // Helpers
 // ---------------------------------------------------------------------------
 
+interface SetupTestState {
+  workItems: Map<string, WorkItem>;
+  revisions: Map<never, never>;
+  specs: Map<never, never>;
+  agentRuns: Map<never, never>;
+  errors: never[];
+  lastPlannedSHAs: Map<never, never>;
+}
+
 interface SetupTestResult {
   reader: { listWorkItems: ReturnType<typeof vi.fn> };
-  state: {
-    workItems: Map<string, WorkItem>;
-    revisions: Map<never, never>;
-    specs: Map<never, never>;
-    agentRuns: Map<never, never>;
-    errors: never[];
-    lastPlannedSHAs: Map<never, never>;
-  };
+  state: SetupTestState;
   events: WorkItemChanged[];
   enqueue: ReturnType<typeof vi.fn>;
   createPoller: () => ReturnType<typeof createWorkItemPoller>;
