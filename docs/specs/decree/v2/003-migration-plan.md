@@ -149,7 +149,7 @@ state store, and enqueue domain events. These three can be done in parallel — 
 
 ### Step 3a: WorkItem poller
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 
@@ -186,7 +186,7 @@ state store, and enqueue domain events. These three can be done in parallel — 
 
 ### Step 3b: Revision poller
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 
@@ -227,7 +227,7 @@ state store, and enqueue domain events. These three can be done in parallel — 
 
 ### Step 3c: Spec poller
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 
