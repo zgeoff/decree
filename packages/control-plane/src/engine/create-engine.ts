@@ -223,6 +223,7 @@ export function createEngine(config: EngineConfig, deps?: EngineDeps): Engine {
             repoRoot,
           });
           await agentManager.dispatchPlanner({ specPaths, prompt });
+          latestSpecChangeTypes.clear();
         } catch (error) {
           logger.error('Failed to build planner context', { error: String(error) });
           pendingCacheSnapshot = null;
@@ -339,7 +340,9 @@ export function createEngine(config: EngineConfig, deps?: EngineDeps): Engine {
 
       // Step 5: First SpecPoller cycle
       const specResult = await specPoller.poll();
-      latestSpecCommitSHA = specResult.commitSHA;
+      if (specResult.commitSHA) {
+        latestSpecCommitSHA = specResult.commitSHA;
+      }
       trackSpecChangeTypes(specResult.changes, latestSpecChangeTypes);
       await dispatch.handleSpecPollerResult(specResult);
 
@@ -355,7 +358,9 @@ export function createEngine(config: EngineConfig, deps?: EngineDeps): Engine {
       pollerTimers.specTimer = setInterval(async () => {
         logger.debug('SpecPoller cycle starting');
         const result = await specPoller.poll();
-        latestSpecCommitSHA = result.commitSHA;
+        if (result.commitSHA) {
+          latestSpecCommitSHA = result.commitSHA;
+        }
         trackSpecChangeTypes(result.changes, latestSpecChangeTypes);
         await dispatch.handleSpecPollerResult(result);
       }, resolved.specPoller.pollInterval * SECONDS_TO_MS);

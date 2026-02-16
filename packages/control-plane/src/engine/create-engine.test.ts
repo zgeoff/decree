@@ -1649,6 +1649,77 @@ test('it treats a corrupt cache file as a cold start', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Commit SHA preservation across no-change poll cycles
+// ---------------------------------------------------------------------------
+
+test('it preserves the commit SHA when no-change poll cycles follow a change cycle', async () => {
+  vi.useFakeTimers();
+  const { engine, octokit, mockQueries } = setupTest({ autoComplete: false });
+
+  // SpecPoller: poll 1 returns tree-sha-A (spec-a), poll 2 returns tree-sha-B (adds spec-b),
+  // poll 3+ returns tree-sha-B again (no change → EMPTY_RESULT)
+  let rootTreeCall = 0;
+  vi.mocked(octokit.git.getTree).mockImplementation(async (params) => {
+    if (params.tree_sha === 'main') {
+      rootTreeCall += 1;
+      const sha = rootTreeCall <= 1 ? 'tree-sha-A' : 'tree-sha-B';
+      return { data: { sha: 'root', tree: [{ path: 'docs/specs', type: 'tree', sha }] } };
+    }
+    if (params.tree_sha === 'tree-sha-A') {
+      return { data: { sha: 'tree-sha-A', tree: [{ path: 'a.md', type: 'blob', sha: 'blob-A' }] } };
+    }
+    return {
+      data: {
+        sha: 'tree-sha-B',
+        tree: [
+          { path: 'a.md', type: 'blob', sha: 'blob-A' },
+          { path: 'b.md', type: 'blob', sha: 'blob-B' },
+        ],
+      },
+    };
+  });
+
+  // Each getRef call returns a distinct SHA so we can trace which one the planner uses
+  let refCount = 0;
+  vi.mocked(octokit.git.getRef).mockImplementation(async () => {
+    refCount += 1;
+    return { data: { object: { sha: `commit-${refCount}` } } };
+  });
+
+  // Track refs from planner context builds (poller uses ref:'main', planner uses the commit SHA)
+  const plannerRefs: string[] = [];
+  vi.mocked(octokit.repos.getContent).mockImplementation(async (params) => {
+    if (params.ref && params.ref !== 'main') {
+      plannerRefs.push(params.ref);
+    }
+    const content = Buffer.from('---\nstatus: approved\n---\n# Spec').toString('base64');
+    return { data: { content } };
+  });
+
+  // Poll 1 (startup): spec-a detected → planner dispatched (stays running)
+  await engine.start();
+  expect(mockQueries.length).toBe(1);
+
+  // Poll 2: spec-b detected → deferred (planner running)
+  // Poll 3: no tree change → EMPTY_RESULT (would wipe SHA without fix)
+  await vi.advanceTimersByTimeAsync(61_000);
+  await vi.advanceTimersByTimeAsync(61_000);
+
+  // Complete the first planner, then poll 4 dispatches deferred spec-b
+  const q = mockQueries[0];
+  invariant(q, 'planner query must exist');
+  q.pushMessage({ type: 'result', subtype: 'success' });
+  q.end();
+  await vi.advanceTimersByTimeAsync(61_000);
+
+  expect(mockQueries.length).toBe(2);
+  // Second dispatch must use commit-2 (from poll 2 when spec-b was detected), not ''
+  expect(plannerRefs).toContain('commit-2');
+
+  engine.send({ command: 'shutdown' });
+});
+
+// ---------------------------------------------------------------------------
 // Completion-dispatch: Implementor completes with a linked non-draft PR
 // ---------------------------------------------------------------------------
 
