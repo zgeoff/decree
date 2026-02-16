@@ -155,8 +155,10 @@ state store, and enqueue domain events. These three can be done in parallel — 
 
 - `docs/specs/decree/v2/002-architecture.md` — sections: Pollers, WorkItem (domain type).
 - `docs/specs/decree/control-plane-engine-issue-poller.md` — current spec being reworked.
-- `docs/specs/decree/state-store.md` (from step 1) — `EngineState.workItems`, selectors.
-- `docs/specs/decree/github-provider.md` (from step 2) — `WorkProviderReader` interface.
+- `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — `EngineState.workItems`,
+  selectors.
+- `docs/specs/decree/control-plane-engine-github-provider.md` (from step 2) — `WorkProviderReader`
+  interface.
 
 **What changes:**
 
@@ -191,8 +193,10 @@ state store, and enqueue domain events. These three can be done in parallel — 
 - `docs/specs/decree/v2/002-architecture.md` — sections: Pollers, Revision (domain type),
   RevisionChanged event.
 - `docs/specs/decree/control-plane-engine-pr-poller.md` — current spec being reworked.
-- `docs/specs/decree/state-store.md` (from step 1) — `EngineState.revisions`, selectors.
-- `docs/specs/decree/github-provider.md` (from step 2) — `RevisionProviderReader` interface.
+- `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — `EngineState.revisions`,
+  selectors.
+- `docs/specs/decree/control-plane-engine-github-provider.md` (from step 2) —
+  `RevisionProviderReader` interface.
 
 **What changes:**
 
@@ -230,8 +234,10 @@ state store, and enqueue domain events. These three can be done in parallel — 
 - `docs/specs/decree/v2/002-architecture.md` — sections: Pollers, Spec (domain type), SpecChanged
   event.
 - `docs/specs/decree/control-plane-engine-spec-poller.md` — current spec being reworked.
-- `docs/specs/decree/state-store.md` (from step 1) — `EngineState.specs`, `lastPlannedSHAs`.
-- `docs/specs/decree/github-provider.md` (from step 2) — `SpecProviderReader` interface.
+- `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — `EngineState.specs`,
+  `lastPlannedSHAs`.
+- `docs/specs/decree/control-plane-engine-github-provider.md` (from step 2) — `SpecProviderReader`
+  interface.
 
 **What changes:**
 
@@ -270,7 +276,8 @@ conditions. Handlers are pure functions: `(event, state) → commands[]`.
 
 - `docs/specs/decree/v2/002-architecture.md` — sections: Handlers (Shape, Wiring, Catalog), Domain
   Events, Domain Commands, Agent Role Contracts, Recovery.
-- `docs/specs/decree/state-store.md` (from step 1) — selectors used by handlers.
+- `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — selectors used by
+  handlers.
 - `docs/specs/decree/v2/001-plan.md` — decisions 8, 9, 11, 12 (event flow, sequential processing,
   handler wiring, recovery via pipeline).
 
@@ -326,9 +333,11 @@ error handling.
 - `docs/specs/decree/v2/002-architecture.md` — sections: CommandExecutor (Pipeline, Concurrency
   Guards, Policy Gate, Command Translation), Domain Commands, Error Handling, Runtime Adapter
   (Interface).
-- `docs/specs/decree/state-store.md` (from step 1) — selectors for concurrency checks.
-- `docs/specs/decree/github-provider.md` (from step 2) — provider writer interfaces.
-- `docs/specs/decree/handlers.md` (from step 4) — which commands handlers emit.
+- `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — selectors for concurrency
+  checks.
+- `docs/specs/decree/control-plane-engine-github-provider.md` (from step 2) — provider writer
+  interfaces.
+- `docs/specs/decree/control-plane-engine-handlers.md` (from step 4) — which commands handlers emit.
 - `docs/specs/decree/v2/001-plan.md` — decisions 13, 14, 15 (broker boundary, concurrency
   enforcement, policy as boolean gate).
 
@@ -384,7 +393,8 @@ in 002-architecture.md; this spec covers the concrete implementation.
 - `docs/specs/decree/control-plane-engine-agent-manager.md` — current spec being reworked.
 - `docs/specs/decree/control-plane-engine-context-precomputation.md` — context assembly being
   absorbed (DELETE spec — understand what it covers so nothing is lost).
-- `docs/specs/decree/command-executor.md` (from step 5) — `startAgentAsync` lifecycle.
+- `docs/specs/decree/control-plane-engine-command-executor.md` (from step 5) — `startAgentAsync`
+  lifecycle.
 - `docs/specs/decree/v2/001-plan.md` — decisions 16, 19 (artifact-based interface, sandbox
   readiness).
 
@@ -600,7 +610,7 @@ subscription to the canonical engine store.
 - `docs/specs/decree/v2/002-architecture.md` — sections: TUI Contract (State Subscription, User
   Actions, Agent Output Streams, Detail Fetches, TUI-Local State, Boundaries).
 - `docs/specs/decree/control-plane-tui.md` — current spec being reworked.
-- `docs/specs/decree/state-store.md` (from step 1) — selectors the TUI uses.
+- `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — selectors the TUI uses.
 - `docs/specs/decree/control-plane-engine.md` (reworked in step 8) — engine public interface.
 
 **What changes:**
@@ -648,7 +658,8 @@ the label setup script for the new label set.
 - `docs/specs/decree/v2/002-architecture.md` — sections: Domain Model (WorkItemStatus, Priority,
   Complexity), Agent Role Contracts, Handlers (Catalog).
 - `docs/specs/decree/workflow.md` — current spec being reworked.
-- `docs/specs/decree/handlers.md` (from step 4) — handler catalog defines dispatch behavior.
+- `docs/specs/decree/control-plane-engine-handlers.md` (from step 4) — handler catalog defines
+  dispatch behavior.
 - `docs/specs/decree/agent-planner.md`, `docs/specs/decree/agent-implementor.md`,
   `docs/specs/decree/agent-reviewer.md` (reworked in step 7) — agent role descriptions.
 
@@ -804,8 +815,10 @@ Mark the three DELETE specs as deprecated. Their replacements are now in place:
 - `docs/specs/decree/control-plane-engine-recovery.md` — spec being deprecated.
 - `docs/specs/decree/control-plane-engine-planner-cache.md` — spec being deprecated.
 - `docs/specs/decree/control-plane-engine-context-precomputation.md` — spec being deprecated.
-- `docs/specs/decree/handlers.md` (from step 4) — `handleOrphanedWorkItem` replaces recovery.
-- `docs/specs/decree/state-store.md` (from step 1) — `lastPlannedSHAs` replaces planner cache.
+- `docs/specs/decree/control-plane-engine-handlers.md` (from step 4) — `handleOrphanedWorkItem`
+  replaces recovery.
+- `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — `lastPlannedSHAs` replaces
+  planner cache.
 - `docs/specs/decree/control-plane-engine-agent-manager.md` (reworked in step 6) — context assembly
   replaces context precomputation.
 
