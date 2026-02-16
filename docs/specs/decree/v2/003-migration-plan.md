@@ -102,7 +102,7 @@ explicit no-op). Selectors cover all read patterns referenced by the handler cat
 Defines the five provider interfaces (3 readers, 2 writers) and the GitHub implementation that maps
 GitHub API types to domain types at the boundary.
 
-- [ ] Write spec
+- [x] Write spec
 
 **Read first:**
 
