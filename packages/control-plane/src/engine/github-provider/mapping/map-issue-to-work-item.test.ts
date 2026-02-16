@@ -1,19 +1,8 @@
 import { expect, test } from 'vitest';
+import type { GitHubIssueInput } from './map-issue-to-work-item.ts';
 import { mapIssueToWorkItem } from './map-issue-to-work-item.ts';
 
-function buildIssue(overrides?: {
-  number?: number;
-  title?: string;
-  labels?: (string | { name?: string })[];
-  body?: string | null;
-  created_at?: string;
-}): {
-  number: number;
-  title: string;
-  labels: (string | { name?: string })[];
-  body: string | null;
-  created_at: string;
-} {
+function buildIssue(overrides?: Partial<GitHubIssueInput>): GitHubIssueInput {
   return {
     number: overrides?.number ?? 1,
     title: overrides?.title ?? 'Test issue',

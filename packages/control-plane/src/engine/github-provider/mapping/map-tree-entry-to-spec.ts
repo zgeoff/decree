@@ -1,11 +1,11 @@
 import type { Spec, SpecFrontmatterStatus } from '../../state-store/domain-type-stubs.ts';
 
-interface GitHubTreeEntryInput {
+export interface GitHubTreeEntryInput {
   path: string;
   sha: string;
 }
 
-interface MapTreeEntryOptions {
+export interface MapTreeEntryOptions {
   specsDir: string;
   content: string;
 }

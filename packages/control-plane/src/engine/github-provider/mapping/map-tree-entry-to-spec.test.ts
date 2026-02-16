@@ -1,7 +1,8 @@
 import { expect, test } from 'vitest';
+import type { GitHubTreeEntryInput } from './map-tree-entry-to-spec.ts';
 import { mapTreeEntryToSpec } from './map-tree-entry-to-spec.ts';
 
-function buildEntry(overrides?: { path?: string; sha?: string }): { path: string; sha: string } {
+function buildEntry(overrides?: Partial<GitHubTreeEntryInput>): GitHubTreeEntryInput {
   return {
     path: overrides?.path ?? 'decree/workflow.md',
     sha: overrides?.sha ?? 'blob-sha-1',

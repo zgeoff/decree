@@ -1,8 +1,8 @@
 import type { Complexity, Priority, WorkItemStatus } from '../../state-store/domain-type-stubs.ts';
 
-type GitHubLabel = string | { name?: string };
+export type GitHubLabel = string | { name?: string };
 
-interface ParsedLabels {
+export interface ParsedLabels {
   status: WorkItemStatus;
   priority: Priority | null;
   complexity: Complexity | null;

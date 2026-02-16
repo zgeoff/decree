@@ -2,9 +2,9 @@ import type { WorkItem } from '../../state-store/domain-type-stubs.ts';
 import { parseDependencyMetadata } from './parse-dependency-metadata.ts';
 import { parseLabels } from './parse-labels.ts';
 
-type GitHubLabel = string | { name?: string };
+export type GitHubLabel = string | { name?: string };
 
-interface GitHubIssueInput {
+export interface GitHubIssueInput {
   number: number;
   title: string;
   labels: GitHubLabel[];
@@ -12,7 +12,7 @@ interface GitHubIssueInput {
   created_at: string;
 }
 
-interface MapIssueOptions {
+export interface MapIssueOptions {
   linkedRevision: string | null;
 }
 

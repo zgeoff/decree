@@ -1,23 +1,23 @@
 import type { PipelineResult, PipelineStatus } from '../../state-store/domain-type-stubs.ts';
 
-interface CombinedStatusInput {
+export interface CombinedStatusInput {
   state: string;
   total_count: number;
 }
 
-interface CheckRunInput {
+export interface CheckRunInput {
   name: string;
   status: string;
   conclusion: string | null;
   details_url: string | null;
 }
 
-interface CheckRunsInput {
+export interface CheckRunsInput {
   total_count: number;
   check_runs: CheckRunInput[];
 }
 
-interface DerivePipelineStatusInput {
+export interface DerivePipelineStatusInput {
   combinedStatus: CombinedStatusInput;
   checkRuns: CheckRunsInput;
 }

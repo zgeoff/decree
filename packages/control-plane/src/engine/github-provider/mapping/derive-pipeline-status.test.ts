@@ -1,18 +1,8 @@
 import { expect, test } from 'vitest';
+import type { DerivePipelineStatusInput } from './derive-pipeline-status.ts';
 import { derivePipelineStatus } from './derive-pipeline-status.ts';
 
-function buildSuccessInput(): {
-  combinedStatus: { state: string; total_count: number };
-  checkRuns: {
-    total_count: number;
-    check_runs: {
-      name: string;
-      status: string;
-      conclusion: string | null;
-      details_url: string | null;
-    }[];
-  };
-} {
+function buildSuccessInput(): DerivePipelineStatusInput {
   return {
     combinedStatus: { state: 'success', total_count: 1 },
     checkRuns: {

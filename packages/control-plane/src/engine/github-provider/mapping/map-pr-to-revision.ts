@@ -1,7 +1,7 @@
 import type { PipelineResult, Revision } from '../../state-store/domain-type-stubs.ts';
 import { matchClosingKeywords } from './match-closing-keywords.ts';
 
-interface GitHubPRInput {
+export interface GitHubPRInput {
   number: number;
   title: string;
   html_url: string;
@@ -11,16 +11,16 @@ interface GitHubPRInput {
   draft?: boolean;
 }
 
-interface GitHubPRHead {
+export interface GitHubPRHead {
   sha: string;
   ref: string;
 }
 
-interface GitHubPRUser {
+export interface GitHubPRUser {
   login: string;
 }
 
-interface MapPROptions {
+export interface MapPROptions {
   pipeline: PipelineResult | null;
   reviewID: string | null;
 }

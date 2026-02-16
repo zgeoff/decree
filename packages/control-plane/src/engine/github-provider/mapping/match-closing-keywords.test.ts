@@ -21,32 +21,28 @@ test('it returns the first match by position when multiple closing keywords exis
   expect(matchClosingKeywords('Closes #10 and Fixes #20')).toBe('10');
 });
 
-test('it handles all supported keywords case-insensitively', () => {
-  const keywords = [
-    'Close',
-    'close',
-    'CLOSE',
-    'Closed',
-    'closed',
-    'Closes',
-    'closes',
-    'Fix',
-    'fix',
-    'Fixed',
-    'fixed',
-    'Fixes',
-    'fixes',
-    'Resolve',
-    'resolve',
-    'Resolved',
-    'resolved',
-    'Resolves',
-    'resolves',
-  ];
-
-  for (const keyword of keywords) {
-    expect(matchClosingKeywords(`${keyword} #99`)).toBe('99');
-  }
+test.each([
+  'Close',
+  'close',
+  'CLOSE',
+  'Closed',
+  'closed',
+  'Closes',
+  'closes',
+  'Fix',
+  'fix',
+  'Fixed',
+  'fixed',
+  'Fixes',
+  'fixes',
+  'Resolve',
+  'resolve',
+  'Resolved',
+  'resolved',
+  'Resolves',
+  'resolves',
+])('it matches closing keyword "%s" case-insensitively', (keyword) => {
+  expect(matchClosingKeywords(`${keyword} #99`)).toBe('99');
 });
 
 test('it matches a closing keyword followed by end of string', () => {

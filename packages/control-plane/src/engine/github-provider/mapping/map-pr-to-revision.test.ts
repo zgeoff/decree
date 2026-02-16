@@ -1,23 +1,8 @@
 import { expect, test } from 'vitest';
+import type { GitHubPRInput, MapPROptions } from './map-pr-to-revision.ts';
 import { mapPRToRevision } from './map-pr-to-revision.ts';
 
-function buildPR(overrides?: {
-  number?: number;
-  title?: string;
-  html_url?: string;
-  head?: { sha: string; ref: string };
-  user?: { login: string } | null;
-  body?: string | null;
-  draft?: boolean;
-}): {
-  number: number;
-  title: string;
-  html_url: string;
-  head: { sha: string; ref: string };
-  user: { login: string } | null;
-  body: string | null;
-  draft?: boolean;
-} {
+function buildPR(overrides?: Partial<GitHubPRInput>): GitHubPRInput {
   return {
     number: overrides?.number ?? 1,
     title: overrides?.title ?? 'Test PR',
@@ -29,21 +14,7 @@ function buildPR(overrides?: {
   };
 }
 
-function buildOptions(overrides?: {
-  pipeline?: {
-    status: 'pending' | 'success' | 'failure';
-    url: string | null;
-    reason: string | null;
-  } | null;
-  reviewID?: string | null;
-}): {
-  pipeline: {
-    status: 'pending' | 'success' | 'failure';
-    url: string | null;
-    reason: string | null;
-  } | null;
-  reviewID: string | null;
-} {
+function buildOptions(overrides?: Partial<MapPROptions>): MapPROptions {
   return {
     pipeline: overrides?.pipeline ?? null,
     reviewID: overrides?.reviewID ?? null,

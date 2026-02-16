@@ -58,22 +58,18 @@ test('it defaults status to pending when all status labels have unrecognized val
   expect(result.status).toBe('pending');
 });
 
-test('it parses all valid status values correctly', () => {
-  const statuses = [
-    'pending',
-    'ready',
-    'in-progress',
-    'review',
-    'approved',
-    'closed',
-    'needs-refinement',
-    'blocked',
-  ] as const;
-
-  for (const status of statuses) {
-    const result = parseLabels([`status:${status}`]);
-    expect(result.status).toBe(status);
-  }
+test.each([
+  'pending',
+  'ready',
+  'in-progress',
+  'review',
+  'approved',
+  'closed',
+  'needs-refinement',
+  'blocked',
+] as const)('it parses status value "%s" correctly', (status) => {
+  const result = parseLabels([`status:${status}`]);
+  expect(result.status).toBe(status);
 });
 
 test('it returns all three fields from a fully-labeled issue', () => {
