@@ -1,4 +1,6 @@
 import { expect, test, vi } from 'vitest';
+import type { TreeEntryOverrides } from '../test-utils/build-tree-entry.ts';
+import { buildTreeEntry } from '../test-utils/build-tree-entry.ts';
 import type { SpecReaderConfig, SpecReaderOctokit } from './create-spec-reader.ts';
 import { createSpecReader } from './create-spec-reader.ts';
 
@@ -17,24 +19,6 @@ function encodeContent(content: string): string {
 
 function buildSpecContent(status: string): string {
   return `---\ntitle: Test Spec\nversion: 0.1.0\nstatus: ${status}\n---\n\n# Test\n\nContent.\n`;
-}
-
-interface TreeEntryOverrides {
-  path?: string;
-  sha?: string;
-  type?: string;
-}
-
-function buildTreeEntry(overrides?: TreeEntryOverrides): {
-  path: string;
-  sha: string;
-  type: string;
-} {
-  return {
-    path: overrides?.path ?? 'decree/workflow.md',
-    sha: overrides?.sha ?? 'blob-sha-1',
-    type: overrides?.type ?? 'blob',
-  };
 }
 
 function setupTest(overrides?: {

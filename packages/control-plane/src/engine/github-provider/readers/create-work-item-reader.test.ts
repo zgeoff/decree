@@ -1,57 +1,24 @@
 import { expect, test, vi } from 'vitest';
+import type { IssueOverrides } from '../test-utils/build-issue-data.ts';
+import { buildIssueData } from '../test-utils/build-issue-data.ts';
+import { buildWorkItemReaderOctokit } from '../test-utils/build-octokit.ts';
 import type { WorkItemReaderConfig, WorkItemReaderOctokit } from './create-work-item-reader.ts';
 import { createWorkItemReader } from './create-work-item-reader.ts';
-
-function buildOctokit(overrides?: Partial<WorkItemReaderOctokit>): WorkItemReaderOctokit {
-  return {
-    issues: {
-      listForRepo: overrides?.issues?.listForRepo ?? vi.fn().mockResolvedValue({ data: [] }),
-      get: overrides?.issues?.get ?? vi.fn().mockResolvedValue({ data: buildIssueData() }),
-    },
-    pulls: {
-      list: overrides?.pulls?.list ?? vi.fn().mockResolvedValue({ data: [] }),
-    },
-  };
-}
-
-function buildConfig(): WorkItemReaderConfig {
-  return { owner: 'test-owner', repo: 'test-repo' };
-}
-
-interface IssueOverrides {
-  number?: number;
-  title?: string;
-  labels?: (string | { name?: string })[];
-  body?: string | null;
-  created_at?: string;
-}
-
-function buildIssueData(overrides?: IssueOverrides): {
-  number: number;
-  title: string;
-  labels: (string | { name?: string })[];
-  body: string | null;
-  created_at: string;
-} {
-  return {
-    number: overrides?.number ?? 1,
-    title: overrides?.title ?? 'Test issue',
-    labels: overrides?.labels ?? ['task:implement', 'status:pending'],
-    body: overrides?.body === undefined ? 'Issue body' : overrides.body,
-    created_at: overrides?.created_at ?? '2026-01-01T00:00:00Z',
-  };
-}
 
 interface PROverrides {
   number?: number;
   body?: string | null;
 }
 
-function buildPRData(overrides?: PROverrides): { number: number; body: string | null } {
+function buildPRListItem(overrides?: PROverrides): { number: number; body: string | null } {
   return {
     number: overrides?.number ?? 10,
     body: overrides?.body === undefined ? 'Closes #1' : overrides.body,
   };
+}
+
+function buildConfig(): WorkItemReaderConfig {
+  return { owner: 'test-owner', repo: 'test-repo' };
 }
 
 function setupTest(overrides?: {
@@ -64,13 +31,13 @@ function setupTest(overrides?: {
   octokit: WorkItemReaderOctokit;
 } {
   const issuesList = (overrides?.issues ?? []).map((i) => buildIssueData(i));
-  const prsList = (overrides?.prs ?? []).map((p) => buildPRData(p));
+  const prsList = (overrides?.prs ?? []).map((p) => buildPRListItem(p));
 
   const issuesGet = overrides?.getIssueError
     ? vi.fn().mockRejectedValue(overrides.getIssueError)
     : vi.fn().mockResolvedValue({ data: buildIssueData(overrides?.getIssue) });
 
-  const octokit = buildOctokit({
+  const octokit = buildWorkItemReaderOctokit({
     issues: {
       listForRepo: vi.fn().mockResolvedValue({ data: issuesList }),
       get: issuesGet,
@@ -178,7 +145,7 @@ test('it wraps list API calls with retry', async () => {
   const listForRepo = vi.fn().mockResolvedValue({ data: [] });
   const pullsList = vi.fn().mockResolvedValue({ data: [] });
 
-  const octokit = buildOctokit({
+  const octokit = buildWorkItemReaderOctokit({
     issues: { listForRepo, get: vi.fn() },
     pulls: { list: pullsList },
   });

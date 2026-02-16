@@ -1,109 +1,17 @@
 import { expect, test, vi } from 'vitest';
+import type { CheckRunOverrides } from '../test-utils/build-check-run.ts';
+import { buildCheckRun } from '../test-utils/build-check-run.ts';
+import { buildCombinedStatus } from '../test-utils/build-combined-status.ts';
+import { buildRevisionReaderOctokit } from '../test-utils/build-octokit.ts';
+import type { PROverrides } from '../test-utils/build-pr-data.ts';
+import { buildPRData } from '../test-utils/build-pr-data.ts';
+import type { ReviewOverrides } from '../test-utils/build-review-data.ts';
+import { buildReviewData } from '../test-utils/build-review-data.ts';
 import type { RevisionReaderConfig, RevisionReaderOctokit } from './create-revision-reader.ts';
 import { createRevisionReader } from './create-revision-reader.ts';
 
-interface PROverrides {
-  number?: number;
-  title?: string;
-  html_url?: string;
-  head?: { sha: string; ref: string };
-  user?: { login: string } | null;
-  body?: string | null;
-  draft?: boolean;
-}
-
-function buildPRData(overrides?: PROverrides): {
-  number: number;
-  title: string;
-  html_url: string;
-  head: { sha: string; ref: string };
-  user: { login: string } | null;
-  body: string | null;
-  draft: boolean;
-} {
-  return {
-    number: overrides?.number ?? 1,
-    title: overrides?.title ?? 'Test PR',
-    html_url: overrides?.html_url ?? 'https://github.com/owner/repo/pull/1',
-    head: overrides?.head ?? { sha: 'abc123', ref: 'feature-branch' },
-    user: overrides?.user === undefined ? { login: 'testuser' } : overrides.user,
-    body: overrides?.body === undefined ? 'Closes #10' : overrides.body,
-    draft: overrides?.draft ?? false,
-  };
-}
-
-interface ReviewOverrides {
-  id?: number;
-  userLogin?: string;
-  submitted_at?: string;
-}
-
-function buildReviewData(overrides?: ReviewOverrides): {
-  id: number;
-  user: { login: string } | null;
-  submitted_at: string;
-} {
-  return {
-    id: overrides?.id ?? 100,
-    user:
-      overrides?.userLogin !== undefined ? { login: overrides.userLogin } : { login: 'someone' },
-    submitted_at: overrides?.submitted_at ?? '2026-01-01T00:00:00Z',
-  };
-}
-
-function buildCombinedStatus(
-  state: string,
-  totalCount: number,
-): { state: string; total_count: number } {
-  return { state, total_count: totalCount };
-}
-
-interface CheckRunOverrides {
-  name?: string;
-  status?: string;
-  conclusion?: string | null;
-  details_url?: string | null;
-}
-
-function buildCheckRun(overrides?: CheckRunOverrides): {
-  name: string;
-  status: string;
-  conclusion: string | null;
-  details_url: string | null;
-} {
-  return {
-    name: overrides?.name ?? 'ci',
-    status: overrides?.status ?? 'completed',
-    conclusion: overrides?.conclusion === undefined ? 'success' : overrides.conclusion,
-    details_url: overrides?.details_url === undefined ? null : overrides.details_url,
-  };
-}
-
 function buildConfig(): RevisionReaderConfig {
   return { owner: 'test-owner', repo: 'test-repo', botUsername: 'decree-bot[bot]' };
-}
-
-function buildOctokit(overrides?: Partial<RevisionReaderOctokit>): RevisionReaderOctokit {
-  return {
-    pulls: {
-      list: overrides?.pulls?.list ?? vi.fn().mockResolvedValue({ data: [] }),
-      get: overrides?.pulls?.get ?? vi.fn().mockResolvedValue({ data: buildPRData() }),
-      listReviews: overrides?.pulls?.listReviews ?? vi.fn().mockResolvedValue({ data: [] }),
-      listFiles: overrides?.pulls?.listFiles ?? vi.fn().mockResolvedValue({ data: [] }),
-    },
-    repos: {
-      getCombinedStatusForRef:
-        overrides?.repos?.getCombinedStatusForRef ??
-        vi.fn().mockResolvedValue({ data: buildCombinedStatus('success', 1) }),
-    },
-    checks: {
-      listForRef:
-        overrides?.checks?.listForRef ??
-        vi.fn().mockResolvedValue({
-          data: { total_count: 1, check_runs: [buildCheckRun()] },
-        }),
-    },
-  };
 }
 
 interface SetupOverrides {
@@ -154,7 +62,7 @@ function setupTest(overrides?: SetupOverrides): {
         },
       });
 
-  const octokit = buildOctokit({
+  const octokit = buildRevisionReaderOctokit({
     pulls: {
       list: vi.fn().mockResolvedValue({ data: prsList }),
       get: pullsGet,
@@ -306,7 +214,7 @@ test('it skips CI fetch when head SHA is unchanged and cached status is success'
     data: { total_count: 1, check_runs: [buildCheckRun({ conclusion: 'success' })] },
   });
 
-  const octokit = buildOctokit({
+  const octokit = buildRevisionReaderOctokit({
     pulls: {
       list: vi.fn().mockResolvedValue({
         data: [buildPRData({ number: 1, head: { sha: 'same-sha', ref: 'branch' } })],
@@ -343,7 +251,7 @@ test('it re-fetches CI status when head SHA changes', async () => {
     return { data: [buildPRData({ number: 1, head: { sha, ref: 'branch' } })] };
   });
 
-  const octokit = buildOctokit({
+  const octokit = buildRevisionReaderOctokit({
     pulls: {
       list: pullsList,
       get: vi.fn(),
