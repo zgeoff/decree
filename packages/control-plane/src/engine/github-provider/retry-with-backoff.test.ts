@@ -55,6 +55,7 @@ test('it uses Retry-After header value as delay for 429 responses', async () => 
 
 test('it retries up to 3 times with exponential backoff for 500 responses', async () => {
   const setup = setupTest();
+  vi.spyOn(Math, 'random').mockReturnValue(0.5);
 
   const error: ErrorWithStatus = { status: 500 };
 
@@ -67,13 +68,13 @@ test('it retries up to 3 times with exponential backoff for 500 responses', asyn
 
   expect(setup.fn).toHaveBeenCalledTimes(1);
 
-  await vi.advanceTimersByTimeAsync(3000);
+  await vi.advanceTimersByTimeAsync(1500);
   expect(setup.fn).toHaveBeenCalledTimes(2);
 
-  await vi.advanceTimersByTimeAsync(5000);
+  await vi.advanceTimersByTimeAsync(2500);
   expect(setup.fn).toHaveBeenCalledTimes(3);
 
-  await vi.advanceTimersByTimeAsync(9000);
+  await vi.advanceTimersByTimeAsync(4500);
   expect(setup.fn).toHaveBeenCalledTimes(4);
 
   const result = await promise;
