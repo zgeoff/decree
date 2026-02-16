@@ -181,7 +181,7 @@ explanation of why it does not qualify.
 #### Approval (all checklist steps pass -- no **Findings**)
 
 1. Submit a PR review comment using the approval template:
-   `scripts/workflow/gh.sh pr review <number> --approve --comment --body "<summary>"`
+   `scripts/workflow/gh.sh pr review <number> --comment --body "<summary>"`
 
    ```markdown
    ## Review: Approved
