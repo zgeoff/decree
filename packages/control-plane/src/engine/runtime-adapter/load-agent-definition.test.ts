@@ -1,10 +1,6 @@
 import { vol } from 'memfs';
-import { beforeEach, expect, test } from 'vitest';
+import { expect, test } from 'vitest';
 import { loadAgentDefinition } from './load-agent-definition.ts';
-
-beforeEach(() => {
-  vol.reset();
-});
 
 test('it loads agent definition with all frontmatter fields', async () => {
   vol.fromJSON({
