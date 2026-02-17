@@ -1,7 +1,7 @@
 ---
 title: Planner Agent
-version: 0.7.0
-last_updated: 2026-02-13
+version: 0.8.0
+last_updated: 2026-02-17
 status: approved
 ---
 
@@ -228,6 +228,9 @@ with all arrays empty.
       inspected, then its In Scope list includes all consumer files that reference those exports.
 - [ ] Given two tasks that could touch the same file, when the Planner creates them, then their
       scope sections define non-overlapping boundaries.
+- [ ] Given the Planner creates a task, when the task's acceptance criteria and constraints are
+      inspected, then no criterion requires modifying a file that the task's Constraints or Out of
+      Scope section excludes.
 - [ ] Given a task that depends on another task, when the task issue is inspected, then it includes
       "Blocked by #X" referencing the dependency.
 - [ ] Given foundational work (types, interfaces, core modules), when the Planner creates the task,
