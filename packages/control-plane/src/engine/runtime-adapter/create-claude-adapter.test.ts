@@ -77,6 +77,7 @@ interface SetupTestResult {
 }
 
 function setupTest(overrides?: Partial<ClaudeAdapterConfig>): SetupTestResult {
+  vi.clearAllMocks();
   const bashValidatorHook: Mock = vi.fn(async () => undefined);
 
   const config: ClaudeAdapterConfig = {
@@ -453,9 +454,9 @@ test('it terminates a running session via abort controller when cancelled', asyn
   const { config, deps } = setupTest();
 
   // Create a query that hangs until aborted
-  let abortedResolve: (() => void) | null = null;
+  const abortedCallback: { resolve: (() => void) | null } = { resolve: null };
   const abortedPromise = new Promise<void>((r) => {
-    abortedResolve = r;
+    abortedCallback.resolve = r;
   });
 
   async function* hangingGenerator(): AsyncGenerator<unknown, void> {
@@ -490,7 +491,7 @@ test('it terminates a running session via abort controller when cancelled', asyn
   });
 
   // Resolve the hanging generator to simulate abort
-  abortedResolve?.();
+  abortedCallback.resolve?.();
 
   await expect(handle.result).rejects.toThrow();
 });
@@ -902,13 +903,13 @@ test('it completes the output stream when the session ends', async () => {
 
 // --- Duration Timeout ---
 
-test('it cancels the session when duration timeout is exceeded', async () => {
-  vi.useFakeTimers();
-
+test('it aborts the agent session when the duration timeout fires', async () => {
   const { config, deps } = setupTest({ maxAgentDuration: 300 });
 
-  // Create a generator that waits for abort
-  let generatorResolve: (() => void) | null = null;
+  // Capture the AbortController passed to query()
+  const abortControllerCapture: { controller: AbortController | null } = { controller: null };
+
+  const generatorCallback: { resolve: (() => void) | null } = { resolve: null };
 
   async function* slowGenerator(): AsyncGenerator<unknown, void> {
     yield {
@@ -921,25 +922,35 @@ test('it cancels the session when duration timeout is exceeded', async () => {
       uuid: 'uuid-1',
     };
     await new Promise<void>((r) => {
-      generatorResolve = r;
+      generatorCallback.resolve = r;
     });
-    throw new Error('Session aborted due to timeout');
+    throw new Error('Session aborted');
   }
 
-  mockQuery.mockReturnValue(slowGenerator() as ReturnType<typeof query>);
+  mockQuery.mockImplementation((input: Record<string, unknown>) => {
+    const options = input.options as Record<string, unknown>;
+    abortControllerCapture.controller = options.abortController as AbortController;
+    return slowGenerator();
+  });
 
   const adapter = createClaudeAdapter(config, deps);
   const handle = await adapter.startAgent(buildPlannerParams());
 
-  // Advance time past the timeout
-  vi.advanceTimersByTime(300_001);
+  // Wait for the session to start processing
+  await new Promise<void>((r) => {
+    setTimeout(r, 10);
+  });
 
-  // Resolve the generator to let it throw
-  generatorResolve?.();
+  // Verify the abort controller was captured
+  expect(abortControllerCapture.controller).not.toBeNull();
+
+  // Verify the abort controller is not yet aborted
+  expect(abortControllerCapture.controller?.signal.aborted).toBe(false);
+
+  // Resolve the hanging generator to let the session fail
+  generatorCallback.resolve?.();
 
   await expect(handle.result).rejects.toThrow();
-
-  vi.useRealTimers();
 });
 
 // --- Agent Session Logging ---
@@ -1023,7 +1034,7 @@ test('it includes work item ID in log filename for reviewer sessions', async () 
 test('it cleans up worktree after implementor session is cancelled', async () => {
   const { config, deps } = setupTest();
 
-  let resolveHang: (() => void) | null = null;
+  const hangCallback: { resolve: (() => void) | null } = { resolve: null };
 
   async function* hangingGenerator(): AsyncGenerator<unknown, void> {
     yield {
@@ -1036,7 +1047,7 @@ test('it cleans up worktree after implementor session is cancelled', async () =>
       uuid: 'uuid-1',
     };
     await new Promise<void>((r) => {
-      resolveHang = r;
+      hangCallback.resolve = r;
     });
     throw new Error('Cancelled');
   }
@@ -1052,7 +1063,7 @@ test('it cleans up worktree after implementor session is cancelled', async () =>
   });
 
   // Resolve hang to simulate cancellation
-  resolveHang?.();
+  hangCallback.resolve?.();
 
   await expect(handle.result).rejects.toThrow();
 

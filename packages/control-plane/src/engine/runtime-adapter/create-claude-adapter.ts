@@ -129,6 +129,9 @@ async function startAgent(
     const hookCallback: HookCallback = async (
       input: import('@anthropic-ai/claude-agent-sdk').HookInput,
     ) => {
+      if (!('tool_name' in input)) {
+        return { continue: true };
+      }
       const result = await config.bashValidatorHook({
         tool_name: input.tool_name as string,
         tool_input: input.tool_input as Record<string, unknown>,
@@ -136,11 +139,19 @@ async function startAgent(
       return result ?? { continue: true };
     };
 
+    const sdkDefinition: import('@anthropic-ai/claude-agent-sdk').AgentDefinition = {
+      description: definition.description,
+      tools: definition.tools,
+      disallowedTools: definition.disallowedTools,
+      model: validateModel(definition.model),
+      prompt: definition.prompt,
+    };
+
     const q = query({
       prompt: enrichedPrompt,
       options: {
         agent: params.role,
-        agents: { [params.role]: definition },
+        agents: { [params.role]: sdkDefinition },
         ...(maxTurns !== undefined && { maxTurns }),
         cwd: workingDirectory,
         outputFormat: {
@@ -668,6 +679,25 @@ async function logErrorFooter(logContext: LogContext): Promise<void> {
   } catch {
     // Non-fatal
   }
+}
+
+// --- Model validation ---
+
+type SDKModelLiteral = 'sonnet' | 'opus' | 'haiku' | 'inherit';
+
+const VALID_MODELS: Record<string, SDKModelLiteral> = {
+  sonnet: 'sonnet',
+  opus: 'opus',
+  haiku: 'haiku',
+  inherit: 'inherit',
+};
+
+function validateModel(model: string): SDKModelLiteral {
+  const validated = VALID_MODELS[model];
+  if (validated === undefined) {
+    return 'inherit';
+  }
+  return validated;
 }
 
 function formatTimestamp(date: Date): string {
