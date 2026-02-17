@@ -148,6 +148,14 @@ Break remaining work into tasks. Each task must be:
 - **Right-sized:** Completable in a single Implementor invocation. Split large work into sequential
   tasks with dependencies.
 
+  Before finalizing each task, verify that the Acceptance Criteria and Constraints are
+  self-consistent. If a criterion deletes or renames a file, check whether any file in Out of Scope
+  or Constraints imports from it. If such a contradiction exists, either (1) include the importing
+  file in the task's scope, (2) defer the deletion to a separate subsequent task that owns the
+  consumer, or (3) create the subsequent task explicitly and reference it in this task's Context
+  section. Never write an acceptance criterion that requires deleting a file imported by a file the
+  task is not permitted to touch.
+
 #### Complexity Assessment
 
 For each task, assign a complexity label that determines the Implementor's model:
@@ -347,4 +355,7 @@ If you encounter ambiguity, contradiction, or a gap in the spec:
 ## Hard Constraints
 
 - NEVER make interpretive decisions about spec intent.
+- NEVER create acceptance criteria that contradict the task's own Constraints or Out of Scope
+  boundaries. If a criterion requires modifying a file the task excludes, either expand scope or
+  defer the criterion to a task that includes that file.
 - ALWAYS use `scripts/workflow/gh.sh` for all GitHub CLI operations.

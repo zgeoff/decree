@@ -150,6 +150,14 @@ explanation of why it does not qualify.
 
 #### Step 4: Acceptance Criteria Verification
 
+Before evaluating individual criteria, scan for contradictions between the Acceptance Criteria and
+the task's Constraints or Out of Scope boundaries. A contradiction exists when satisfying a
+criterion would require modifying a file the task explicitly excludes (e.g., a criterion says
+"remove file A" but a constraint says "do not modify file B" which imports file A). When a
+contradiction is detected, record a **Warning** noting the specific conflict, and skip that
+criterion — it is unverifiable due to a task authoring defect, not an implementation failure. Do not
+reject a PR solely because it failed to satisfy a contradictory criterion.
+
 - For each acceptance criterion in the task issue, verify that the implementation satisfies it.
 - Use the PR diff you have been provided to identify relevant tests, then read the full changed test
   files to confirm coverage.
