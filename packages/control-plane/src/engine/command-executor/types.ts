@@ -1,11 +1,17 @@
 import type { RevisionProviderWriter, WorkProviderWriter } from '../github-provider/types.ts';
-import type {
-  AgentResult,
-  AgentRole,
-  EngineCommand,
-  EngineEvent,
-} from '../state-store/domain-type-stubs.ts';
+import type { RuntimeAdapter } from '../runtime-adapter/types.ts';
+import type { AgentRole, EngineCommand, EngineEvent } from '../state-store/domain-type-stubs.ts';
 import type { EngineState } from '../state-store/types.ts';
+
+// Re-export runtime adapter types for backward compatibility
+export type {
+  AgentRunHandle,
+  AgentStartParams,
+  ImplementorStartParams,
+  PlannerStartParams,
+  ReviewerStartParams,
+  RuntimeAdapter,
+} from '../runtime-adapter/types.ts';
 
 // --- CommandExecutor ---
 
@@ -37,65 +43,3 @@ export interface GuardResult {
   allowed: boolean;
   reason: string | null;
 }
-
-// --- Temporarily hosted types (permanent home: engine/runtime-adapter/types.ts) ---
-
-/**
- * Adapter for starting and cancelling agent runs.
- *
- * @remarks Temporarily hosted here. Permanent home: `engine/runtime-adapter/types.ts`.
- */
-export interface RuntimeAdapter {
-  startAgent: (params: AgentStartParams) => Promise<AgentRunHandle>;
-  cancelAgent: (sessionID: string) => void;
-}
-
-/**
- * Handle returned by `RuntimeAdapter.startAgent`.
- *
- * @remarks Temporarily hosted here. Permanent home: `engine/runtime-adapter/types.ts`.
- */
-export interface AgentRunHandle {
-  output: AsyncIterable<string>;
-  result: Promise<AgentResult>;
-  logFilePath: string | null;
-}
-
-/**
- * Start params for a planner agent run.
- *
- * @remarks Temporarily hosted here. Permanent home: `engine/runtime-adapter/types.ts`.
- */
-export interface PlannerStartParams {
-  role: 'planner';
-  specPaths: string[];
-}
-
-/**
- * Start params for an implementor agent run.
- *
- * @remarks Temporarily hosted here. Permanent home: `engine/runtime-adapter/types.ts`.
- */
-export interface ImplementorStartParams {
-  role: 'implementor';
-  workItemID: string;
-  branchName: string;
-}
-
-/**
- * Start params for a reviewer agent run.
- *
- * @remarks Temporarily hosted here. Permanent home: `engine/runtime-adapter/types.ts`.
- */
-export interface ReviewerStartParams {
-  role: 'reviewer';
-  workItemID: string;
-  revisionID: string;
-}
-
-/**
- * Union of per-role agent start params.
- *
- * @remarks Temporarily hosted here. Permanent home: `engine/runtime-adapter/types.ts`.
- */
-export type AgentStartParams = PlannerStartParams | ImplementorStartParams | ReviewerStartParams;
