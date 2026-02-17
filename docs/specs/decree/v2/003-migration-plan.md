@@ -404,55 +404,104 @@ the error handling section.
 
 ---
 
-## Step 6: Runtime adapter
+## Step 6: Runtime adapter (parallel)
 
-Reworks the Agent Manager spec into a RuntimeAdapter implementation spec. The interface is defined
-in 002-architecture.md; this spec covers the concrete implementation.
+Split into two specs: a core contract spec (implementation-agnostic) and a Claude SDK implementation
+spec. These replace `control-plane-engine-agent-manager.md`.
 
-- [ ] Rework spec
+### Step 6a: Runtime adapter core contract
+
+- [x] Write spec
 
 **Read first:**
 
 - `docs/specs/decree/v2/002-architecture.md` — sections: Runtime Adapter (Interface, Mutation
   Boundary, Worktree Management, Agent Run Lifecycle), Agent Results, Agent Role Contracts (Shared
   Patterns).
-- `docs/specs/decree/control-plane-engine-agent-manager.md` — current spec being reworked.
+- `docs/specs/decree/control-plane-engine-command-executor.md` (from step 5) — `startAgentAsync`
+  lifecycle, temporarily hosted types.
+- `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — `EngineState`,
+  `lastPlannedSHAs`.
+- `docs/specs/decree/control-plane-engine-github-provider.md` (from step 2) — provider reader
+  interfaces.
+
+**What changes:**
+
+- Define `RuntimeAdapter` interface with behavioral detail beyond 002-architecture.md.
+- Define `AgentRunHandle` shape and behavioral contracts.
+- Define `AgentStartParams` per-role discriminated union (permanent type home).
+- Define `startAgent` lifecycle contract — abstract sequence any adapter must follow.
+- Define `cancelAgent` contract.
+- Define execution environment requirements per role.
+- Define context assembly data requirements per role (WHAT data, not prompt format).
+- Define patch extraction contract for Implementor.
+- Define structured output validation contract.
+- Define `RuntimeAdapterDeps` — universal dependency interface.
+- Define `RuntimeAdapterConfig` — base config type.
+- Define `ReviewHistory` types.
+- Define type home: `engine/runtime-adapter/types.ts`.
+
+**Affected specs:** None (new spec).
+
+**Depends on:** Step 1 (state store for `EngineState`, `lastPlannedSHAs`), Step 2 (provider reader
+interfaces), Step 5 (CommandExecutor's `startAgentAsync` lifecycle).
+
+**Verification:** Contract is implementation-agnostic — no SDK calls, git commands, Zod schemas, or
+prompt templates. All types needed by the CommandExecutor are defined. Context data requirements
+cover all three roles.
+
+**Spec impact:**
+
+| Spec                                      | Action |
+| ----------------------------------------- | ------ |
+| `control-plane-engine-runtime-adapter.md` | NEW    |
+
+### Step 6b: Runtime adapter — Claude implementation
+
+- [x] Write spec
+
+**Read first:**
+
+- `docs/specs/decree/control-plane-engine-runtime-adapter.md` (from step 6a) — core contract this
+  spec implements.
+- `docs/specs/decree/control-plane-engine-agent-manager.md` — current spec being replaced (source
+  material for Claude-specific content).
 - `docs/specs/decree/control-plane-engine-context-precomputation.md` — context assembly being
   absorbed (DELETE spec — understand what it covers so nothing is lost).
-- `docs/specs/decree/control-plane-engine-command-executor.md` (from step 5) — `startAgentAsync`
-  lifecycle.
 - `docs/specs/decree/v2/001-plan.md` — decisions 16, 19 (artifact-based interface, sandbox
   readiness).
 
 **What changes:**
 
-- Replace the `QueryFactory` / Agent Manager model with `RuntimeAdapter` interface implementation.
-- Define `createClaudeAdapter(config)` — the local Claude SDK runtime adapter.
-- Specify worktree lifecycle management (create, checkout branch, cleanup) as an adapter concern.
-- Specify agent definition loading from `.claude/agents/*.md` as an adapter concern.
-- Specify context assembly — how the adapter resolves `AgentStartParams` (minimal identifiers) into
-  the full context each agent needs (spec content, work item body, revision files, diffs).
-- Specify structured output parsing — how the adapter validates agent output against per-role JSON
-  schemas and produces `PlannerResult` / `ImplementorResult` / `ReviewerResult`.
-- Specify `AgentRunHandle` — `output` stream (live logs) and `result` promise.
-- Specify programmatic hooks (Bash validator) as adapter configuration.
-- Specify the mutation boundary enforcement — agents produce artifacts only, no GitHub operations.
-- Retain `settingSources: []` workaround and SDK session configuration details.
+- Define `createClaudeAdapter(config, deps)` factory — `ClaudeAdapterConfig` extends
+  `RuntimeAdapterConfig`.
+- Specify SDK session configuration (`query()`, all options).
+- Specify agent definition loading from `.claude/agents/*.md` using `gray-matter`.
+- Specify Zod schemas for structured output validation.
+- Specify git worktree lifecycle (create, `yarn install`, cleanup, `-B` flag rationale).
+- Specify patch extraction via `git diff main..HEAD`.
+- Specify enriched prompt format templates per role.
+- Specify project context injection via `contextPaths`.
+- Specify programmatic hooks (`bashValidatorHook`).
+- Specify output stream implementation (SDK message stream → plain text).
+- Specify duration timeout via `AbortController`.
+- Retain `settingSources: []` workaround.
 
-**Affected specs:** `control-plane-engine-agent-manager.md`.
+**Affected specs:** None (new spec, replaces `control-plane-engine-agent-manager.md`).
 
-**Depends on:** Step 5 (CommandExecutor calls `startAgentAsync` which calls the adapter),
-002-architecture.md (RuntimeAdapter interface, AgentStartParams, AgentRunHandle).
+**Depends on:** Step 6a (core contract it implements).
 
 **Verification:** Adapter implements the `RuntimeAdapter` interface exactly. `startAgent` returns
-`AgentRunHandle`. Context assembly covers all three roles. Structured output schemas match the
-`AgentResult` union in 002-architecture.md. No provider writes in the adapter.
+`AgentRunHandle`. Context assembly covers all three roles with prompt format templates. Structured
+output Zod schemas match the `AgentResult` union in 002-architecture.md. No provider writes in the
+adapter. SDK isolation enforced.
 
 **Spec impact:**
 
-| Spec                                    | Action |
-| --------------------------------------- | ------ |
-| `control-plane-engine-agent-manager.md` | REWORK |
+| Spec                                             | Action             |
+| ------------------------------------------------ | ------------------ |
+| `control-plane-engine-runtime-adapter-claude.md` | NEW                |
+| `control-plane-engine-agent-manager.md`          | DELETE (at Step 8) |
 
 ---
 
@@ -470,8 +519,8 @@ can be done in parallel.
 - `docs/specs/decree/v2/002-architecture.md` — sections: Agent Role Contracts (Planner),
   PlannerResult, PlannedWorkItem, AgentStartParams (PlannerStartParams).
 - `docs/specs/decree/agent-planner.md` — current spec being reworked.
-- `docs/specs/decree/control-plane-engine-agent-manager.md` (reworked in step 6) — context assembly
-  for planner.
+- `docs/specs/decree/control-plane-engine-runtime-adapter-claude.md` (from step 6b) — context
+  assembly for planner.
 
 **What changes:**
 
@@ -486,7 +535,7 @@ can be done in parallel.
 
 **Affected specs:** `agent-planner.md`.
 
-**Depends on:** Step 6 (runtime adapter provides context), 002-architecture.md (`PlannerResult`).
+**Depends on:** Step 6b (runtime adapter provides context), 002-architecture.md (`PlannerResult`).
 
 **Verification:** Output schema matches `PlannerResult` from 002-architecture.md. No `gh.sh` or
 GitHub CLI usage. Input description references `PlannerStartParams`.
@@ -506,8 +555,8 @@ GitHub CLI usage. Input description references `PlannerStartParams`.
 - `docs/specs/decree/v2/002-architecture.md` — sections: Agent Role Contracts (Implementor),
   ImplementorResult, AgentStartParams (ImplementorStartParams).
 - `docs/specs/decree/agent-implementor.md` — current spec being reworked.
-- `docs/specs/decree/control-plane-engine-agent-manager.md` (reworked in step 6) — context assembly
-  for implementor, worktree management.
+- `docs/specs/decree/control-plane-engine-runtime-adapter-claude.md` (from step 6b) — context
+  assembly for implementor, worktree management.
 
 **What changes:**
 
@@ -521,7 +570,7 @@ GitHub CLI usage. Input description references `PlannerStartParams`.
 
 **Affected specs:** `agent-implementor.md`.
 
-**Depends on:** Step 6 (runtime adapter provides context), 002-architecture.md
+**Depends on:** Step 6b (runtime adapter provides context), 002-architecture.md
 (`ImplementorResult`).
 
 **Verification:** Output schema matches `ImplementorResult` from 002-architecture.md. No `gh.sh` or
@@ -542,8 +591,8 @@ GitHub CLI usage. No direct status transitions.
 - `docs/specs/decree/v2/002-architecture.md` — sections: Agent Role Contracts (Reviewer),
   ReviewerResult, AgentReview, AgentStartParams (ReviewerStartParams).
 - `docs/specs/decree/agent-reviewer.md` — current spec being reworked.
-- `docs/specs/decree/control-plane-engine-agent-manager.md` (reworked in step 6) — context assembly
-  for reviewer.
+- `docs/specs/decree/control-plane-engine-runtime-adapter-claude.md` (from step 6b) — context
+  assembly for reviewer.
 
 **What changes:**
 
@@ -558,7 +607,7 @@ GitHub CLI usage. No direct status transitions.
 
 **Affected specs:** `agent-reviewer.md`.
 
-**Depends on:** Step 6 (runtime adapter provides context), 002-architecture.md (`ReviewerResult`,
+**Depends on:** Step 6b (runtime adapter provides context), 002-architecture.md (`ReviewerResult`,
 `AgentReview`).
 
 **Verification:** Output schema matches `ReviewerResult` from 002-architecture.md. No `gh.sh` or
@@ -850,8 +899,8 @@ Mark the three DELETE specs as deprecated. Their replacements are now in place:
   replaces recovery.
 - `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — `lastPlannedSHAs` replaces
   planner cache.
-- `docs/specs/decree/control-plane-engine-agent-manager.md` (reworked in step 6) — context assembly
-  replaces context precomputation.
+- `docs/specs/decree/control-plane-engine-runtime-adapter-claude.md` (from step 6b) — context
+  assembly replaces context precomputation.
 
 **What changes:**
 
@@ -891,40 +940,44 @@ Step 1 (state store)
   │      │                                          │
   │      └──► Step 5 (CommandExecutor) ────────────►┤
   │             │                                   │
-  │             └──► Step 6 (runtime adapter)──────►┤
+  │             └──► Step 6a (runtime adapter core)►┤
   │                    │                            │
-  │                    ├──► Step 7a (planner)  ─────┤
-  │                    ├──► Step 7b (implementor) ──┤
-  │                    └──► Step 7c (reviewer) ─────┘
+  │                    └──► Step 6b (Claude adapter)┤
+  │                           │                     │
+  │                           ├──► Step 7a (planner)┤
+  │                           ├──► Step 7b (impl.)──┤
+  │                           └──► Step 7c (review.)┘
   │
   ├──► Step 10a (workflow) ──► Step 10c (label setup)
   ├──► Step 10b (contracts)
   │
   ├──► Step 11 (overview) — depends on all above
-  └──► Step 12 (deprecations) — depends on steps 1, 4, 6
+  └──► Step 12 (deprecations) — depends on steps 1, 4, 6a
 ```
 
 ## Summary
 
-| Step | Spec                                             | Action     |
-| ---- | ------------------------------------------------ | ---------- |
-| 1    | `control-plane-engine-state-store.md`            | NEW        |
-| 2    | `control-plane-engine-github-provider.md`        | NEW        |
-| 3a   | `control-plane-engine-issue-poller.md`           | REWORK     |
-| 3b   | `control-plane-engine-pr-poller.md`              | REWORK     |
-| 3c   | `control-plane-engine-spec-poller.md`            | REWORK     |
-| 4    | `control-plane-engine-handlers.md`               | NEW        |
-| 5    | `control-plane-engine-command-executor.md`       | NEW        |
-| 6    | `control-plane-engine-agent-manager.md`          | REWORK     |
-| 7a   | `agent-planner.md`                               | REWORK     |
-| 7b   | `agent-implementor.md`                           | REWORK     |
-| 7c   | `agent-reviewer.md`                              | REWORK     |
-| 8    | `control-plane-engine.md`                        | REWORK     |
-| 9    | `control-plane-tui.md`                           | REWORK     |
-| 10a  | `workflow.md`                                    | REWORK     |
-| 10b  | `workflow-contracts.md`                          | REWORK     |
-| 10c  | `script-label-setup.md`                          | REWORK     |
-| 11   | `control-plane.md`                               | REWORK     |
-| 12   | `control-plane-engine-recovery.md`               | DEPRECATED |
-| 12   | `control-plane-engine-planner-cache.md`          | DEPRECATED |
-| 12   | `control-plane-engine-context-precomputation.md` | DEPRECATED |
+| Step | Spec                                             | Action             |
+| ---- | ------------------------------------------------ | ------------------ |
+| 1    | `control-plane-engine-state-store.md`            | NEW                |
+| 2    | `control-plane-engine-github-provider.md`        | NEW                |
+| 3a   | `control-plane-engine-issue-poller.md`           | REWORK             |
+| 3b   | `control-plane-engine-pr-poller.md`              | REWORK             |
+| 3c   | `control-plane-engine-spec-poller.md`            | REWORK             |
+| 4    | `control-plane-engine-handlers.md`               | NEW                |
+| 5    | `control-plane-engine-command-executor.md`       | NEW                |
+| 6a   | `control-plane-engine-runtime-adapter.md`        | NEW                |
+| 6b   | `control-plane-engine-runtime-adapter-claude.md` | NEW                |
+| —    | `control-plane-engine-agent-manager.md`          | DELETE (at Step 8) |
+| 7a   | `agent-planner.md`                               | REWORK             |
+| 7b   | `agent-implementor.md`                           | REWORK             |
+| 7c   | `agent-reviewer.md`                              | REWORK             |
+| 8    | `control-plane-engine.md`                        | REWORK             |
+| 9    | `control-plane-tui.md`                           | REWORK             |
+| 10a  | `workflow.md`                                    | REWORK             |
+| 10b  | `workflow-contracts.md`                          | REWORK             |
+| 10c  | `script-label-setup.md`                          | REWORK             |
+| 11   | `control-plane.md`                               | REWORK             |
+| 12   | `control-plane-engine-recovery.md`               | DEPRECATED         |
+| 12   | `control-plane-engine-planner-cache.md`          | DEPRECATED         |
+| 12   | `control-plane-engine-context-precomputation.md` | DEPRECATED         |
