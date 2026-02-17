@@ -1,7 +1,7 @@
 ---
 title: Architecture v2 — Migration Plan
-version: 0.1.0
-last_updated: 2026-02-16
+version: 0.2.0
+last_updated: 2026-02-17
 status: draft
 ---
 
@@ -10,6 +10,9 @@ status: draft
 Sequenced incremental migration steps taking the spec corpus from its current state to the target
 architecture defined in 002-architecture.md. Each step is independently verifiable. The system
 (specs, types, tests) remains consistent after each step.
+
+This plan sequences **spec work**. Implementation follows each spec step — see "Implementation
+phasing" below for how module implementation and engine integration relate.
 
 ## Agent instructions
 
@@ -41,6 +44,29 @@ concurrently.
 - Follow the format and depth of existing specs in `docs/specs/decree/` — read one or two as
   examples before writing.
 - See `CLAUDE.md` for all code style and project conventions.
+
+### Implementation phasing
+
+Implementation follows two tracks:
+
+**Module track (Steps 1–7).** Each step produces a self-contained module with clean boundaries —
+state store, provider, pollers, handlers, command executor, runtime adapter. These modules can be
+implemented and unit-tested independently, immediately after each spec is written. They do not
+depend on the v1 engine; they are new code with new interfaces.
+
+**Integration track (Step 8).** The engine spec defines how all v2 modules are wired together. Its
+implementation is a **replacement** of `create-engine.ts`, not an incremental migration of the
+existing engine. The v1 engine stays running on `main` until the v2 engine is ready. There is no
+intermediate state where v1 and v2 modules coexist in the same engine.
+
+This distinction exists because the v1 pollers are deeply coupled to the engine's internal dispatch,
+recovery, and planner-cache patterns. They cannot be swapped individually — attempting to wire a v2
+poller into the v1 engine requires rewriting every consumer of the v1 poller's snapshot/callback
+API, which cascades into a full engine rewrite. The clean cut is to implement all v2 modules
+independently (module track), then assemble them into a new engine (integration track).
+
+**V1 module deletions** — old poller files, the dispatch module, recovery module, and planner-cache
+module — happen as part of the Step 8 engine replacement, not as separate tasks.
 
 ### Key documents
 
@@ -326,7 +352,7 @@ Defines the broker boundary — the single path for all external mutations. Cove
 pipeline, concurrency guards, policy gate, command translation, compound command execution, and
 error handling.
 
-- [ ] Write spec
+- [x] Write spec
 
 **Read first:**
 
@@ -550,6 +576,11 @@ GitHub CLI usage. No direct status transitions or review posting.
 
 Major rework of the engine spec to reflect the new processing loop, event queue, component wiring,
 and public interface. This is the integration spec — it defines how all components connect.
+
+This is the **integration track** milestone (see "Implementation phasing" above). Implementation of
+this step replaces `create-engine.ts` wholesale with a new engine that wires all v2 modules
+together. The v1 engine, its dispatch module, recovery module, planner-cache module, and v1 poller
+files are deleted as part of this step's implementation — not beforehand.
 
 - [ ] Rework spec
 

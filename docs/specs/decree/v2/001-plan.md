@@ -1,7 +1,7 @@
 ---
 title: Architecture v2 — Plan
-version: 0.4.0
-last_updated: 2026-02-16
+version: 0.5.0
+last_updated: 2026-02-17
 status: draft
 ---
 
@@ -14,11 +14,21 @@ made and the phases of work. Once each phase is complete, this document gets cle
 
 - [x] **Phase 1: Architecture spec** — Write the architecture spec capturing the target
       architecture.
-- [ ] **Phase 2: Migration plan** — Write the migration plan with sequenced incremental refactors.
+- [x] **Phase 2: Migration plan** — Write the migration plan with sequenced incremental refactors.
       Each step identifies: what changes, affected modules, verification criteria, and spec impact
       (new spec / spec becomes redundant / spec needs modification).
-- [ ] **Phase 3: Spec-driven migration** — For each migration step: update affected specs first,
-      then implement, then mark the step done.
+- [ ] **Phase 3: Spec-driven migration** — For each migration step: write or rework the affected
+      spec, then implement, then mark the step done. Implementation follows two tracks:
+  - **Module track (Steps 1–7):** Each step produces a module with clean boundaries that can be
+    implemented and unit-tested independently. Module implementation proceeds immediately after its
+    spec is written. Modules do not depend on the v1 engine — they are new code with new interfaces.
+  - **Integration track (Step 8):** The engine spec defines how all v2 modules are wired together.
+    Its implementation is a **replacement** of `create-engine.ts`, not an incremental migration. The
+    v1 engine stays running on `main` until the v2 engine is ready. V1 module deletions (old
+    pollers, dispatch, recovery, planner-cache) happen as part of the Step 8 engine replacement.
+    There is no intermediate state where v1 and v2 pollers run side-by-side in the same engine — the
+    v1 poller APIs are too deeply coupled to the engine's dispatch, recovery, and planner-cache
+    patterns to be swapped individually.
 
 ## Decisions
 
