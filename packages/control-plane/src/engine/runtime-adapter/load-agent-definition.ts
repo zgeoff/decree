@@ -2,14 +2,6 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import matter from 'gray-matter';
 
-interface AgentDefinitionFrontmatter {
-  description?: string;
-  tools?: string | string[];
-  disallowedTools?: string | string[];
-  model?: string;
-  maxTurns?: number;
-}
-
 interface AgentDefinition {
   description: string;
   tools: string[];
@@ -37,13 +29,12 @@ export async function loadAgentDefinition(
   const fileContent = await readFile(agentFilePath, 'utf-8');
 
   const parsed = matter(fileContent);
-  const frontmatter = parsed.data as AgentDefinitionFrontmatter;
 
-  const description = frontmatter.description ?? '';
-  const tools = parseToolsList(frontmatter.tools);
-  const disallowedTools = parseToolsList(frontmatter.disallowedTools);
-  const model = frontmatter.model ?? 'inherit';
-  const maxTurns = frontmatter.maxTurns;
+  const description = parsed.data.description ?? '';
+  const tools = parseToolsList(parsed.data.tools);
+  const disallowedTools = parseToolsList(parsed.data.disallowedTools);
+  const model = parsed.data.model ?? 'inherit';
+  const maxTurns = parsed.data.maxTurns;
 
   let prompt = parsed.content.trimStart();
 
