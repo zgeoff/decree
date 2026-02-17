@@ -1,7 +1,15 @@
 import type { SpecPollerBatchResult } from '../../types.ts';
 import type { GitHubClient } from '../github-client/types.ts';
-import type { RevisionProviderReader, WorkProviderReader } from '../github-provider/types.ts';
-import type { RevisionChanged, WorkItemChanged } from '../state-store/domain-type-stubs.ts';
+import type {
+  RevisionProviderReader,
+  SpecProviderReader,
+  WorkProviderReader,
+} from '../github-provider/types.ts';
+import type {
+  RevisionChanged,
+  SpecChanged,
+  WorkItemChanged,
+} from '../state-store/domain-type-stubs.ts';
 import type { EngineState } from '../state-store/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -43,6 +51,23 @@ export interface SpecPollerSnapshot {
 export interface SpecPoller {
   poll: () => Promise<SpecPollerBatchResult>;
   getSnapshot: () => SpecPollerSnapshot;
+}
+
+// ---------------------------------------------------------------------------
+// SpecPollerV2
+// ---------------------------------------------------------------------------
+
+export interface SpecPollerV2Config {
+  reader: SpecProviderReader;
+  getState: () => EngineState;
+  enqueue: (event: SpecChanged) => void;
+  interval: number;
+  getDefaultBranchSHA: () => Promise<string>;
+}
+
+export interface SpecPollerV2 {
+  poll: () => Promise<void>;
+  stop: () => void;
 }
 
 // ---------------------------------------------------------------------------
