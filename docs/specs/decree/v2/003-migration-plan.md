@@ -1,7 +1,7 @@
 ---
 title: Architecture v2 — Migration Plan
-version: 0.2.0
-last_updated: 2026-02-17
+version: 0.3.0
+last_updated: 2026-02-18
 status: draft
 ---
 
@@ -24,14 +24,17 @@ directory. The v2 planning documents (`001-plan.md`, `002-architecture.md`, this
 
 ### Process per step
 
-1. Read every file listed in the step's **Read first** section.
-2. For REWORK steps: read the existing spec being reworked (listed under "Affected specs") to
+1. Consult the **Implementation phasing** section below to confirm you are in the correct track.
+   Steps within the cutover track (10–12) must not be started until the engine track (7–9) is
+   complete.
+2. Read every file listed in the step's **Read first** section.
+3. For REWORK steps: read the existing spec being reworked (listed under "Affected specs") to
    understand the current state you are changing.
-3. Invoke the `/spec-writing` skill, then use the `/doc-coauthoring` skill to write or update the
+4. Invoke the `/spec-writing` skill, then use the `/doc-coauthoring` skill to write or update the
    spec.
-4. Replace content in place — do not reprint entire sections when editing.
-5. Verify per the step's criteria.
-6. Check the box in this file.
+5. Replace content in place — do not reprint entire sections when editing.
+6. Verify per the step's criteria.
+7. Check the box in this file.
 
 Steps marked "parallel" within a group have no dependencies on each other and can be worked
 concurrently.
@@ -47,26 +50,37 @@ concurrently.
 
 ### Implementation phasing
 
-Implementation follows two tracks:
+Implementation follows three tracks, reflected in the step numbering:
 
-**Module track (Steps 1–7).** Each step produces a self-contained module with clean boundaries —
-state store, provider, pollers, handlers, command executor, runtime adapter. These modules can be
-implemented and unit-tested independently, immediately after each spec is written. They do not
-depend on the v1 engine; they are new code with new interfaces.
+**Module track (Steps 1–6) — COMPLETE.** Each step produced a self-contained v2 module with clean
+boundaries — state store, provider, pollers, handlers, command executor, runtime adapter. These
+modules were implemented and unit-tested independently. They do not depend on the v1 engine; they
+are new code with new interfaces.
 
-**Integration track (Step 8).** The engine spec defines how all v2 modules are wired together. Its
-implementation is a **replacement** of `create-engine.ts`, not an incremental migration of the
-existing engine. The v1 engine stays running on `main` until the v2 engine is ready. There is no
-intermediate state where v1 and v2 modules coexist in the same engine.
+**Engine track (Steps 7–9).** Specs that describe v2 engine behavior without affecting v1 agents at
+runtime. The engine spec (Step 7) references `002-architecture.md` for agent role contracts
+(`AgentStartParams`, `AgentResult` types) instead of requiring the reworked agent specs from
+Step 10. The engine code is new code in new files and can be specced and partially implemented ahead
+of the cutover. The TUI spec (Step 8) depends on the v2 engine, not on agents. Deprecations (Step 9)
+are frontmatter-only changes to specs already replaced by Steps 1, 4, and 6b.
 
-This distinction exists because the v1 pollers are deeply coupled to the engine's internal dispatch,
-recovery, and planner-cache patterns. They cannot be swapped individually — attempting to wire a v2
-poller into the v1 engine requires rewriting every consumer of the v1 poller's snapshot/callback
-API, which cascades into a full engine rewrite. The clean cut is to implement all v2 modules
-independently (module track), then assemble them into a new engine (integration track).
+**Cutover track (Steps 10–12).** Specs that v1 agents depend on at runtime — agent behavior
+(`agent-planner.md`, `agent-implementor.md`, `agent-reviewer.md`), workflow protocol
+(`workflow.md`), output contracts (`workflow-contracts.md`), and label names
+(`script-label-setup.md`). Both spec writing and implementation for this track are deferred until
+the engine track is complete. These are specced and then implemented **together with the Step 7
+engine replacement** as a single cutover. No intermediate state where v1 agents run against v2
+contracts.
+
+This three-track model exists because the v1 pollers are deeply coupled to the engine's internal
+dispatch, recovery, and planner-cache patterns. They cannot be swapped individually — attempting to
+wire a v2 poller into the v1 engine requires rewriting every consumer of the v1 poller's
+snapshot/callback API, which cascades into a full engine rewrite. The clean cut is to implement all
+v2 modules independently (module track), spec the engine (engine track), then cut over agents,
+workflow, and engine together (cutover track).
 
 **V1 module deletions** — old poller files, the dispatch module, recovery module, and planner-cache
-module — happen as part of the Step 8 engine replacement, not as separate tasks.
+module — happen as part of the Step 7 engine replacement, not as separate tasks.
 
 ### Key documents
 
@@ -501,16 +515,173 @@ adapter. SDK isolation enforced.
 | Spec                                             | Action             |
 | ------------------------------------------------ | ------------------ |
 | `control-plane-engine-runtime-adapter-claude.md` | NEW                |
-| `control-plane-engine-agent-manager.md`          | DELETE (at Step 8) |
+| `control-plane-engine-agent-manager.md`          | DELETE (at Step 7) |
 
 ---
 
-## Step 7: Agent specs (parallel)
+## Step 7: Engine spec
+
+Major rework of the engine spec to reflect the new processing loop, event queue, component wiring,
+and public interface. It defines how all v2 components connect.
+
+This is the **engine track** milestone (see "Implementation phasing" above). Implementation of this
+step replaces `create-engine.ts` wholesale with a new engine that wires all v2 modules together. The
+v1 engine, its dispatch module, recovery module, planner-cache module, and v1 poller files are
+deleted as part of this step's implementation — not beforehand.
+
+- [ ] Rework spec
+
+**Read first:**
+
+- `docs/specs/decree/v2/002-architecture.md` — sections: Component Architecture, Engine Core (Event
+  Processing Loop, Event Queue), TUI Contract, Agent Role Contracts, Agent Results,
+  AgentStartParams, all component sections for wiring context.
+- `docs/specs/decree/control-plane-engine.md` — current spec being reworked.
+- All specs from steps 1–6 — the engine spec wires all v2 modules together.
+
+**What changes:**
+
+- Replace three-layer architecture (Pollers / Engine Core / Interfaces) with the v2 component
+  architecture: EventQueue + ProcessingLoop + StateStore + Handlers + CommandExecutor + Providers +
+  RuntimeAdapters.
+- Define `createEngine(config)` wiring — how provider factory, executor, pollers, handlers, and
+  store are assembled.
+- Define `Engine` public interface: `start()`, `stop()`, `enqueue()`, `getState()`, `subscribe()`,
+  `getWorkItemBody()`, `getRevisionFiles()`, `getAgentStream()`, `refresh()`.
+- Define `processEvent` loop — sequential processing, state update → handlers → command execution.
+- Define event queue semantics — FIFO, commands produce new events appended to queue.
+- Define shutdown invariant — cancel active runs, drain monitors, stop pollers.
+- Remove `GitHubClient` monolith — replaced by provider factory.
+- Remove dispatch tier classification — replaced by handlers.
+- Remove planner deferred buffer — replaced by `lastPlannedSHAs` in state store.
+- Remove dedicated recovery section — replaced by `handleOrphanedWorkItem`.
+- Update event/command unions to reference 002-architecture.md types.
+- Update configuration structure for provider config and runtime adapter config.
+- Remove `send(command)` from engine interface — TUI enqueues events, not commands.
+
+**Affected specs:** `control-plane-engine.md`.
+
+**Depends on:** Steps 1–6 (all v2 module specs). References `002-architecture.md` for agent role
+contracts (`AgentStartParams`, `AgentResult` types) — does NOT depend on agent spec rework (Step
+10).
+
+**Verification:** Engine wiring references all component specs. `createEngine` config shape matches
+002-architecture.md. Processing loop pseudocode matches 002-architecture.md. Public interface
+matches 002-architecture.md. No references to removed concepts (GitHubClient, dispatch tiers,
+planner deferred buffer, dedicated recovery).
+
+**Spec impact:**
+
+| Spec                                    | Action |
+| --------------------------------------- | ------ |
+| `control-plane-engine.md`               | REWORK |
+| `control-plane-engine-agent-manager.md` | DELETE |
+
+---
+
+## Step 8: TUI spec
+
+Rework the TUI to be a thin projection of engine state. Replace the parallel Task model with direct
+subscription to the canonical engine store.
+
+- [ ] Rework spec
+
+**Read first:**
+
+- `docs/specs/decree/v2/002-architecture.md` — sections: TUI Contract (State Subscription, User
+  Actions, Agent Output Streams, Detail Fetches, TUI-Local State, Boundaries).
+- `docs/specs/decree/control-plane-tui.md` — current spec being reworked.
+- `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — selectors the TUI uses.
+- `docs/specs/decree/control-plane-engine.md` (reworked in step 7) — engine public interface.
+
+**What changes:**
+
+- Remove the `Task` / `TaskStatus` / `TaskAgent` / `TaskPR` data model — the TUI reads `WorkItem`,
+  `Revision`, `AgentRun` directly from engine state via selectors.
+- Replace `engine.on()` event subscription with `useStore(engine.store, selector)` Zustand binding.
+- Replace `engine.send(command)` with `engine.enqueue(event)` for user actions
+  (`UserRequestedImplementorRun`, `UserCancelledRun`, `UserTransitionedStatus`).
+- Replace `getIssueDetails(issueNumber)` with `engine.getWorkItemBody(id)`.
+- Remove `getCIStatus` / `getPRReviews` detail fetches — CI status is on `Revision.pipeline`, review
+  state is on `Revision.reviewID`.
+- Simplify `plannerStatus` — derived from `getActivePlannerRun(state)` selector.
+- Retain TUI-local state (selected item, scroll, panel focus, modal state) in component state.
+- Update keybindings to use `engine.enqueue()`.
+- Update startup/shutdown — `engine.start()` / `engine.stop()`.
+
+**Affected specs:** `control-plane-tui.md`.
+
+**Depends on:** Step 1 (selectors), Step 7 (engine public interface).
+
+**Verification:** No `Task` type in the spec. No `engine.on()` or `engine.send()`. All domain state
+comes from `useStore` with selectors. User actions are events, not commands. Detail fetches use
+engine query methods.
+
+**Spec impact:**
+
+| Spec                   | Action |
+| ---------------------- | ------ |
+| `control-plane-tui.md` | REWORK |
+
+---
+
+## Step 9: Deprecate replaced specs
+
+Mark the three DELETE specs as deprecated. Their replacements are now in place:
+
+- `control-plane-engine-recovery.md` → replaced by `handleOrphanedWorkItem` in handlers spec
+  (step 4) and recovery section in 002-architecture.md.
+- `control-plane-engine-planner-cache.md` → replaced by `lastPlannedSHAs` in state store spec
+  (step 1) and `handlePlanning` re-dispatch logic in handlers spec (step 4).
+- `control-plane-engine-context-precomputation.md` → replaced by runtime adapter context assembly
+  (step 6b).
+
+- [ ] Deprecate specs
+
+**Read first:**
+
+- `docs/specs/decree/control-plane-engine-recovery.md` — spec being deprecated.
+- `docs/specs/decree/control-plane-engine-planner-cache.md` — spec being deprecated.
+- `docs/specs/decree/control-plane-engine-context-precomputation.md` — spec being deprecated.
+- `docs/specs/decree/control-plane-engine-handlers.md` (from step 4) — `handleOrphanedWorkItem`
+  replaces recovery.
+- `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — `lastPlannedSHAs` replaces
+  planner cache.
+- `docs/specs/decree/control-plane-engine-runtime-adapter-claude.md` (from step 6b) — context
+  assembly replaces context precomputation.
+
+**What changes:**
+
+- Update frontmatter `status: deprecated` on each spec.
+- Add a deprecation notice at the top of each pointing to the replacement.
+
+**Affected specs:** `control-plane-engine-recovery.md`, `control-plane-engine-planner-cache.md`,
+`control-plane-engine-context-precomputation.md`.
+
+**Depends on:** Steps 1, 4, 6b (replacements must be in place).
+
+**Verification:** Each deprecated spec points to its replacement. No other spec references the
+deprecated specs without noting the replacement.
+
+**Spec impact:**
+
+| Spec                                             | Action     |
+| ------------------------------------------------ | ---------- |
+| `control-plane-engine-recovery.md`               | DEPRECATED |
+| `control-plane-engine-planner-cache.md`          | DEPRECATED |
+| `control-plane-engine-context-precomputation.md` | DEPRECATED |
+
+---
+
+## Step 10: Agent specs (parallel)
 
 Rework the three agent specs for structured artifact output and no direct GitHub operations. These
 can be done in parallel.
 
-### Step 7a: Planner agent
+Spec writing and implementation for this step are deferred to the cutover track — see
+"Implementation phasing" above.
+
+### Step 10a: Planner agent
 
 - [ ] Rework spec
 
@@ -546,7 +717,7 @@ GitHub CLI usage. Input description references `PlannerStartParams`.
 | ------------------ | ------ |
 | `agent-planner.md` | REWORK |
 
-### Step 7b: Implementor agent
+### Step 10b: Implementor agent
 
 - [ ] Rework spec
 
@@ -582,7 +753,7 @@ GitHub CLI usage. No direct status transitions.
 | ---------------------- | ------ |
 | `agent-implementor.md` | REWORK |
 
-### Step 7c: Reviewer agent
+### Step 10c: Reviewer agent
 
 - [ ] Rework spec
 
@@ -621,115 +792,15 @@ GitHub CLI usage. No direct status transitions or review posting.
 
 ---
 
-## Step 8: Engine spec
-
-Major rework of the engine spec to reflect the new processing loop, event queue, component wiring,
-and public interface. This is the integration spec — it defines how all components connect.
-
-This is the **integration track** milestone (see "Implementation phasing" above). Implementation of
-this step replaces `create-engine.ts` wholesale with a new engine that wires all v2 modules
-together. The v1 engine, its dispatch module, recovery module, planner-cache module, and v1 poller
-files are deleted as part of this step's implementation — not beforehand.
-
-- [ ] Rework spec
-
-**Read first:**
-
-- `docs/specs/decree/v2/002-architecture.md` — sections: Component Architecture, Engine Core (Event
-  Processing Loop, Event Queue), TUI Contract, all component sections for wiring context.
-- `docs/specs/decree/control-plane-engine.md` — current spec being reworked.
-- All specs from steps 1–7 — the engine spec wires everything together and must reference each
-  component spec.
-
-**What changes:**
-
-- Replace three-layer architecture (Pollers / Engine Core / Interfaces) with the v2 component
-  architecture: EventQueue + ProcessingLoop + StateStore + Handlers + CommandExecutor + Providers +
-  RuntimeAdapters.
-- Define `createEngine(config)` wiring — how provider factory, executor, pollers, handlers, and
-  store are assembled.
-- Define `Engine` public interface: `start()`, `stop()`, `enqueue()`, `getState()`, `subscribe()`,
-  `getWorkItemBody()`, `getRevisionFiles()`, `getAgentStream()`, `refresh()`.
-- Define `processEvent` loop — sequential processing, state update → handlers → command execution.
-- Define event queue semantics — FIFO, commands produce new events appended to queue.
-- Define shutdown invariant — cancel active runs, drain monitors, stop pollers.
-- Remove `GitHubClient` monolith — replaced by provider factory.
-- Remove dispatch tier classification — replaced by handlers.
-- Remove planner deferred buffer — replaced by `lastPlannedSHAs` in state store.
-- Remove dedicated recovery section — replaced by `handleOrphanedWorkItem`.
-- Update event/command unions to reference 002-architecture.md types.
-- Update configuration structure for provider config and runtime adapter config.
-- Remove `send(command)` from engine interface — TUI enqueues events, not commands.
-
-**Affected specs:** `control-plane-engine.md`.
-
-**Depends on:** Steps 1–7 (all component specs must be written/reworked first).
-
-**Verification:** Engine wiring references all component specs. `createEngine` config shape matches
-002-architecture.md. Processing loop pseudocode matches 002-architecture.md. Public interface
-matches 002-architecture.md. No references to removed concepts (GitHubClient, dispatch tiers,
-planner deferred buffer, dedicated recovery).
-
-**Spec impact:**
-
-| Spec                      | Action |
-| ------------------------- | ------ |
-| `control-plane-engine.md` | REWORK |
-
----
-
-## Step 9: TUI spec
-
-Rework the TUI to be a thin projection of engine state. Replace the parallel Task model with direct
-subscription to the canonical engine store.
-
-- [ ] Rework spec
-
-**Read first:**
-
-- `docs/specs/decree/v2/002-architecture.md` — sections: TUI Contract (State Subscription, User
-  Actions, Agent Output Streams, Detail Fetches, TUI-Local State, Boundaries).
-- `docs/specs/decree/control-plane-tui.md` — current spec being reworked.
-- `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — selectors the TUI uses.
-- `docs/specs/decree/control-plane-engine.md` (reworked in step 8) — engine public interface.
-
-**What changes:**
-
-- Remove the `Task` / `TaskStatus` / `TaskAgent` / `TaskPR` data model — the TUI reads `WorkItem`,
-  `Revision`, `AgentRun` directly from engine state via selectors.
-- Replace `engine.on()` event subscription with `useStore(engine.store, selector)` Zustand binding.
-- Replace `engine.send(command)` with `engine.enqueue(event)` for user actions
-  (`UserRequestedImplementorRun`, `UserCancelledRun`, `UserTransitionedStatus`).
-- Replace `getIssueDetails(issueNumber)` with `engine.getWorkItemBody(id)`.
-- Remove `getCIStatus` / `getPRReviews` detail fetches — CI status is on `Revision.pipeline`, review
-  state is on `Revision.reviewID`.
-- Simplify `plannerStatus` — derived from `getActivePlannerRun(state)` selector.
-- Retain TUI-local state (selected item, scroll, panel focus, modal state) in component state.
-- Update keybindings to use `engine.enqueue()`.
-- Update startup/shutdown — `engine.start()` / `engine.stop()`.
-
-**Affected specs:** `control-plane-tui.md`.
-
-**Depends on:** Step 1 (selectors), Step 8 (engine public interface).
-
-**Verification:** No `Task` type in the spec. No `engine.on()` or `engine.send()`. All domain state
-comes from `useStore` with selectors. User actions are events, not commands. Detail fetches use
-engine query methods.
-
-**Spec impact:**
-
-| Spec                   | Action |
-| ---------------------- | ------ |
-| `control-plane-tui.md` | REWORK |
-
----
-
-## Step 10: Workflow and contracts
+## Step 11: Workflow and contracts
 
 Update workflow specs for v2 terminology, status values, and structured agent output formats. Update
 the label setup script for the new label set.
 
-### Step 10a: Workflow spec
+Spec writing and implementation for this step are deferred to the cutover track — see
+"Implementation phasing" above.
+
+### Step 11a: Workflow spec
 
 - [ ] Rework spec
 
@@ -741,7 +812,7 @@ the label setup script for the new label set.
 - `docs/specs/decree/control-plane-engine-handlers.md` (from step 4) — handler catalog defines
   dispatch behavior.
 - `docs/specs/decree/agent-planner.md`, `docs/specs/decree/agent-implementor.md`,
-  `docs/specs/decree/agent-reviewer.md` (reworked in step 7) — agent role descriptions.
+  `docs/specs/decree/agent-reviewer.md` (reworked in step 10) — agent role descriptions.
 
 **What changes:**
 
@@ -757,7 +828,7 @@ the label setup script for the new label set.
 
 **Affected specs:** `workflow.md`.
 
-**Depends on:** Steps 4, 7 (handler catalog and agent specs define the workflow behavior).
+**Depends on:** Steps 4, 10 (handler catalog and agent specs define the workflow behavior).
 
 **Verification:** All `WorkItemStatus` values match 002-architecture.md. Status transitions are
 consistent with the handler catalog. Role descriptions match agent spec changes.
@@ -768,7 +839,7 @@ consistent with the handler catalog. Role descriptions match agent spec changes.
 | ------------- | ------ |
 | `workflow.md` | REWORK |
 
-### Step 10b: Workflow contracts
+### Step 11b: Workflow contracts
 
 - [ ] Rework spec
 
@@ -778,7 +849,7 @@ consistent with the handler catalog. Role descriptions match agent spec changes.
   ImplementorResult, ReviewerResult, AgentReview).
 - `docs/specs/decree/workflow-contracts.md` — current spec being reworked.
 - `docs/specs/decree/agent-planner.md`, `docs/specs/decree/agent-implementor.md`,
-  `docs/specs/decree/agent-reviewer.md` (reworked in step 7) — updated output formats.
+  `docs/specs/decree/agent-reviewer.md` (reworked in step 10) — updated output formats.
 
 **What changes:**
 
@@ -792,7 +863,7 @@ consistent with the handler catalog. Role descriptions match agent spec changes.
 
 **Affected specs:** `workflow-contracts.md`.
 
-**Depends on:** Step 7 (agent specs define the new output formats).
+**Depends on:** Step 10 (agent specs define the new output formats).
 
 **Verification:** All output formats match the `AgentResult` types in 002-architecture.md. No
 references to `gh.sh` or direct GitHub operations in output templates.
@@ -803,7 +874,7 @@ references to `gh.sh` or direct GitHub operations in output templates.
 | ----------------------- | ------ |
 | `workflow-contracts.md` | REWORK |
 
-### Step 10c: Label setup script
+### Step 11c: Label setup script
 
 - [ ] Rework spec
 
@@ -812,7 +883,7 @@ references to `gh.sh` or direct GitHub operations in output templates.
 - `docs/specs/decree/v2/002-architecture.md` — sections: Domain Model (WorkItemStatus, Priority,
   Complexity).
 - `docs/specs/decree/script-label-setup.md` — current spec being reworked.
-- `docs/specs/decree/workflow.md` (reworked in step 10a) — label taxonomy.
+- `docs/specs/decree/workflow.md` (reworked in step 11a) — label taxonomy.
 
 **What changes:**
 
@@ -825,7 +896,7 @@ references to `gh.sh` or direct GitHub operations in output templates.
 
 **Affected specs:** `script-label-setup.md`.
 
-**Depends on:** Step 10a (workflow spec defines the label taxonomy).
+**Depends on:** Step 11a (workflow spec defines the label taxonomy).
 
 **Verification:** Label set matches `WorkItemStatus`, `Priority`, and `Complexity` enums from
 002-architecture.md. Script remains idempotent.
@@ -838,10 +909,13 @@ references to `gh.sh` or direct GitHub operations in output templates.
 
 ---
 
-## Step 11: Top-level overview
+## Step 12: Top-level overview
 
 Update the control plane overview spec for the v2 architecture. This is the last REWORK — it
 summarizes all component changes.
+
+Spec writing and implementation for this step are deferred to the cutover track — see
+"Implementation phasing" above.
 
 - [ ] Rework spec
 
@@ -849,7 +923,7 @@ summarizes all component changes.
 
 - `docs/specs/decree/v2/002-architecture.md` — full document (this is the overview spec).
 - `docs/specs/decree/control-plane.md` — current spec being reworked.
-- All component specs from steps 1–10 — overview must be consistent with all of them.
+- All component specs from steps 1–11 — overview must be consistent with all of them.
 
 **What changes:**
 
@@ -864,7 +938,7 @@ summarizes all component changes.
 
 **Affected specs:** `control-plane.md`.
 
-**Depends on:** Steps 1–10 (all component specs finalized).
+**Depends on:** Steps 1–11 (all component specs finalized).
 
 **Verification:** Overview is consistent with all component specs. No references to removed
 concepts. Component list matches the actual spec set.
@@ -877,54 +951,6 @@ concepts. Component list matches the actual spec set.
 
 ---
 
-## Step 12: Deprecate replaced specs
-
-Mark the three DELETE specs as deprecated. Their replacements are now in place:
-
-- `control-plane-engine-recovery.md` → replaced by `handleOrphanedWorkItem` in handlers spec
-  (step 4) and recovery section in 002-architecture.md.
-- `control-plane-engine-planner-cache.md` → replaced by `lastPlannedSHAs` in state store spec
-  (step 1) and `handlePlanning` re-dispatch logic in handlers spec (step 4).
-- `control-plane-engine-context-precomputation.md` → replaced by runtime adapter context assembly
-  (step 6).
-
-- [ ] Deprecate specs
-
-**Read first:**
-
-- `docs/specs/decree/control-plane-engine-recovery.md` — spec being deprecated.
-- `docs/specs/decree/control-plane-engine-planner-cache.md` — spec being deprecated.
-- `docs/specs/decree/control-plane-engine-context-precomputation.md` — spec being deprecated.
-- `docs/specs/decree/control-plane-engine-handlers.md` (from step 4) — `handleOrphanedWorkItem`
-  replaces recovery.
-- `docs/specs/decree/control-plane-engine-state-store.md` (from step 1) — `lastPlannedSHAs` replaces
-  planner cache.
-- `docs/specs/decree/control-plane-engine-runtime-adapter-claude.md` (from step 6b) — context
-  assembly replaces context precomputation.
-
-**What changes:**
-
-- Update frontmatter `status: deprecated` on each spec.
-- Add a deprecation notice at the top of each pointing to the replacement.
-
-**Affected specs:** `control-plane-engine-recovery.md`, `control-plane-engine-planner-cache.md`,
-`control-plane-engine-context-precomputation.md`.
-
-**Depends on:** Steps 1, 4, 6 (replacements must be in place).
-
-**Verification:** Each deprecated spec points to its replacement. No other spec references the
-deprecated specs without noting the replacement.
-
-**Spec impact:**
-
-| Spec                                             | Action     |
-| ------------------------------------------------ | ---------- |
-| `control-plane-engine-recovery.md`               | DEPRECATED |
-| `control-plane-engine-planner-cache.md`          | DEPRECATED |
-| `control-plane-engine-context-precomputation.md` | DEPRECATED |
-
----
-
 ## Dependency graph
 
 ```
@@ -933,51 +959,53 @@ Step 1 (state store)
   ├──► Step 2 (GitHub provider)
   │      │
   │      ├──► Step 3a (WorkItem poller)  ─┐
-  │      ├──► Step 3b (Revision poller)   ├─► Step 8 (engine) ──► Step 9 (TUI)
-  │      └──► Step 3c (Spec poller)      ─┘        │
-  │                                                 │
-  ├──► Step 4 (handlers) ─────────────────────────►─┤
-  │      │                                          │
-  │      └──► Step 5 (CommandExecutor) ────────────►┤
-  │             │                                   │
-  │             └──► Step 6a (runtime adapter core)►┤
-  │                    │                            │
-  │                    └──► Step 6b (Claude adapter)┤
-  │                           │                     │
-  │                           ├──► Step 7a (planner)┤
-  │                           ├──► Step 7b (impl.)──┤
-  │                           └──► Step 7c (review.)┘
+  │      ├──► Step 3b (Revision poller)   ├──────────────────────┐
+  │      └──► Step 3c (Spec poller)      ─┘                      │
+  │                                                               │
+  ├──► Step 4 (handlers) ─────────────────────► Step 7 (engine) ─► Step 8 (TUI)
+  │      │                                        │
+  │      └──► Step 5 (CommandExecutor) ──────────►┤
+  │             │                                  │
+  │             └──► Step 6a (runtime core) ─────►┤
+  │                    │                           │
+  │                    └──► Step 6b (Claude) ────►┘
+  │                           │
+  │                           ├──► Step 10a (planner)  ─┐
+  │                           ├──► Step 10b (impl.)     ├──┐
+  │                           └──► Step 10c (reviewer) ─┘  │
+  │                                                         │
+  │  Step 4 ──► Step 11a (workflow) ◄──────────────────────┤
+  │               │                                         │
+  │               └──► Step 11c (label setup)               │
+  │             Step 11b (contracts) ◄─────────────────────┘
   │
-  ├──► Step 10a (workflow) ──► Step 10c (label setup)
-  ├──► Step 10b (contracts)
-  │
-  ├──► Step 11 (overview) — depends on all above
-  └──► Step 12 (deprecations) — depends on steps 1, 4, 6a
+  ├──► Step 9 (deprecations) — depends on steps 1, 4, 6b
+  └──► Step 12 (overview) — depends on all above
 ```
 
 ## Summary
 
-| Step | Spec                                             | Action             |
-| ---- | ------------------------------------------------ | ------------------ |
-| 1    | `control-plane-engine-state-store.md`            | NEW                |
-| 2    | `control-plane-engine-github-provider.md`        | NEW                |
-| 3a   | `control-plane-engine-issue-poller.md`           | REWORK             |
-| 3b   | `control-plane-engine-pr-poller.md`              | REWORK             |
-| 3c   | `control-plane-engine-spec-poller.md`            | REWORK             |
-| 4    | `control-plane-engine-handlers.md`               | NEW                |
-| 5    | `control-plane-engine-command-executor.md`       | NEW                |
-| 6a   | `control-plane-engine-runtime-adapter.md`        | NEW                |
-| 6b   | `control-plane-engine-runtime-adapter-claude.md` | NEW                |
-| —    | `control-plane-engine-agent-manager.md`          | DELETE (at Step 8) |
-| 7a   | `agent-planner.md`                               | REWORK             |
-| 7b   | `agent-implementor.md`                           | REWORK             |
-| 7c   | `agent-reviewer.md`                              | REWORK             |
-| 8    | `control-plane-engine.md`                        | REWORK             |
-| 9    | `control-plane-tui.md`                           | REWORK             |
-| 10a  | `workflow.md`                                    | REWORK             |
-| 10b  | `workflow-contracts.md`                          | REWORK             |
-| 10c  | `script-label-setup.md`                          | REWORK             |
-| 11   | `control-plane.md`                               | REWORK             |
-| 12   | `control-plane-engine-recovery.md`               | DEPRECATED         |
-| 12   | `control-plane-engine-planner-cache.md`          | DEPRECATED         |
-| 12   | `control-plane-engine-context-precomputation.md` | DEPRECATED         |
+| Step | Spec                                             | Action     |
+| ---- | ------------------------------------------------ | ---------- |
+| 1    | `control-plane-engine-state-store.md`            | NEW        |
+| 2    | `control-plane-engine-github-provider.md`        | NEW        |
+| 3a   | `control-plane-engine-issue-poller.md`           | REWORK     |
+| 3b   | `control-plane-engine-pr-poller.md`              | REWORK     |
+| 3c   | `control-plane-engine-spec-poller.md`            | REWORK     |
+| 4    | `control-plane-engine-handlers.md`               | NEW        |
+| 5    | `control-plane-engine-command-executor.md`       | NEW        |
+| 6a   | `control-plane-engine-runtime-adapter.md`        | NEW        |
+| 6b   | `control-plane-engine-runtime-adapter-claude.md` | NEW        |
+| 7    | `control-plane-engine.md`                        | REWORK     |
+| 7    | `control-plane-engine-agent-manager.md`          | DELETE     |
+| 8    | `control-plane-tui.md`                           | REWORK     |
+| 9    | `control-plane-engine-recovery.md`               | DEPRECATED |
+| 9    | `control-plane-engine-planner-cache.md`          | DEPRECATED |
+| 9    | `control-plane-engine-context-precomputation.md` | DEPRECATED |
+| 10a  | `agent-planner.md`                               | REWORK     |
+| 10b  | `agent-implementor.md`                           | REWORK     |
+| 10c  | `agent-reviewer.md`                              | REWORK     |
+| 11a  | `workflow.md`                                    | REWORK     |
+| 11b  | `workflow-contracts.md`                          | REWORK     |
+| 11c  | `script-label-setup.md`                          | REWORK     |
+| 12   | `control-plane.md`                               | REWORK     |
