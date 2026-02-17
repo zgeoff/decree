@@ -305,6 +305,10 @@ interface WorkItemWithRevision {
 
 ### Module Location
 
+> **v2 module.** This is new v2 code implemented alongside the existing v1 engine. The v1 engine
+> continues to function on `main` until the engine replacement (migration plan Step 8). Do not
+> modify or delete v1 modules when implementing this spec.
+
 The state store lives in `engine/state-store/`. Directory structure:
 
 ```

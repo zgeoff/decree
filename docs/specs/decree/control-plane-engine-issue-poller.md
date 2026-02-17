@@ -134,6 +134,11 @@ interface WorkItemPollerConfig {
 
 ### Module Location
 
+> **v2 module.** This is new v2 code (`create-work-item-poller.ts`) in `engine/pollers/`, coexisting
+> with the v1 issue poller (`create-issue-poller.ts`). The v1 poller continues to function on `main`
+> until the engine replacement (migration plan Step 8). Do not modify or delete v1 modules when
+> implementing this spec.
+
 The poller lives in `engine/pollers/`. Files:
 
 ```

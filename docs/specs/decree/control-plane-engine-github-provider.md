@@ -505,6 +505,11 @@ automatic token refresh. The App must have: `issues:write` (work item operations
 
 ### Module Location
 
+> **v2 module.** This is new v2 code in `engine/github-provider/`, implemented alongside the v1
+> `engine/github-client/` module. The v1 module continues to function on `main` until the engine
+> replacement (migration plan Step 8). Do not modify or delete v1 modules when implementing this
+> spec.
+
 The provider lives in `engine/github-provider/`. Directory structure:
 
 ```
