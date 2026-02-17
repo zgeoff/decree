@@ -164,6 +164,7 @@ __metadata:
     tsx: "npm:4.20.3"
     typescript: "npm:5.9.3"
     vitest: "npm:4.0.18"
+    zod: "npm:4.3.6"
     zustand: "npm:5.0.11"
   languageName: unknown
   linkType: soft
@@ -3678,6 +3679,13 @@ __metadata:
   version: 3.2.1
   resolution: "yoga-layout@npm:3.2.1"
   checksum: 10c0/9001e51be993c85e03757e5a04a2b61b8b30c9e5a7865d0156ca87a6431a3b717d51eb4990bfe588189fcfeac688dd9c3de707bbd50d1c344a84e63974cc54a8
+  languageName: node
+  linkType: hard
+
+"zod@npm:4.3.6":
+  version: 4.3.6
+  resolution: "zod@npm:4.3.6"
+  checksum: 10c0/860d25a81ab41d33aa25f8d0d07b091a04acb426e605f396227a796e9e800c44723ed96d0f53a512b57be3d1520f45bf69c0cb3b378a232a00787a2609625307
   languageName: node
   linkType: hard
 
