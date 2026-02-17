@@ -1,7 +1,7 @@
 ---
 title: Workflow Contracts
-version: 0.6.0
-last_updated: 2026-02-13
+version: 0.7.0
+last_updated: 2026-02-17
 status: approved
 ---
 
@@ -30,35 +30,28 @@ and referenced by the agent specs that produce or consume it.
 
 #### Implementor Completion Output
 
-Produced by the Implementor as its final text output, returned to the invoking process.
+Produced by the Implementor as structured JSON, returned to the invoking process.
 
-```
-## Implementor Result
-
-**Task:** #<issue-number> — <title>
-**Outcome:** completed | blocked | validation-failure
-**PR:** #<pr-number> | None (only valid when outcome is `blocked` or `validation-failure`)
-
-### What Was Done
-Brief description of changes made (or "No changes" if stopped before implementation).
-
-### Outstanding
-Any unresolved items, blocker references, or follow-up needed.
+```json
+{
+  "workItemID": "#<issue-number>",
+  "revisionID": "#<pr-number>",
+  "outcome": "completed | blocked",
+  "summary": "Brief description of changes made (or 'No changes' if stopped before implementation)"
+}
 ```
 
 #### Reviewer Completion Output
 
-Produced by the Reviewer as its final text output, returned to the invoking process.
+Produced by the Reviewer as structured JSON, returned to the invoking process.
 
-```
-## Reviewer Result
-
-**Task:** #<issue-number> — <title>
-**Outcome:** approved | needs-changes
-**PR:** #<pr-number>
-
-### Summary
-Brief description of the review result. For approvals, confirm what was verified. For rejections, list the categories with findings.
+```json
+{
+  "issue": "#<issue-number>",
+  "pr": "#<pr-number>",
+  "outcome": "approved | needs-changes",
+  "summary": "Brief description of review result"
+}
 ```
 
 #### Planner Structured Output
@@ -107,19 +100,6 @@ Example:
 > prompt adherence before building ingestion.
 
 ### Issue Comment Formats
-
-#### Validation Failure Comment
-
-Posted to the task issue when an agent's input validation fails. The agent stops without changing
-the status label.
-
-```markdown
-## Validation Failure
-
-**Check:** <which check failed> **Expected:** <what was expected> **Actual:** <what was found>
-
-Cannot proceed until this is resolved.
-```
 
 #### Blocker Comment Format
 
@@ -203,7 +183,7 @@ recorded).
 
 ### Checklist
 
-- **Unresolved Comments:** No outstanding items (or N/A)
+- **Unresolved Review Findings:** No outstanding items (or N/A)
 - **Scope Compliance:** All modified files within scope
 - **Task Constraints:** All constraints satisfied
 - **Acceptance Criteria:** All N criteria verified
@@ -336,19 +316,15 @@ enforces them during implementation) and the Reviewer (which audits compliance d
    nature or size of changes.
 
 2. **Co-located test files:** Test files adjacent to in-scope files (e.g., `foo.test.ts` next to
-   `foo.ts`) are implicitly in scope, even if not explicitly listed. Shared test utilities,
-   fixtures, and integration tests in other directories are not implicitly in scope.
+   `foo.ts`) are implicitly in scope, even if not explicitly listed.
 
-3. **Incidental changes:** Files not listed in "In Scope" but modified as a necessary consequence of
+3. **Incidental changes:** Files outside primary scope that were modified as a direct consequence of
    in-scope work. A change qualifies as incidental when all of the following are true:
-   - The change is minimal (e.g., adding an import, re-exporting a new symbol, adding a field to a
-     shared type, updating test fixtures or snapshots to reflect the structural change).
-   - The change is directly required by a change in a primary-scope file (the in-scope change would
-     not work without it).
-   - The change does not alter the behavioral logic of the incidentally changed file.
-
-   Changes that do **not** qualify as incidental include: adding a new function, modifying control
-   flow, changing default values, or adding new test cases for behavior that doesn't yet exist.
+   - It is behavior-preserving (no new features, no control-flow changes, no default value changes,
+     no externally observable semantic changes).
+   - It is directly motivated by the in-scope change (e.g., required for compilation, shared helper
+     extraction, type updates).
+   - It is narrowly scoped and limited to what is necessary.
 
 4. **Scope inaccuracy:** When the In Scope list names a file that does not contain the expected code
    (e.g., the task describes modifying a handler in file A, but the handler actually lives in file
@@ -375,8 +351,8 @@ When a file outside scope needs non-incidental changes:
 
 ## Acceptance Criteria
 
-- [ ] Given a completion output template, when inspected, then it contains all required fields
-      (Task, Outcome, PR) with no optional fields left undefined.
+- [ ] Given a completion output, when inspected, then it contains all required fields for that
+      agent's output format with no optional fields left undefined.
 - [ ] Given a blocker comment, when the type is a spec blocker (`spec-ambiguity`,
       `spec-contradiction`, `spec-gap`), then the Spec Reference section is present with File,
       Section, and Quote fields.

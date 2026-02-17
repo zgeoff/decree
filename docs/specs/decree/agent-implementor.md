@@ -1,7 +1,7 @@
 ---
 title: Implementor Agent
-version: 0.11.0
-last_updated: 2026-02-13
+version: 0.12.0
+last_updated: 2026-02-17
 status: approved
 ---
 
@@ -82,30 +82,11 @@ and [Project Context Injection](./control-plane-engine-agent-manager.md#project-
 The agent fetches remaining data via tool calls: referenced spec sections and in-scope file state.
 The task issue body, PR diffs, and review comments are pre-computed in the trigger prompt.
 
-## Input Validation
-
-Before starting work, the agent validates:
-
-1. **Task structure** — The task issue contains all required sections: Objective, Spec Reference,
-   Scope (with In Scope list), and Acceptance Criteria.
-2. **Spec reference** — The spec file exists and has `status: approved` in its frontmatter.
-3. **Status label** — The task's current status label is one of: `status:pending`,
-   `status:unblocked`, `status:needs-changes`.
-4. **Existing PR** (resume only) — For `status:unblocked` or `status:needs-changes`, a PR linked to
-   the task issue exists.
-
-These four checks are exhaustive — no other checks are performed during input validation.
-Discrepancies discovered during implementation (e.g., the In Scope list names the wrong file) are
-handled by the scope enforcement rules, not by validation.
-
-If any check fails, the agent posts a comment using the Validation Failure Comment format (see
-[workflow-contracts.md: Validation Failure Comment](./workflow-contracts.md#validation-failure-comment))
-and stops. The agent does not change the status label on validation failure.
-
 ## Execution Scenarios
 
-The agent's behavior differs based on the task's status label at invocation. All scenarios share the
-same input validation and scope enforcement rules.
+The agent's behavior differs based on the task's status label at invocation. The engine guarantees
+dispatch preconditions (valid status label, task structure, spec existence, PR existence for resume
+scenarios) — the agent trusts its input.
 
 ### New Task (status:pending)
 
@@ -187,8 +168,7 @@ The agent must not perform any other status transitions.
 
 ## Completion Output
 
-On every run (success, blocker, or validation failure), the agent returns the Implementor Completion
-Output (see
+On every run (success or blocker), the agent returns the Implementor Completion Output (see
 [workflow-contracts.md: Implementor Completion Output](./workflow-contracts.md#implementor-completion-output))
 as its final text output to the invoking process.
 
@@ -198,15 +178,6 @@ as its final text output to the invoking process.
       `status:in-progress` before any code changes are made.
 - [ ] Given a task issue with a "Spec Reference" field, when the agent starts work, then it reads
       the referenced spec file and sections before writing code.
-- [ ] Given a task issue missing a required section (Objective, Spec Reference, Scope, or Acceptance
-      Criteria), when the agent validates inputs, then it posts a validation failure comment and
-      stops without changing the status label.
-- [ ] Given a task whose referenced spec file does not exist or is not `status: approved`, when the
-      agent validates inputs, then it posts a validation failure comment and stops without changing
-      the status label.
-- [ ] Given a task with an unexpected status label (not `status:pending`, `status:unblocked`, or
-      `status:needs-changes`), when the agent validates inputs, then it posts a validation failure
-      comment and stops without changing the status label.
 - [ ] Given a task with an "In Scope" file list, when the agent completes work, then only files in
       primary scope, co-located test files, incidental changes, and documented scope inaccuracies
       have been modified.
@@ -216,21 +187,12 @@ as its final text output to the invoking process.
 - [ ] Given a task whose In Scope list names a file that does not contain the expected code, when
       the discrepancy makes the task intent unclear, then the agent treats it as a blocker (type:
       `spec-gap`).
-- [ ] Given a condition not covered by the four input validation checks, when the agent discovers it
-      during implementation, then the agent does not post a validation failure comment or stop — it
-      handles the condition through scope enforcement rules or blocker handling instead.
 - [ ] Given a satisfiable task, when the agent completes work, then a ready-for-review PR exists
       linked to the task issue via `Closes #<issue-number>`.
-- [ ] Given a satisfiable task, when the agent completes work, then all pre-submit validation checks
-      (lint, format, typecheck, tests) pass before the session ends.
 - [ ] Given a spec ambiguity during implementation, when the agent stops work, then a draft PR
       preserves progress, a blocker comment is posted, and the label is `status:needs-refinement`.
 - [ ] Given a non-spec blocker during implementation, when the agent stops work, then a draft PR
       preserves progress, a blocker comment is posted, and the label is `status:blocked`.
-- [ ] Given a blocker comment, when reviewed, then it contains a Type, Description, at least two
-      Options with trade-offs, and a Recommendation.
-- [ ] Given a spec blocker comment, when reviewed, then it includes a Spec Reference with file path,
-      section name, and quote.
 - [ ] Given a `status:unblocked` task, when the agent resumes, then it continues from preserved
       progress on the existing PR branch.
 - [ ] Given a `status:unblocked` task, when the agent completes, then the existing draft PR is
@@ -241,9 +203,6 @@ as its final text output to the invoking process.
       escalation comment and continues with in-scope fixes.
 - [ ] Given a non-blocking issue (scope conflict, priority conflict), when the agent posts an
       escalation, then it continues working and does not change the status label.
-- [ ] Given a test or validation failure during debugging, when the agent has already read the
-      relevant files in the current session, then it escalates as a blocker (type:
-      `debugging-limit`) rather than re-reading files to trace the failure.
 - [ ] Given the agent finishes execution (any outcome), then it returns a completion summary
       matching the Implementor Completion Output format.
 
@@ -254,8 +213,8 @@ as its final text output to the invoking process.
 - Project testing framework — Tests must be runnable locally via the commands defined in
   `CLAUDE.md`.
 - `CLAUDE.md` — Code style, naming conventions, and patterns that the agent must conform to.
-- `workflow-contracts.md` — Shared data formats: Validation Failure Comment, Blocker Comment Format,
-  Escalation Comment Format, Implementor Completion Output, Scope Enforcement Rules.
+- `workflow-contracts.md` — Shared data formats: Blocker Comment Format, Escalation Comment Format,
+  Implementor Completion Output, Scope Enforcement Rules.
 - Agent Bash Tool Validator — PreToolUse hook that validates all Bash commands against
   blocklist/allowlist before execution. See `agent-hook-bash-validator.md` (rules) and
   `agent-hook-bash-validator-script.md` (shell implementation).
