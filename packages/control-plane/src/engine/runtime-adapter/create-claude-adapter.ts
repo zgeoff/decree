@@ -7,11 +7,12 @@ import type {
   SDKAssistantMessage,
   SDKMessage,
   SDKResultMessage,
-  SDKResultSuccess,
   SyncHookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import invariant from 'tiny-invariant';
 import { z } from 'zod';
+import type { AgentResult } from '../state-store/domain-type-stubs.ts';
 import { buildImplementorContext } from './context-assembly/build-implementor-context.ts';
 import { buildPlannerContext } from './context-assembly/build-planner-context.ts';
 import { buildReviewerContext } from './context-assembly/build-reviewer-context.ts';
@@ -21,9 +22,6 @@ import { ImplementorOutputSchema, PlannerOutputSchema, ReviewerOutputSchema } fr
 import type {
   AgentRunHandle,
   AgentStartParams,
-  ImplementorStartParams,
-  PlannerStartParams,
-  ReviewerStartParams,
   RuntimeAdapter,
   RuntimeAdapterConfig,
   RuntimeAdapterDeps,
@@ -35,6 +33,32 @@ import type {
  * Hook response type narrowed from the SDK's SyncHookJSONOutput.
  */
 type HookResponse = SyncHookJSONOutput;
+
+type SDKModelLiteral = 'sonnet' | 'opus' | 'haiku' | 'inherit';
+
+/**
+ * Narrowed SDK agent definition — captures only the fields we pass to `query()`.
+ */
+interface SDKAgentDefinition {
+  description: string;
+  tools: string[];
+  disallowedTools: string[];
+  model: SDKModelLiteral;
+  prompt: string;
+}
+
+/**
+ * Narrowed SDK hook input for tool-use events.
+ */
+interface ToolUseHookInput {
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+}
+
+interface ExecResult {
+  stdout: string;
+  stderr: string;
+}
 
 /**
  * Narrowed hook callback type — avoids leaking SDK types outside the adapter module.
@@ -94,13 +118,12 @@ async function startAgent(
   sessions: Map<string, ActiveSession>,
   params: AgentStartParams,
 ): Promise<AgentRunHandle> {
-  const isImplementor = params.role === 'implementor';
   let workingDirectory = config.repoRoot;
   let branchName: string | null = null;
 
   // Step 1: Worktree setup (Implementor only)
-  if (isImplementor) {
-    branchName = (params as ImplementorStartParams).branchName;
+  if (params.role === 'implementor') {
+    branchName = params.branchName;
     workingDirectory = resolve(config.repoRoot, WORKTREES_DIR, branchName);
 
     try {
@@ -126,20 +149,18 @@ async function startAgent(
     const abortController = new AbortController();
     const outputSchema = getOutputSchemaForRole(params.role);
 
-    const hookCallback: HookCallback = async (
-      input: import('@anthropic-ai/claude-agent-sdk').HookInput,
-    ) => {
-      if (!('tool_name' in input)) {
+    const hookCallback: HookCallback = async (input: unknown) => {
+      if (!isToolUseHookInput(input)) {
         return { continue: true };
       }
       const result = await config.bashValidatorHook({
-        tool_name: input.tool_name as string,
-        tool_input: input.tool_input as Record<string, unknown>,
+        tool_name: input.tool_name,
+        tool_input: input.tool_input,
       });
       return result ?? { continue: true };
     };
 
-    const sdkDefinition: import('@anthropic-ai/claude-agent-sdk').AgentDefinition = {
+    const sdkDefinition: SDKAgentDefinition = {
       description: definition.description,
       tools: definition.tools,
       disallowedTools: definition.disallowedTools,
@@ -207,7 +228,9 @@ async function startAgent(
       let running = true;
       while (running) {
         while (outputBuffer.length > 0) {
-          yield outputBuffer.shift() as string;
+          const chunk = outputBuffer.shift();
+          invariant(chunk !== undefined, 'output buffer must have items when length > 0');
+          yield chunk;
         }
         if (outputDone) {
           running = false;
@@ -247,7 +270,7 @@ async function startAgent(
       logFilePath: logContext.logFilePath,
     };
   } catch (error) {
-    if (isImplementor && branchName !== null) {
+    if (params.role === 'implementor' && branchName !== null) {
       await safeCleanupWorktree(config, branchName);
     }
     throw error;
@@ -278,9 +301,7 @@ interface ProcessSessionParams {
   timeoutHandle: ReturnType<typeof setTimeout> | null;
 }
 
-async function processSession(
-  opts: ProcessSessionParams,
-): Promise<import('../state-store/domain-type-stubs.ts').AgentResult> {
+async function processSession(opts: ProcessSessionParams): Promise<AgentResult> {
   try {
     let resultMessage: SDKResultMessage | null = null;
 
@@ -289,12 +310,11 @@ async function processSession(
       await logMessage(opts.logContext, message);
 
       if (message.type === 'assistant') {
-        const assistantMsg = message as SDKAssistantMessage;
-        extractTextFromAssistant(assistantMsg, opts.pushOutput);
+        extractTextFromAssistant(message, opts.pushOutput);
       }
 
       if (message.type === 'result') {
-        resultMessage = message as SDKResultMessage;
+        resultMessage = message;
       }
     }
 
@@ -312,10 +332,8 @@ async function processSession(
       throw new Error(`Agent session failed: ${resultMessage.subtype}`);
     }
 
-    const successResult = resultMessage as SDKResultSuccess;
-
     // Validate structured output
-    return await assembleResult(opts.params, opts.config, successResult);
+    return await assembleResult(opts.params, opts.config, resultMessage);
   } catch (error) {
     opts.endOutput();
     // Write error footer
@@ -328,8 +346,7 @@ async function processSession(
 
     // Cleanup worktree for implementor
     if (opts.params.role === 'implementor') {
-      const branchName = (opts.params as ImplementorStartParams).branchName;
-      await safeCleanupWorktree(opts.config, branchName);
+      await safeCleanupWorktree(opts.config, opts.params.branchName);
     }
 
     opts.sessions.delete(opts.sessionID);
@@ -341,8 +358,8 @@ async function processSession(
 async function assembleResult(
   params: AgentStartParams,
   config: ClaudeAdapterConfig,
-  successResult: SDKResultSuccess,
-): Promise<import('../state-store/domain-type-stubs.ts').AgentResult> {
+  successResult: { structured_output?: unknown },
+): Promise<AgentResult> {
   const structuredOutput = successResult.structured_output;
 
   if (params.role === 'planner') {
@@ -350,7 +367,7 @@ async function assembleResult(
     if (!parseResult.success) {
       throw new Error(`Planner output validation failed: ${parseResult.error.message}`);
     }
-    return parseResult.data as import('../state-store/domain-type-stubs.ts').PlannerResult;
+    return parseResult.data;
   }
 
   if (params.role === 'reviewer') {
@@ -358,7 +375,7 @@ async function assembleResult(
     if (!parseResult.success) {
       throw new Error(`Reviewer output validation failed: ${parseResult.error.message}`);
     }
-    return parseResult.data as import('../state-store/domain-type-stubs.ts').ReviewerResult;
+    return parseResult.data;
   }
 
   // Implementor
@@ -367,17 +384,12 @@ async function assembleResult(
     throw new Error(`Implementor output validation failed: ${parseResult.error.message}`);
   }
 
-  const implementorOutput = parseResult.data as {
-    role: 'implementor';
-    outcome: 'completed' | 'blocked' | 'validation-failure';
-    summary: string;
-  };
+  const implementorOutput = parseResult.data;
 
   let patch: string | null = null;
 
   if (implementorOutput.outcome === 'completed') {
-    const branchName = (params as ImplementorStartParams).branchName;
-    const worktreeDir = resolve(config.repoRoot, WORKTREES_DIR, branchName);
+    const worktreeDir = resolve(config.repoRoot, WORKTREES_DIR, params.branchName);
     patch = await extractPatch(worktreeDir, config.defaultBranch);
   }
 
@@ -397,7 +409,7 @@ async function assembleContext(
   deps: RuntimeAdapterDeps,
 ): Promise<string> {
   if (params.role === 'planner') {
-    return buildPlannerContext(params as PlannerStartParams, deps.getState, {
+    return buildPlannerContext(params, deps.getState, {
       repoRoot: config.repoRoot,
       workItemReader: deps.workItemReader,
       gitShowBlob: async (blobSHA: string): Promise<string> => {
@@ -413,7 +425,7 @@ async function assembleContext(
   }
 
   if (params.role === 'implementor') {
-    return buildImplementorContext(params as ImplementorStartParams, {
+    return buildImplementorContext(params, {
       workItemReader: deps.workItemReader,
       revisionReader: deps.revisionReader,
       getState: deps.getState,
@@ -423,7 +435,7 @@ async function assembleContext(
 
   // Reviewer
   return buildReviewerContext({
-    params: params as ReviewerStartParams,
+    params,
     getState: deps.getState,
     deps,
   });
@@ -453,8 +465,8 @@ function extractTextFromAssistant(
   }
 
   for (const block of content) {
-    if (block.type === 'text') {
-      pushOutput((block as { type: 'text'; text: string }).text);
+    if (isTextBlock(block)) {
+      pushOutput(block.text);
     }
   }
 }
@@ -466,24 +478,21 @@ function buildSessionID(params: AgentStartParams): string {
     return `planner-${Date.now()}`;
   }
   if (params.role === 'implementor') {
-    return `implementor-${(params as ImplementorStartParams).workItemID}-${Date.now()}`;
+    return `implementor-${params.workItemID}-${Date.now()}`;
   }
-  return `reviewer-${(params as ReviewerStartParams).workItemID}-${Date.now()}`;
+  return `reviewer-${params.workItemID}-${Date.now()}`;
 }
 
 // --- Worktree management ---
 
-const execFileAsync: (
+// promisify(execFile) overload resolution requires cast — genuine TS limitation
+const execFileAsync = promisify(execFile) as (
   file: string,
   args: string[],
   options: { cwd: string; encoding: 'utf8' },
-) => Promise<{ stdout: string; stderr: string }> = promisify(execFile) as (
-  file: string,
-  args: string[],
-  options: { cwd: string; encoding: 'utf8' },
-) => Promise<{ stdout: string; stderr: string }>;
+) => Promise<ExecResult>;
 
-async function execGit(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+async function execGit(cwd: string, args: string[]): Promise<ExecResult> {
   return execFileAsync('git', args, { cwd, encoding: 'utf8' });
 }
 
@@ -554,10 +563,10 @@ function buildLogContext(
 
 function getWorkItemID(params: AgentStartParams): string {
   if (params.role === 'implementor') {
-    return (params as ImplementorStartParams).workItemID;
+    return params.workItemID;
   }
   if (params.role === 'reviewer') {
-    return (params as ReviewerStartParams).workItemID;
+    return params.workItemID;
   }
   return '';
 }
@@ -576,13 +585,12 @@ async function logMessage(logContext: LogContext, message: SDKMessage): Promise<
 
     const timestamp = formatTimestamp(new Date());
 
-    if (message.type === 'system' && 'subtype' in message && message.subtype === 'init') {
-      const initMsg = message as import('@anthropic-ai/claude-agent-sdk').SDKSystemMessage;
+    if (message.type === 'system' && message.subtype === 'init') {
       const lines = [
         `[${timestamp}] SYSTEM init`,
-        `  Model: ${initMsg.model}`,
-        `  CWD: ${initMsg.cwd}`,
-        `  Tools: ${initMsg.tools.join(', ')}`,
+        `  Model: ${message.model}`,
+        `  CWD: ${message.cwd}`,
+        `  Tools: ${message.tools.join(', ')}`,
         '',
       ];
       await appendFile(logContext.logFilePath, lines.join('\n'), 'utf-8');
@@ -590,12 +598,10 @@ async function logMessage(logContext: LogContext, message: SDKMessage): Promise<
     }
 
     if (message.type === 'assistant') {
-      const assistantMsg = message as SDKAssistantMessage;
-      if (assistantMsg.message?.content) {
-        for (const block of assistantMsg.message.content) {
-          if (block.type === 'text') {
-            const text = (block as { type: 'text'; text: string }).text;
-            const indented = text
+      if (message.message?.content) {
+        for (const block of message.message.content) {
+          if (isTextBlock(block)) {
+            const indented = block.text
               .split('\n')
               .map((line) => `  ${line}`)
               .join('\n');
@@ -605,11 +611,10 @@ async function logMessage(logContext: LogContext, message: SDKMessage): Promise<
               `[${timestamp}] ASSISTANT\n${indented}\n\n`,
               'utf-8',
             );
-          } else if (block.type === 'tool_use') {
-            const toolBlock = block as { type: 'tool_use'; name: string };
+          } else if (isToolUseBlock(block)) {
             await appendFile(
               logContext.logFilePath,
-              `[${timestamp}] ASSISTANT\n  [tool_use] ${toolBlock.name}\n\n`,
+              `[${timestamp}] ASSISTANT\n  [tool_use] ${block.name}\n\n`,
               'utf-8',
             );
           }
@@ -619,13 +624,12 @@ async function logMessage(logContext: LogContext, message: SDKMessage): Promise<
     }
 
     if (message.type === 'result') {
-      const resultMsg = message as SDKResultMessage;
-      const lines = [`[${timestamp}] RESULT ${resultMsg.subtype}`];
-      lines.push(`  Duration: ${(resultMsg.duration_ms / MS_PER_SECOND).toFixed(1)}s`);
-      lines.push(`  Cost:     $${resultMsg.total_cost_usd.toFixed(2)}`);
-      lines.push(`  Turns:    ${resultMsg.num_turns}`);
+      const lines = [`[${timestamp}] RESULT ${message.subtype}`];
+      lines.push(`  Duration: ${(message.duration_ms / MS_PER_SECOND).toFixed(1)}s`);
+      lines.push(`  Cost:     $${message.total_cost_usd.toFixed(2)}`);
+      lines.push(`  Turns:    ${message.num_turns}`);
       lines.push(
-        `  Tokens:   ${resultMsg.usage.input_tokens} in / ${resultMsg.usage.output_tokens} out`,
+        `  Tokens:   ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`,
       );
       lines.push('');
       await appendFile(logContext.logFilePath, lines.join('\n'), 'utf-8');
@@ -683,8 +687,6 @@ async function logErrorFooter(logContext: LogContext): Promise<void> {
 
 // --- Model validation ---
 
-type SDKModelLiteral = 'sonnet' | 'opus' | 'haiku' | 'inherit';
-
 const VALID_MODELS: Record<string, SDKModelLiteral> = {
   sonnet: 'sonnet',
   opus: 'opus',
@@ -698,6 +700,20 @@ function validateModel(model: string): SDKModelLiteral {
     return 'inherit';
   }
   return validated;
+}
+
+// --- Type guards ---
+
+function isToolUseHookInput(value: unknown): value is ToolUseHookInput {
+  return typeof value === 'object' && value !== null && 'tool_name' in value;
+}
+
+function isTextBlock(block: { type: string }): block is { type: 'text'; text: string } {
+  return block.type === 'text';
+}
+
+function isToolUseBlock(block: { type: string }): block is { type: 'tool_use'; name: string } {
+  return block.type === 'tool_use';
 }
 
 function formatTimestamp(date: Date): string {

@@ -1,4 +1,5 @@
-import type { Mock } from 'vitest';
+import type { SDKMessage, SDKResultError, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { Mock, MockedFunction } from 'vitest';
 import { expect, test, vi } from 'vitest';
 import type { PlannerResult, ReviewerResult } from '../state-store/types.ts';
 import {
@@ -54,13 +55,25 @@ import { buildReviewerContext } from './context-assembly/build-reviewer-context.
 import { extractPatch } from './extract-patch.ts';
 import { loadAgentDefinition } from './load-agent-definition.ts';
 
-const mockQuery: Mock = vi.mocked(query) as unknown as Mock;
+const mockQuery: MockedFunction<typeof query> = vi.mocked(query);
 const mockExecFile: Mock = vi.mocked(execFile) as unknown as Mock;
-const mockLoadAgentDefinition: Mock = vi.mocked(loadAgentDefinition) as unknown as Mock;
-const mockBuildPlannerContext: Mock = vi.mocked(buildPlannerContext) as unknown as Mock;
-const mockBuildImplementorContext: Mock = vi.mocked(buildImplementorContext) as unknown as Mock;
-const mockBuildReviewerContext: Mock = vi.mocked(buildReviewerContext) as unknown as Mock;
-const mockExtractPatch: Mock = vi.mocked(extractPatch) as unknown as Mock;
+const mockLoadAgentDefinition: MockedFunction<typeof loadAgentDefinition> =
+  vi.mocked(loadAgentDefinition);
+const mockBuildPlannerContext: MockedFunction<typeof buildPlannerContext> =
+  vi.mocked(buildPlannerContext);
+const mockBuildImplementorContext: MockedFunction<typeof buildImplementorContext> =
+  vi.mocked(buildImplementorContext);
+const mockBuildReviewerContext: MockedFunction<typeof buildReviewerContext> =
+  vi.mocked(buildReviewerContext);
+const mockExtractPatch: MockedFunction<typeof extractPatch> = vi.mocked(extractPatch);
+
+// --- Query helper ---
+// Query extends AsyncGenerator<SDKMessage> with 15 control methods (interrupt,
+// setPermissionMode, etc.) that the adapter never calls — it only iterates messages.
+// This helper wraps a typed generator so mockReturnValue accepts it.
+function toQuery(gen: AsyncGenerator<SDKMessage, void>): ReturnType<typeof query> {
+  return gen as ReturnType<typeof query>;
+}
 
 // --- Regex constants ---
 
@@ -70,21 +83,42 @@ const REVIEWER_LOG_PATTERN = /reviewer-42\.log$/;
 
 // --- Test helpers ---
 
+function buildSystemInitMessage(): SDKSystemMessage {
+  return {
+    type: 'system',
+    subtype: 'init',
+    apiKeySource: 'user',
+    claude_code_version: '1.0.0',
+    cwd: '/repo',
+    tools: ['Read', 'Write'],
+    mcp_servers: [],
+    model: 'claude-opus-4-6',
+    permissionMode: 'bypassPermissions',
+    slash_commands: [],
+    output_style: 'text',
+    skills: [],
+    plugins: [],
+    uuid: '00000000-0000-0000-0000-000000000001',
+    session_id: 'test-session',
+  };
+}
+
 interface SetupTestResult {
   config: ClaudeAdapterConfig;
   deps: RuntimeAdapterDeps;
-  bashValidatorHook: Mock;
+  bashValidatorHook: Mock<BashValidatorHook>;
 }
 
 function setupTest(overrides?: Partial<ClaudeAdapterConfig>): SetupTestResult {
   vi.clearAllMocks();
-  const bashValidatorHook: Mock = vi.fn(async () => undefined);
+  const bashValidatorHook = vi.fn<BashValidatorHook>();
+  bashValidatorHook.mockResolvedValue(undefined);
 
   const config: ClaudeAdapterConfig = {
     repoRoot: '/repo',
     defaultBranch: 'main',
     contextPaths: [],
-    bashValidatorHook: bashValidatorHook as unknown as BashValidatorHook,
+    bashValidatorHook,
     maxAgentDuration: 0,
     logging: {
       agentSessions: false,
@@ -147,9 +181,11 @@ function buildReviewerParams(): ReviewerStartParams {
   return { role: 'reviewer', workItemID: '42', revisionID: '99' };
 }
 
+type MockResultSubtype = 'success' | SDKResultError['subtype'];
+
 interface MockQueryConfig {
   structuredOutput?: unknown;
-  subtype?: string;
+  subtype?: MockResultSubtype;
   textContent?: string[];
 }
 
@@ -158,18 +194,10 @@ function setupMockQuery(queryConfig?: MockQueryConfig): void {
   const structuredOutput = queryConfig?.structuredOutput;
   const textContent = queryConfig?.textContent ?? [];
 
-  const messages: unknown[] = [];
+  const messages: SDKMessage[] = [];
 
   // System init message
-  messages.push({
-    type: 'system',
-    subtype: 'init',
-    model: 'claude-opus-4-6',
-    cwd: '/repo',
-    tools: ['Read', 'Write'],
-    session_id: 'test-session',
-    uuid: 'uuid-1',
-  });
+  messages.push(buildSystemInitMessage());
 
   // Assistant text messages
   for (const text of textContent) {
@@ -179,7 +207,7 @@ function setupMockQuery(queryConfig?: MockQueryConfig): void {
         content: [{ type: 'text', text }],
       },
       parent_tool_use_id: null,
-      uuid: 'uuid-2',
+      uuid: '00000000-0000-0000-0000-000000000002',
       session_id: 'test-session',
     });
   }
@@ -200,7 +228,7 @@ function setupMockQuery(queryConfig?: MockQueryConfig): void {
       modelUsage: {},
       permission_denials: [],
       structured_output: structuredOutput,
-      uuid: 'uuid-3',
+      uuid: '00000000-0000-0000-0000-000000000003',
       session_id: 'test-session',
     });
   } else {
@@ -217,18 +245,18 @@ function setupMockQuery(queryConfig?: MockQueryConfig): void {
       modelUsage: {},
       permission_denials: [],
       errors: ['Max retries'],
-      uuid: 'uuid-3',
+      uuid: '00000000-0000-0000-0000-000000000003',
       session_id: 'test-session',
     });
   }
 
-  async function* mockAsyncGenerator(): AsyncGenerator<unknown, void> {
+  async function* mockAsyncGenerator(): AsyncGenerator<SDKMessage, void> {
     for (const msg of messages) {
       yield msg;
     }
   }
 
-  mockQuery.mockReturnValue(mockAsyncGenerator() as ReturnType<typeof query>);
+  mockQuery.mockReturnValue(toQuery(mockAsyncGenerator()));
 }
 
 // --- startAgent Lifecycle ---
@@ -459,22 +487,14 @@ test('it terminates a running session via abort controller when cancelled', asyn
     abortedCallback.resolve = r;
   });
 
-  async function* hangingGenerator(): AsyncGenerator<unknown, void> {
-    yield {
-      type: 'system',
-      subtype: 'init',
-      model: 'opus',
-      cwd: '/repo',
-      tools: [],
-      session_id: 'test',
-      uuid: 'uuid-1',
-    };
+  async function* hangingGenerator(): AsyncGenerator<SDKMessage, void> {
+    yield buildSystemInitMessage();
     // Hang here
     await abortedPromise;
     throw new Error('Aborted');
   }
 
-  mockQuery.mockReturnValue(hangingGenerator() as ReturnType<typeof query>);
+  mockQuery.mockReturnValue(toQuery(hangingGenerator()));
 
   const adapter = createClaudeAdapter(config, deps);
   const params = buildPlannerParams();
@@ -808,16 +828,8 @@ test('it does not yield tool use metadata through the output stream', async () =
   };
 
   // Create messages with tool_use blocks mixed in
-  const messages: unknown[] = [
-    {
-      type: 'system',
-      subtype: 'init',
-      model: 'opus',
-      cwd: '/repo',
-      tools: ['Read'],
-      session_id: 'test',
-      uuid: 'uuid-1',
-    },
+  const messages: SDKMessage[] = [
+    buildSystemInitMessage(),
     {
       type: 'assistant',
       message: {
@@ -827,7 +839,7 @@ test('it does not yield tool use metadata through the output stream', async () =
         ],
       },
       parent_tool_use_id: null,
-      uuid: 'uuid-2',
+      uuid: '00000000-0000-0000-0000-000000000002',
       session_id: 'test',
     },
     {
@@ -836,7 +848,7 @@ test('it does not yield tool use metadata through the output stream', async () =
       tool_name: 'Read',
       parent_tool_use_id: null,
       elapsed_time_seconds: 1,
-      uuid: 'uuid-3',
+      uuid: '00000000-0000-0000-0000-000000000003',
       session_id: 'test',
     },
     {
@@ -853,18 +865,18 @@ test('it does not yield tool use metadata through the output stream', async () =
       modelUsage: {},
       permission_denials: [],
       structured_output: plannerOutput,
-      uuid: 'uuid-4',
+      uuid: '00000000-0000-0000-0000-000000000004',
       session_id: 'test',
     },
   ];
 
-  async function* gen(): AsyncGenerator<unknown, void> {
+  async function* gen(): AsyncGenerator<SDKMessage, void> {
     for (const msg of messages) {
       yield msg;
     }
   }
 
-  mockQuery.mockReturnValue(gen() as ReturnType<typeof query>);
+  mockQuery.mockReturnValue(toQuery(gen()));
 
   const adapter = createClaudeAdapter(config, deps);
   const handle = await adapter.startAgent(buildPlannerParams());
@@ -911,26 +923,17 @@ test('it aborts the agent session when the duration timeout fires', async () => 
 
   const generatorCallback: { resolve: (() => void) | null } = { resolve: null };
 
-  async function* slowGenerator(): AsyncGenerator<unknown, void> {
-    yield {
-      type: 'system',
-      subtype: 'init',
-      model: 'opus',
-      cwd: '/repo',
-      tools: [],
-      session_id: 'test',
-      uuid: 'uuid-1',
-    };
+  async function* slowGenerator(): AsyncGenerator<SDKMessage, void> {
+    yield buildSystemInitMessage();
     await new Promise<void>((r) => {
       generatorCallback.resolve = r;
     });
     throw new Error('Session aborted');
   }
 
-  mockQuery.mockImplementation((input: Record<string, unknown>) => {
-    const options = input.options as Record<string, unknown>;
-    abortControllerCapture.controller = options.abortController as AbortController;
-    return slowGenerator();
+  mockQuery.mockImplementation((input) => {
+    abortControllerCapture.controller = input.options?.abortController ?? null;
+    return toQuery(slowGenerator());
   });
 
   const adapter = createClaudeAdapter(config, deps);
@@ -1036,23 +1039,15 @@ test('it cleans up worktree after implementor session is cancelled', async () =>
 
   const hangCallback: { resolve: (() => void) | null } = { resolve: null };
 
-  async function* hangingGenerator(): AsyncGenerator<unknown, void> {
-    yield {
-      type: 'system',
-      subtype: 'init',
-      model: 'opus',
-      cwd: '/repo',
-      tools: [],
-      session_id: 'test',
-      uuid: 'uuid-1',
-    };
+  async function* hangingGenerator(): AsyncGenerator<SDKMessage, void> {
+    yield buildSystemInitMessage();
     await new Promise<void>((r) => {
       hangCallback.resolve = r;
     });
     throw new Error('Cancelled');
   }
 
-  mockQuery.mockReturnValue(hangingGenerator() as ReturnType<typeof query>);
+  mockQuery.mockReturnValue(toQuery(hangingGenerator()));
 
   const adapter = createClaudeAdapter(config, deps);
   const handle = await adapter.startAgent(buildImplementorParams());

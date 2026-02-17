@@ -334,6 +334,11 @@ interface BBox { x: number; y: number; w: number; h: number }
 function getConfig(bbox: BBox): Config { ... }
 ```
 
+### No inline import type expressions
+
+Never use `import('module').Type` in type annotations or assertions — import the type at the top of
+the file or define a narrowed local interface at the module boundary.
+
 ### Type assertions
 
 Never use type assertions (`as`) unless there is a genuine TypeScript error that cannot be resolved
