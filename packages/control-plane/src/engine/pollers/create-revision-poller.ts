@@ -1,5 +1,8 @@
 import equal from 'fast-deep-equal';
 import type { Revision, RevisionChanged } from '../state-store/types.ts';
+import { buildChangedRevisionEvent } from '../utils/build-changed-revision-event.ts';
+import { buildNewRevisionEvent } from '../utils/build-new-revision-event.ts';
+import { buildRemovedRevisionEvent } from '../utils/build-removed-revision-event.ts';
 import type { RevisionPoller, RevisionPollerConfig } from './types.ts';
 
 const MILLISECONDS_PER_SECOND = 1000;
@@ -73,40 +76,4 @@ function detectRemovedRevisions(
       enqueue(buildRemovedRevisionEvent(storedRevision));
     }
   }
-}
-
-function buildNewRevisionEvent(revision: Revision): RevisionChanged {
-  return {
-    type: 'revisionChanged',
-    revisionID: revision.id,
-    workItemID: revision.workItemID,
-    revision,
-    oldPipelineStatus: null,
-    newPipelineStatus: revision.pipeline?.status ?? null,
-  };
-}
-
-function buildChangedRevisionEvent(
-  providerRevision: Revision,
-  storedRevision: Revision,
-): RevisionChanged {
-  return {
-    type: 'revisionChanged',
-    revisionID: providerRevision.id,
-    workItemID: providerRevision.workItemID,
-    revision: providerRevision,
-    oldPipelineStatus: storedRevision.pipeline?.status ?? null,
-    newPipelineStatus: providerRevision.pipeline?.status ?? null,
-  };
-}
-
-function buildRemovedRevisionEvent(storedRevision: Revision): RevisionChanged {
-  return {
-    type: 'revisionChanged',
-    revisionID: storedRevision.id,
-    workItemID: storedRevision.workItemID,
-    revision: storedRevision,
-    oldPipelineStatus: storedRevision.pipeline?.status ?? null,
-    newPipelineStatus: null,
-  };
 }
