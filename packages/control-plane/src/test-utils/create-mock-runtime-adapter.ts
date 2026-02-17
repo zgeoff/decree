@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import type { AgentRunHandle, RuntimeAdapter } from '../engine/command-executor/types.ts';
+import type { AgentRunHandle, RuntimeAdapter } from '../engine/runtime-adapter/types.ts';
 import type { AgentResult } from '../engine/state-store/domain-type-stubs.ts';
 
 export interface ControllableHandle {
