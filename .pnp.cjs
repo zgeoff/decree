@@ -76,7 +76,7 @@ const RAW_RUNTIME_STATE =
           ["@img/sharp-linuxmusl-x64", "npm:0.33.5"],\
           ["@img/sharp-win32-x64", "npm:0.33.5"],\
           ["@types/zod", null],\
-          ["zod", null]\
+          ["zod", "npm:4.3.6"]\
         ],\
         "packagePeers": [\
           "@types/zod",\
@@ -198,6 +198,7 @@ const RAW_RUNTIME_STATE =
           ["tsx", "npm:4.20.3"],\
           ["typescript", "patch:typescript@npm%3A5.9.3#optional!builtin<compat/typescript>::version=5.9.3&hash=5786d5"],\
           ["vitest", "virtual:75d118f835cd2246e206e063aaf68da1970f1ec8d47b22f53ef8bfb00ea9ebf27d8c00e54b0d632d703d1a21b89f97efdebd36ca0b5d1eeb4c30d5e3a4163d54#npm:4.0.18"],\
+          ["zod", "npm:4.3.6"],\
           ["zustand", "virtual:75d118f835cd2246e206e063aaf68da1970f1ec8d47b22f53ef8bfb00ea9ebf27d8c00e54b0d632d703d1a21b89f97efdebd36ca0b5d1eeb4c30d5e3a4163d54#npm:5.0.11"]\
         ],\
         "linkType": "SOFT"\
@@ -4295,6 +4296,15 @@ const RAW_RUNTIME_STATE =
         "packageLocation": "./.yarn/unplugged/yoga-layout-npm-3.2.1-51ec934670/node_modules/yoga-layout/",\
         "packageDependencies": [\
           ["yoga-layout", "npm:3.2.1"]\
+        ],\
+        "linkType": "HARD"\
+      }]\
+    ]],\
+    ["zod", [\
+      ["npm:4.3.6", {\
+        "packageLocation": "./.yarn/cache/zod-npm-4.3.6-a096e305e6-860d25a81a.zip/node_modules/zod/",\
+        "packageDependencies": [\
+          ["zod", "npm:4.3.6"]\
         ],\
         "linkType": "HARD"\
       }]\
