@@ -223,15 +223,29 @@ When you encounter something that prevents continued progress:
 ## Blocker: <Short Title>
 
 **Type:** spec-ambiguity | spec-contradiction | spec-gap | external-dependency |
-technical-constraint | debugging-limit **Description:** Clear explanation of what is blocking
-progress. **Spec Reference:** `docs/specs/<name>.md` § <section> — "<relevant quote>"
+technical-constraint | debugging-limit
+
+**Description:** Clear explanation of what is blocking progress.
+
+**Spec Reference:**
+
+- File: `docs/specs/<name>.md`
+- Section: <section name>
+- Quote: "<relevant text from spec>"
 
 **Options:**
 
-1. <Option A> — <trade-offs>
-2. <Option B> — <trade-offs>
+1. **<Option A>**
+   - Description: ...
+   - Trade-offs: ...
 
-**Recommendation:** Option <X> because <reasoning>. **Impact:** What happens if this isn't resolved.
+2. **<Option B>**
+   - Description: ...
+   - Trade-offs: ...
+
+**Recommendation:** Option <X> because <reasoning>.
+
+**Impact:** What happens if this isn't resolved.
 ```
 
 "Spec Reference" is required for spec blockers; omit for non-spec blockers. At least two options and
@@ -266,25 +280,27 @@ working. Escalations do NOT stop work and do NOT change the status label.
 
 ## Scope Enforcement
 
-You must ONLY modify files listed in the task issue's "In Scope" section, with three exceptions:
+You must ONLY modify files listed in the task issue's "In Scope" section, subject to the following
+rules:
 
-1. **Co-located test files:** Test files adjacent to in-scope files (e.g., `foo.test.ts` next to
+1. **Primary scope:** Files listed in the task issue's "In Scope" section. No restrictions on the
+   nature or size of changes.
+
+2. **Co-located test files:** Test files adjacent to in-scope files (e.g., `foo.test.ts` next to
    `foo.ts`) are implicitly in scope, even if not explicitly listed.
-2. **Incidental changes:** Files outside primary scope that were modified as a direct consequence of
-   implementing the in-scope work. A change qualifies as incidental when ALL of the following are
-   true:
 
-- It is behavior-preserving (no new features, no control-flow changes, no default value changes, no
-  externally observable semantic changes).
-- It is directly motivated by the in-scope change (e.g., required for compilation, shared helper
-  extraction, type updates).
-- It is narrowly scoped and limited to what is necessary.
+3. **Incidental changes:** Files outside primary scope that were modified as a direct consequence of
+   in-scope work. A change qualifies as incidental when all of the following are true:
+   - It is behavior-preserving (no new features, no control-flow changes, no default value changes,
+     no externally observable semantic changes).
+   - It is directly motivated by the in-scope change (e.g., required for compilation, shared helper
+     extraction, type updates).
+   - It is narrowly scoped and limited to what is necessary.
 
-3. **Scope inaccuracy:** When the In Scope list names a file that does not contain the expected code
+4. **Scope inaccuracy:** When the In Scope list names a file that does not contain the expected code
    (e.g., the task describes modifying a handler in file A, but the handler actually lives in file
-   B), the agent determines the correct target file from the codebase and treats it as the effective
-   primary scope. The agent documents the discrepancy in the PR body using a "Scope correction"
-   section:
+   B), determine the correct target file from the codebase and treat it as the effective primary
+   scope. Document the discrepancy in the PR body using a "Scope correction" section:
 
    ```
    ## Scope correction
@@ -294,11 +310,12 @@ You must ONLY modify files listed in the task issue's "In Scope" section, with t
    ```
 
    This rule applies when the task intent is unambiguous and the correct target is identifiable from
-   reading the code. If the discrepancy makes the task intent unclear, the agent treats it as a
-   blocker (type: `spec-gap`).
+   reading the code. If the discrepancy makes the task intent unclear, treat it as a blocker (type:
+   `spec-gap`).
 
-If changes outside scope are needed and do not qualify as incidental or scope inaccuracy, treat it
-as a blocker (type: `technical-constraint` or escalation type: `scope-conflict`).
+When a file outside scope needs non-incidental changes, treat it as a blocker (type:
+`technical-constraint`) if it blocks progress, or an escalation (type: `scope-conflict`) if it does
+not.
 
 ## Completion Output
 
@@ -308,8 +325,8 @@ After completing your run, output this summary:
 {
   "workItemID": "#<issue-number>",
   "revisionID": "#<pr-number>",
-  "outcome": "completed" | "blocked" | "validatin-failure",
-  "summary": "Brief description of changes made (or \"No changes\" if stopped before implementation)"
+  "outcome": "completed | blocked",
+  "summary": "Brief description of changes made (or 'No changes' if stopped before implementation)"
 }
 ```
 
