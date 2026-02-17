@@ -144,8 +144,9 @@ explanation of why it does not qualify.
 
 - If the task issue includes a "Constraints" section, verify that the implementation honors each
   constraint.
-- For each constraint that is not satisfied, record a **Finding** with an explanation of the
-  violation.
+- Record a per-constraint breakdown: which constraints were satisfied and which were violated, with
+  an explanation for each violation.
+- For each constraint that is violated, record a **Finding**.
 - If the section is absent, record a **Warning** and proceed.
 
 #### Step 4: Acceptance Criteria Verification
@@ -158,16 +159,19 @@ contradiction is detected, record a **Warning** noting the specific conflict, an
 criterion — it is unverifiable due to a task authoring defect, not an implementation failure. Do not
 reject a PR solely because it failed to satisfy a contradictory criterion.
 
-- For each acceptance criterion in the task issue, verify that the implementation satisfies it.
-- Use the PR diff you have been provided to identify relevant tests, then read the full changed test
-  files to confirm coverage.
-- If an acceptance criterion is not satisfied or tested, record a **Finding** with an explanation
-  for each failure.
+- For each acceptance criterion in the task issue:
+  - Verify that the implementation satisfies it.
+  - Check that tests exist which exercise it.
+- Record which criteria passed and which failed, with an explanation for each failure.
+- Use the PR diff to identify relevant tests, then read the full changed test files to confirm
+  coverage.
+- If an acceptance criterion is not satisfied or not tested, record a **Finding**.
 
 #### Step 5: Spec Conformance
 
-- Read the referenced spec sections and compare the implementation behavior against the specified
-  behavior.
+- Read the referenced spec sections. If a referenced spec file does not exist or is not
+  `status: approved`, record a **Warning** and proceed to the next step.
+- Compare the implementation behavior against the specified behavior.
 - Verify that the implementation does not contradict, omit, or extend beyond what the spec requires.
 - If a deviation is found, record a **Finding** with the specific spec file, section, and a
   description of the deviation.
@@ -246,7 +250,8 @@ After completing your run, output this summary:
 {
   "issue": "#<issue-number>",
   "pr": "#<pr-number>",
-  "outcome": "approved" | "needs-changes"
+  "outcome": "approved | needs-changes",
+  "summary": "Brief description of review result"
 }
 ```
 

@@ -1,7 +1,7 @@
 ---
 title: Reviewer Agent
-version: 0.9.0
-last_updated: 2026-02-12
+version: 0.10.0
+last_updated: 2026-02-17
 status: approved
 ---
 
@@ -92,10 +92,7 @@ that step and proceeds to the next. Warnings indicate a step was skipped or a sc
 findings indicate a problem with the code. Warnings do not count toward the approval/rejection
 decision but are included in the review comment for visibility.
 
-### 1. Unresolved Review Comments
-
-Applies when review comments exist on the PR from non-automated sources (prior Reviewer runs, other
-reviewers, contributors). Automated bot comments (linters, CI, security scanners) are excluded.
+### 1. Unresolved Review Findings
 
 - Verify each previously raised issue has been addressed: either the code was changed to resolve it,
   or the author replied explaining why no change is needed.
@@ -171,8 +168,6 @@ as its final text output to the invoking process.
 
 ## Acceptance Criteria
 
-- [ ] Given the agent receives an enriched prompt with per-file diffs, when it reviews a file with
-      non-trivial changes, then it reads the full file via a tool call before assessing correctness.
 - [ ] Given the agent receives an enriched prompt with per-file diffs, when a changed file is a test
       file, then the agent reads the full test file before assessing test quality.
 - [ ] Given the agent receives an enriched prompt with prior review comments (re-review scenario),
@@ -181,8 +176,6 @@ as its final text output to the invoking process.
 - [ ] Given a re-review scenario where a prior review comment references a file that was not
       modified in the current diff, when the agent reviews the PR, then it investigates whether the
       feedback was addressed (by reading the file or checking the author's reply).
-- [ ] Given the agent performs spec conformance checking, when it reads the referenced spec, then it
-      fetches the spec file content via a tool call (not from the enriched prompt).
 - [ ] Given a task issue missing a required section (Scope, Acceptance Criteria, or Spec Reference),
       when the agent reviews the PR, then the review includes a warning for each affected checklist
       step and the remaining steps still run.
@@ -204,7 +197,7 @@ as its final text output to the invoking process.
 - [ ] Given a PR that satisfies all checklist steps, when the agent completes the review, then the
       task label is `status:approved` and a PR review comment confirms the approval.
 - [ ] Given a PR that fails one or more acceptance criteria, when the agent rejects it, then the
-      feedback includes a per-criterion breakdown indicating which passed and which failed.
+      feedback includes which criteria failed with an explanation for each failure.
 - [ ] Given the agent rejects a PR, when the review is examined, then each finding includes what is
       wrong, why it is wrong, and what needs to change.
 - [ ] Given a PR with a spec deviation, when the agent rejects it, then the feedback references the
@@ -213,6 +206,9 @@ as its final text output to the invoking process.
       identifies the constraint and explains the violation.
 - [ ] Given a PR with code quality issues, when the agent rejects it, then the feedback references
       specific files and lines with suggested improvements.
+- [ ] Given a task whose acceptance criteria contradict its own Constraints or Out of Scope
+      boundaries, when the agent reviews the PR, then the contradictory criterion is recorded as a
+      warning and is not used as grounds for rejection.
 - [ ] Given the agent finishes execution (any outcome), then it has returned a completion summary
       matching the Reviewer Completion Output format.
 
