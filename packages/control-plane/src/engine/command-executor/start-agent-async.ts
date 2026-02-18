@@ -16,6 +16,7 @@ export async function startAgentAsync(
   try {
     const handle = await context.deps.runtimeAdapters[role].startAgent(params);
     context.agentHandles.set(sessionID, handle);
+    context.deps.onHandleRegistered?.(sessionID, handle);
     context.deps.enqueue(buildStartedEvent(role, sessionID, handle.logFilePath));
 
     try {
@@ -26,6 +27,7 @@ export async function startAgentAsync(
       context.deps.enqueue(buildFailedEvent(sessionID, params, message, handle.logFilePath));
     } finally {
       context.agentHandles.delete(sessionID);
+      context.deps.onHandleRemoved?.(sessionID);
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);

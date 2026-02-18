@@ -1,5 +1,5 @@
 import type { RevisionProviderWriter, WorkProviderWriter } from '../github-provider/types.ts';
-import type { RuntimeAdapter } from '../runtime-adapter/types.ts';
+import type { AgentRunHandle, RuntimeAdapter } from '../runtime-adapter/types.ts';
 import type { AgentRole, EngineCommand, EngineEvent } from '../state-store/domain-type-stubs.ts';
 import type { EngineState } from '../state-store/types.ts';
 
@@ -26,6 +26,8 @@ export interface CommandExecutorDeps {
   policy: Policy;
   getState: () => EngineState;
   enqueue: (event: EngineEvent) => void;
+  onHandleRegistered?: (sessionID: string, handle: AgentRunHandle) => void;
+  onHandleRemoved?: (sessionID: string) => void;
 }
 
 // --- Policy ---

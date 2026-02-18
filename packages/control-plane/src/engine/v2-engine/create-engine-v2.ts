@@ -69,7 +69,10 @@ export function createEngineV2(config: EngineConfig): Engine {
     getReviewHistory,
   });
 
-  // 4. Create command executor
+  // 4. Agent handle map — populated via callbacks from the CommandExecutor
+  const agentHandles = new Map<string, AgentRunHandle>();
+
+  // 5. Create command executor
   const policy = config.policy ?? defaultPolicy;
   const executor = createCommandExecutor({
     workItemWriter: config.provider.workItemWriter,
@@ -80,12 +83,18 @@ export function createEngineV2(config: EngineConfig): Engine {
     enqueue: (event: EngineEvent) => {
       queue.enqueue(event);
     },
+    onHandleRegistered: (sessionID: string, handle: AgentRunHandle) => {
+      agentHandles.set(sessionID, handle);
+    },
+    onHandleRemoved: (sessionID: string) => {
+      agentHandles.delete(sessionID);
+    },
   });
 
-  // 5. Create handlers
+  // 6. Create handlers
   const handlers = createHandlers();
 
-  // 6. Create pollers
+  // 7. Create pollers
   const workItemPoller = createWorkItemPoller({
     reader: config.provider.workItemReader,
     getState: store.getState,
@@ -114,18 +123,12 @@ export function createEngineV2(config: EngineConfig): Engine {
   });
 
   // Engine internal state
-  // NOTE: The engine maintains its own agent handle map for getAgentStream(). However, the
-  // current CommandExecutor manages its own internal handle map in start-agent-async.ts and
-  // does not expose a registration callback. Until CommandExecutorDeps is extended with a
-  // handle registration mechanism, the engine's map will not be populated by the executor.
-  // This is a known gap — see task context for details.
-  const agentHandles = new Map<string, AgentRunHandle>();
   const shutdownTimeout = config.shutdownTimeout ?? DEFAULT_SHUTDOWN_TIMEOUT;
   let running = false;
   let loopPromise: Promise<void> | null = null;
   const deps: ProcessEventDeps = { store, queue, executor, handlers };
 
-  // 7. Return Engine
+  // 8. Return Engine
   return {
     store,
     start: startEngine,

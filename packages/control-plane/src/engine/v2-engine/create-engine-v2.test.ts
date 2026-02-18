@@ -431,7 +431,7 @@ test('it threads provider readers to pollers and writers to command executor', (
   );
 
   // Verify executor does NOT receive readers
-  const executorCall = vi.mocked(createCommandExecutor).mock.calls[0];
+  const executorCall = vi.mocked(createCommandExecutor).mock.lastCall;
   invariant(executorCall, 'createCommandExecutor must have been called');
   const executorDeps = executorCall[0];
   expect(executorDeps).not.toHaveProperty('workItemReader');
@@ -791,7 +791,14 @@ test('it handles recovery through normal event processing without a separate pha
   });
 
   await vi.waitFor(() => {
-    expect(mocks.executor.execute).toHaveBeenCalledWith(transitionCommand, expect.anything());
+    expect(mocks.executor.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'transitionWorkItemStatus',
+        workItemID: 'wi-orphan',
+        newStatus: 'pending',
+      }),
+      expect.anything(),
+    );
   });
 
   await engine.stop();
@@ -977,6 +984,69 @@ test('it processes terminal events from agent monitors during shutdown drain', a
 // Agent Run Handles
 // =============================================================================
 
+test('it passes handle registration callbacks to the command executor', () => {
+  setupTest();
+
+  const executorCall = vi.mocked(createCommandExecutor).mock.lastCall;
+  invariant(executorCall, 'createCommandExecutor must have been called');
+  const executorDeps = executorCall[0];
+
+  expect(executorDeps).toHaveProperty('onHandleRegistered');
+  expect(executorDeps).toHaveProperty('onHandleRemoved');
+  expect(typeof executorDeps.onHandleRegistered).toBe('function');
+  expect(typeof executorDeps.onHandleRemoved).toBe('function');
+});
+
+test('it returns the output stream via getAgentStream when a handle is registered through the callback', () => {
+  const { engine } = setupTest();
+
+  const executorCall = vi.mocked(createCommandExecutor).mock.lastCall;
+  invariant(executorCall, 'createCommandExecutor must have been called');
+  const executorDeps = executorCall[0];
+
+  const mockOutput = emptyAsyncIterable();
+  const mockHandle = {
+    output: mockOutput,
+    result: new Promise<never>(() => {
+      // never resolves — tests control lifecycle manually
+    }),
+    logFilePath: null,
+  };
+
+  // Simulate the executor registering a handle (as startAgentAsync would)
+  invariant(executorDeps.onHandleRegistered, 'onHandleRegistered must be defined');
+  executorDeps.onHandleRegistered('session-active', mockHandle);
+
+  const stream = engine.getAgentStream('session-active');
+  expect(stream).toBe(mockOutput);
+});
+
+test('it returns null from getAgentStream after a handle is removed through the callback', () => {
+  const { engine } = setupTest();
+
+  const executorCall = vi.mocked(createCommandExecutor).mock.lastCall;
+  invariant(executorCall, 'createCommandExecutor must have been called');
+  const executorDeps = executorCall[0];
+
+  const mockOutput = emptyAsyncIterable();
+  const mockHandle = {
+    output: mockOutput,
+    result: new Promise<never>(() => {
+      // never resolves — tests control lifecycle manually
+    }),
+    logFilePath: null,
+  };
+
+  // Register then remove
+  invariant(executorDeps.onHandleRegistered, 'onHandleRegistered must be defined');
+  invariant(executorDeps.onHandleRemoved, 'onHandleRemoved must be defined');
+  executorDeps.onHandleRegistered('session-done', mockHandle);
+  executorDeps.onHandleRemoved('session-done');
+
+  const stream = engine.getAgentStream('session-done');
+  expect(stream).toBeNull();
+});
+
 test('it returns null from getAgentStream when no handle exists', () => {
   const { engine } = setupTest();
 
@@ -985,10 +1055,23 @@ test('it returns null from getAgentStream when no handle exists', () => {
 });
 
 test('it returns null from getAgentStream for a session in requested state', () => {
-  const { engine } = setupTest();
+  const { engine, mocks } = setupTest();
 
-  // Even if the session exists in state, getAgentStream returns null if no handle is registered
-  // (handle is only registered after startAgent resolves, which hasn't happened yet)
+  // Set up a session in requested state — handle is only registered after startAgent resolves
+  const stateWithRequestedSession = buildEmptyState();
+  stateWithRequestedSession.agentRuns.set('session-requested', {
+    role: 'implementor',
+    sessionID: 'session-requested',
+    status: 'requested',
+    workItemID: 'wi-1',
+    branchName: 'feature/wi-1',
+    logFilePath: null,
+    startedAt: '2026-01-01T00:00:00Z',
+  });
+  mocks.store.getState.mockReturnValue(stateWithRequestedSession);
+
+  // Even though the session exists in state, getAgentStream returns null because
+  // no handle has been registered yet (startAgent hasn't resolved)
   const stream = engine.getAgentStream('session-requested');
   expect(stream).toBeNull();
 });
