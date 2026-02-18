@@ -1,113 +1,133 @@
-import type { Engine } from '../types.ts';
+import type {
+  AgentRun,
+  ImplementorRun,
+  ReviewerRun,
+  Revision,
+  WorkItem,
+  WorkItemStatus,
+} from '../engine/state-store/types.ts';
 
 // ---------------------------------------------------------------------------
-// Task Model
+// Display Status
 // ---------------------------------------------------------------------------
 
-export type TaskStatus =
-  | 'ready-to-implement'
-  | 'agent-implementing'
-  | 'agent-reviewing'
-  | 'needs-refinement'
+export type DisplayStatus =
+  | 'approved'
+  | 'failed'
   | 'blocked'
-  | 'ready-to-merge'
-  | 'agent-crashed';
-
-export type Priority = 'high' | 'medium' | 'low';
-
-export type CIStatus = 'pending' | 'success' | 'failure';
-
-export type AgentType = 'implementor' | 'reviewer';
-
-export interface TaskPR {
-  number: number;
-  url: string;
-  ciStatus: CIStatus | null;
-}
-
-export interface AgentCrash {
-  error: string;
-}
-
-export interface TaskAgent {
-  type: AgentType;
-  running: boolean;
-  sessionID: string;
-  branchName?: string;
-  logFilePath?: string;
-  crash?: AgentCrash;
-}
-
-export interface Task {
-  issueNumber: number;
-  title: string;
-  status: TaskStatus;
-  statusLabel: string;
-  priority: Priority | null;
-  agentCount: number;
-  createdAt: string;
-  prs: TaskPR[];
-  agent: TaskAgent | null;
-}
+  | 'needs-refinement'
+  | 'dispatch'
+  | 'pending'
+  | 'implementing'
+  | 'reviewing';
 
 // ---------------------------------------------------------------------------
-// Section & Sorting
+// Section
 // ---------------------------------------------------------------------------
 
 export type Section = 'action' | 'agents';
 
-export interface SortedTask {
-  task: Task;
+// ---------------------------------------------------------------------------
+// Display Work Item
+// ---------------------------------------------------------------------------
+
+export interface DisplayWorkItem {
+  workItem: WorkItem;
+  displayStatus: DisplayStatus;
   section: Section;
+  linkedRevision: Revision | null;
+  latestRun: AgentRun | null;
+  dispatchCount: number;
 }
 
 // ---------------------------------------------------------------------------
-// Caches
+// TUI Local State
 // ---------------------------------------------------------------------------
 
-export interface CachedIssueDetail {
-  body: string;
-  labels: string[];
-  stale: boolean;
+export interface CachedDetail {
+  body: string | null;
+  revisionFiles: RevisionFile[] | null;
+  loading: boolean;
 }
 
-export interface CachedPRDetail {
-  title: string;
-  changedFilesCount: number;
-  failedCheckNames?: string[];
-  stale: boolean;
+export interface RevisionFile {
+  path: string;
+  status: 'added' | 'modified' | 'removed' | 'renamed';
+  additions: number;
+  deletions: number;
+  previousPath: string | null;
 }
 
-// ---------------------------------------------------------------------------
-// Store
-// ---------------------------------------------------------------------------
-
-export interface TUIState {
-  tasks: Map<number, Task>;
-  plannerStatus: 'idle' | 'running';
-
-  selectedIssue: number | null;
-  pinnedTask: number | null;
-  focusedPane: 'taskList' | 'detailPane';
+export interface TUILocalState {
+  selectedWorkItem: string | null;
+  pinnedWorkItem: string | null;
+  focusedPane: 'workItemList' | 'detailPane';
   shuttingDown: boolean;
-
-  agentStreams: Map<string, string[]>;
-
-  issueDetailCache: Map<number, CachedIssueDetail>;
-  prDetailCache: Map<number, CachedPRDetail>;
+  streamBuffers: Map<string, string[]>;
+  detailCache: Map<string, CachedDetail>;
 }
+
+// ---------------------------------------------------------------------------
+// TUI Config
+// ---------------------------------------------------------------------------
+
+export interface TUIConfig {
+  repoOwner: string;
+  repoName: string;
+}
+
+// ---------------------------------------------------------------------------
+// TUI Actions
+// ---------------------------------------------------------------------------
 
 export interface TUIActions {
-  dispatch: (issueNumber: number) => void;
-  cancelAgent: (issueNumber: number) => void;
+  dispatchImplementor: (workItemID: string) => void;
   shutdown: () => void;
-  selectIssue: (issueNumber: number) => void;
-  pinTask: (issueNumber: number) => void;
+  selectWorkItem: (workItemID: string) => void;
+  pinWorkItem: (workItemID: string) => void;
   cycleFocus: () => void;
 }
 
-export type TUIStore = TUIState & TUIActions;
+// ---------------------------------------------------------------------------
+// Display Status Derivation
+// ---------------------------------------------------------------------------
 
-export interface CreateTUIStoreConfig {
-  engine: Engine;
+export function deriveDisplayStatus(
+  workItem: WorkItem,
+  agentRuns: AgentRun[],
+): DisplayStatus | null {
+  const implementorAndReviewerRuns = agentRuns.filter(
+    (run): run is ImplementorRun | ReviewerRun =>
+      run.role === 'implementor' || run.role === 'reviewer',
+  );
+
+  const latestRun =
+    implementorAndReviewerRuns.length > 0
+      ? implementorAndReviewerRuns.reduce((latest, current) =>
+          current.startedAt > latest.startedAt ? current : latest,
+        )
+      : null;
+
+  if (latestRun !== null) {
+    if (latestRun.status === 'requested' || latestRun.status === 'running') {
+      return latestRun.role === 'implementor' ? 'implementing' : 'reviewing';
+    }
+
+    if (latestRun.status === 'failed' || latestRun.status === 'timed-out') {
+      return 'failed';
+    }
+  }
+
+  const statusMap: Record<WorkItemStatus, DisplayStatus | null> = {
+    pending: 'pending',
+    ready: 'dispatch',
+    'in-progress': 'implementing',
+    review: 'reviewing',
+    approved: 'approved',
+    'needs-refinement': 'needs-refinement',
+    blocked: 'blocked',
+    closed: null,
+  };
+
+  return statusMap[workItem.status];
 }
