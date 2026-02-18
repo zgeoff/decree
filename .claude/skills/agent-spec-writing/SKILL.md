@@ -24,7 +24,8 @@ doing the work.**
 - Filenames: lowercase, hyphenated (e.g., `agent-reviewer.md`)
 - All fixed template sections required
 - New specs start with `status: draft`
-- No duplication between spec, agent definition, and shared contracts document
+- No duplication between spec, agent definition, and shared contracts document (except operational
+  constraints — see Contract vs Prompt)
 - The spec must not read like a system prompt rewritten in third person
 
 ## Workflow
@@ -196,6 +197,12 @@ Avoid paragraph-form procedures with inline conditionals.
 
 The spec says "must validate inputs before starting work." The agent definition says "Step 3:
 Validate inputs — check A, B, C." The requirement is contract; the numbered steps are prompt.
+
+**Acceptable duplication:** Operational constraints (command wrappers, style conformance, commit
+format) necessarily appear in both the spec and the agent definition. The spec is the normative
+source of truth; the agent definition transcribes what the LLM needs to see at runtime. This is the
+one expected exception to the "no duplication" rule — agents do not fetch the spec at runtime, so
+constraints they must follow must be restated in the agent definition.
 
 ### The Contract Test
 
