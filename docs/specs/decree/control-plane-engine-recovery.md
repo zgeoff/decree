@@ -1,11 +1,15 @@
 ---
 title: Control Plane Engine — Recovery
 version: 0.3.1
-last_updated: 2026-02-13
-status: approved
+last_updated: 2026-02-18
+status: deprecated
 ---
 
 # Control Plane Engine — Recovery
+
+> **Deprecated.** Recovery is now handled by `handleOrphanedWorkItem` in the v2 handler catalog. See
+> [control-plane-engine-handlers.md](./control-plane-engine-handlers.md) and
+> [002-architecture.md: Recovery](./v2/002-architecture.md#recovery).
 
 ## Overview
 

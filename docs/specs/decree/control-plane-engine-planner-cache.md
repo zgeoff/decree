@@ -1,11 +1,16 @@
 ---
 title: Control Plane Engine — Planner Cache
 version: 0.4.0
-last_updated: 2026-02-12
-status: approved
+last_updated: 2026-02-18
+status: deprecated
 ---
 
 # Control Plane Engine — Planner Cache
+
+> **Deprecated.** Planner re-dispatch suppression is now handled by `lastPlannedSHAs` in the state
+> store and `handlePlanning` re-dispatch logic in the handler catalog. See
+> [control-plane-engine-state-store.md](./control-plane-engine-state-store.md) and
+> [control-plane-engine-handlers.md](./control-plane-engine-handlers.md).
 
 ## Overview
 

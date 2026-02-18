@@ -1,11 +1,14 @@
 ---
 title: Control Plane Engine — Context Pre-computation
 version: 0.3.0
-last_updated: 2026-02-12
-status: approved
+last_updated: 2026-02-18
+status: deprecated
 ---
 
 # Control Plane Engine — Context Pre-computation
+
+> **Deprecated.** Context assembly is now a runtime adapter responsibility. See
+> [control-plane-engine-runtime-adapter-claude.md](./control-plane-engine-runtime-adapter-claude.md).
 
 ## Overview
 

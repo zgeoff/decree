@@ -597,7 +597,7 @@ planner deferred buffer, dedicated recovery).
 Rework the TUI to be a thin projection of engine state. Replace the parallel Task model with direct
 subscription to the canonical engine store.
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 
@@ -649,7 +649,7 @@ Mark the three DELETE specs as deprecated. Their replacements are now in place:
 - `control-plane-engine-context-precomputation.md` → replaced by runtime adapter context assembly
   (step 6b).
 
-- [ ] Deprecate specs
+- [x] Deprecate specs
 
 **Read first:**
 
