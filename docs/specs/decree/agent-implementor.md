@@ -1,7 +1,7 @@
 ---
 title: Implementor Agent
-version: 0.12.0
-last_updated: 2026-02-17
+version: 0.13.0
+last_updated: 2026-02-18
 status: approved
 ---
 
@@ -112,7 +112,9 @@ conversion does not apply (the PR is already ready-for-review).
 If a review comment requests changes to out-of-scope files, the agent posts an escalation comment
 (see
 [workflow-contracts.md: Escalation Comment Format](./workflow-contracts.md#escalation-comment-format))
-explaining the scope constraint and continues with in-scope fixes.
+explaining the scope constraint and continues with in-scope fixes. Exception: if the project owner
+explicitly requests a scope extension in their review, the agent treats it as an authorized override
+— it posts an escalation comment for traceability and proceeds with the implementation.
 
 ### Pre-submit Validation
 
@@ -199,8 +201,12 @@ as its final text output to the invoking process.
       converted to ready-for-review.
 - [ ] Given a `status:needs-changes` task, when the agent resumes, then it pushes fixes to the
       existing PR branch.
-- [ ] Given a needs-changes review comment requesting out-of-scope changes, then the agent posts an
-      escalation comment and continues with in-scope fixes.
+- [ ] Given a needs-changes review comment requesting out-of-scope changes, when the comment is not
+      from the project owner, then the agent posts an escalation comment and continues with in-scope
+      fixes.
+- [ ] Given a needs-changes review where the project owner explicitly requests a scope extension,
+      when the agent proceeds with the out-of-scope changes, then it posts an escalation comment for
+      traceability before implementing.
 - [ ] Given a non-blocking issue (scope conflict, priority conflict), when the agent posts an
       escalation, then it continues working and does not change the status label.
 - [ ] Given the agent finishes execution (any outcome), then it returns a completion summary
