@@ -1,1221 +1,430 @@
 import { expect, test, vi } from 'vitest';
-import type {
-  AgentCompletedEvent,
-  AgentFailedEvent,
-  AgentStartedEvent,
-  CIStatusChangedEvent,
-  IssueStatusChangedEvent,
-  PRLinkedEvent,
-} from '../types.ts';
+import type { RevisionFile } from '../engine/github-provider/types.ts';
+import type { UserRequestedImplementorRun } from '../engine/state-store/types.ts';
 import {
+  appendStreamLines,
+  type CreateTUIStoreConfig,
+  clearStreamBuffer,
+  consumeAgentStream,
   createTUIStore,
-  deriveStatus,
-  parsePriority,
-  selectActionCount,
-  selectAgentSectionCount,
-  selectRunningAgentCount,
-  selectSortedTasks,
+  type TUIEngine,
 } from './store.ts';
-import { createMockEngine } from './test-utils/create-mock-engine.ts';
 
-function setupTest(): {
-  store: ReturnType<typeof createTUIStore>;
-  engine: ReturnType<typeof createMockEngine>['engine'];
-  emit: ReturnType<typeof createMockEngine>['emit'];
-  sentCommands: ReturnType<typeof createMockEngine>['sentCommands'];
-} {
-  const { engine, emit, sentCommands } = createMockEngine();
-  const store = createTUIStore({ engine });
-  return { store, engine, emit, sentCommands };
+// ---------------------------------------------------------------------------
+// Mock engine factory
+// ---------------------------------------------------------------------------
+
+interface MockEngineResult {
+  engine: TUIEngine;
+  enqueuedEvents: UserRequestedImplementorRun[];
+  stopCalls: number;
 }
 
-function buildIssueStatusChanged(
-  overrides?: Partial<IssueStatusChangedEvent>,
-): IssueStatusChangedEvent {
+function createMockEngine(overrides?: Partial<TUIEngine>): MockEngineResult {
+  const enqueuedEvents: UserRequestedImplementorRun[] = [];
+  let stopCalls = 0;
+
+  const engine: TUIEngine = {
+    store: overrides?.store ?? {
+      getState: () => ({
+        workItems: new Map(),
+        revisions: new Map(),
+        specs: new Map(),
+        agentRuns: new Map(),
+        errors: [],
+        lastPlannedSHAs: new Map(),
+      }),
+      subscribe: vi.fn(() => () => {
+        // no-op unsubscribe
+      }),
+    },
+    enqueue:
+      overrides?.enqueue ??
+      vi.fn((event: UserRequestedImplementorRun) => {
+        enqueuedEvents.push(event);
+      }),
+    stop:
+      overrides?.stop ??
+      vi.fn(async () => {
+        stopCalls += 1;
+      }),
+    getWorkItemBody: overrides?.getWorkItemBody ?? vi.fn(async () => 'mock body'),
+    getRevisionFiles: overrides?.getRevisionFiles ?? vi.fn(async () => []),
+    getAgentStream: overrides?.getAgentStream ?? vi.fn(() => null),
+  };
+
   return {
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'Test issue',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-    ...overrides,
+    engine,
+    get enqueuedEvents(): UserRequestedImplementorRun[] {
+      return enqueuedEvents;
+    },
+    get stopCalls(): number {
+      return stopCalls;
+    },
   };
 }
 
+function setupTest(overrides?: Partial<TUIEngine>): {
+  store: ReturnType<typeof createTUIStore>;
+  engine: TUIEngine;
+  enqueuedEvents: UserRequestedImplementorRun[];
+} {
+  const { engine, enqueuedEvents } = createMockEngine(overrides);
+  const config: CreateTUIStoreConfig = { engine };
+  const store = createTUIStore(config);
+  return { store, engine, enqueuedEvents };
+}
+
 // ---------------------------------------------------------------------------
-// deriveStatus
+// Initial state
 // ---------------------------------------------------------------------------
 
-test('it derives agent-crashed when a task has a crash set', () => {
-  const result = deriveStatus({
-    agent: {
-      type: 'implementor',
-      running: false,
-      sessionID: 'sess-1',
-      crash: { error: 'timeout' },
-    },
-    statusLabel: 'pending',
-  });
-  expect(result).toBe('agent-crashed');
+test('it initializes with the correct default state shape', () => {
+  const { store } = setupTest();
+  const state = store.getState();
+
+  expect(state.selectedWorkItem).toBeNull();
+  expect(state.pinnedWorkItem).toBeNull();
+  expect(state.focusedPane).toBe('workItemList');
+  expect(state.shuttingDown).toBe(false);
+  expect(state.streamBuffers).toStrictEqual(new Map());
+  expect(state.detailCache).toStrictEqual(new Map());
 });
 
-test('it derives agent-implementing when a running implementor overrides the label', () => {
-  const result = deriveStatus({
-    agent: { type: 'implementor', running: true, sessionID: 'sess-1' },
-    statusLabel: 'pending',
-  });
-  expect(result).toBe('agent-implementing');
-});
+test('it does not contain domain state like tasks or planner status', () => {
+  const { store } = setupTest();
+  const state = store.getState();
+  const keys = Object.keys(state);
 
-test('it derives agent-reviewing when a running reviewer overrides the label', () => {
-  const result = deriveStatus({
-    agent: { type: 'reviewer', running: true, sessionID: 'sess-1' },
-    statusLabel: 'review',
-  });
-  expect(result).toBe('agent-reviewing');
-});
-
-test('it derives ready-to-implement from the pending status label', () => {
-  const result = deriveStatus({ agent: null, statusLabel: 'pending' });
-  expect(result).toBe('ready-to-implement');
-});
-
-test('it derives ready-to-implement from the unblocked status label', () => {
-  const result = deriveStatus({ agent: null, statusLabel: 'unblocked' });
-  expect(result).toBe('ready-to-implement');
-});
-
-test('it derives ready-to-implement from the needs-changes status label', () => {
-  const result = deriveStatus({ agent: null, statusLabel: 'needs-changes' });
-  expect(result).toBe('ready-to-implement');
-});
-
-test('it derives agent-implementing from the in-progress status label', () => {
-  const result = deriveStatus({ agent: null, statusLabel: 'in-progress' });
-  expect(result).toBe('agent-implementing');
-});
-
-test('it derives agent-reviewing from the review status label', () => {
-  const result = deriveStatus({ agent: null, statusLabel: 'review' });
-  expect(result).toBe('agent-reviewing');
-});
-
-test('it derives needs-refinement from the needs-refinement status label', () => {
-  const result = deriveStatus({ agent: null, statusLabel: 'needs-refinement' });
-  expect(result).toBe('needs-refinement');
-});
-
-test('it derives blocked from the blocked status label', () => {
-  const result = deriveStatus({ agent: null, statusLabel: 'blocked' });
-  expect(result).toBe('blocked');
-});
-
-test('it derives ready-to-merge from the approved status label', () => {
-  const result = deriveStatus({ agent: null, statusLabel: 'approved' });
-  expect(result).toBe('ready-to-merge');
-});
-
-test('it returns null for an unrecognized status label', () => {
-  const result = deriveStatus({ agent: null, statusLabel: 'unknown-future-status' });
-  expect(result).toBeNull();
-});
-
-test('it prioritizes crash over running agent', () => {
-  const result = deriveStatus({
-    agent: {
-      type: 'implementor',
-      running: true,
-      sessionID: 'sess-1',
-      crash: { error: 'oops' },
-    },
-    statusLabel: 'in-progress',
-  });
-  expect(result).toBe('agent-crashed');
+  expect(keys).not.toContain('tasks');
+  expect(keys).not.toContain('plannerStatus');
 });
 
 // ---------------------------------------------------------------------------
-// parsePriority
+// Action — selectWorkItem
 // ---------------------------------------------------------------------------
 
-test('it parses high priority from the label', () => {
-  expect(parsePriority('priority:high')).toBe('high');
+test('it updates the selected work item', () => {
+  const { store } = setupTest();
+
+  store.getState().selectWorkItem('42');
+  expect(store.getState().selectedWorkItem).toBe('42');
 });
 
-test('it parses medium priority from the label', () => {
-  expect(parsePriority('priority:medium')).toBe('medium');
-});
+test('it replaces the previously selected work item', () => {
+  const { store } = setupTest();
 
-test('it parses low priority from the label', () => {
-  expect(parsePriority('priority:low')).toBe('low');
-});
-
-test('it returns null for an unrecognized priority label', () => {
-  expect(parsePriority('other')).toBeNull();
+  store.getState().selectWorkItem('42');
+  store.getState().selectWorkItem('99');
+  expect(store.getState().selectedWorkItem).toBe('99');
 });
 
 // ---------------------------------------------------------------------------
-// Task Lifecycle — issueStatusChanged (create)
+// Action — pinWorkItem
 // ---------------------------------------------------------------------------
 
-test('it creates a task with default fields when a new issue status is received', () => {
-  const { store, emit } = setupTest();
+test('it sets the pinned work item', () => {
+  const { store } = setupTest();
 
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 5,
-      title: 'My issue',
-      newStatus: 'pending',
-      priorityLabel: 'priority:high',
-    }),
+  store.getState().pinWorkItem('42');
+  expect(store.getState().pinnedWorkItem).toBe('42');
+});
+
+test('it triggers on-demand detail fetch when pinning a work item', () => {
+  const getWorkItemBody = vi.fn(async () => 'fetched body');
+  const getRevisionFiles = vi.fn(async (): Promise<RevisionFile[]> => []);
+  const { store } = setupTest({ getWorkItemBody, getRevisionFiles });
+
+  store.getState().pinWorkItem('42');
+
+  expect(getWorkItemBody).toHaveBeenCalledWith('42');
+  expect(getRevisionFiles).toHaveBeenCalledWith('42');
+});
+
+test('it clears stream buffers when the pinned work item changes', () => {
+  const { store } = setupTest();
+
+  // Set up initial stream buffer
+  const streamBuffers = new Map([['sess-1', ['line1', 'line2']]]);
+  store.setState({ streamBuffers });
+
+  store.getState().pinWorkItem('42');
+
+  expect(store.getState().streamBuffers).toStrictEqual(new Map());
+});
+
+test('it clears detail cache when the pinned work item changes', () => {
+  const { store } = setupTest();
+
+  // Set up initial detail cache
+  const detailCache = new Map([
+    ['old-item', { body: 'cached', revisionFiles: null, loading: false }],
+  ]);
+  store.setState({ detailCache });
+
+  store.getState().pinWorkItem('42');
+
+  // Cache should be empty (old item cleared) before new fetch completes
+  const cacheAfter = store.getState().detailCache;
+  expect(cacheAfter.has('old-item')).toBe(false);
+});
+
+test('it populates the detail cache when on-demand fetch completes', async () => {
+  const getWorkItemBody = vi.fn(async () => 'fetched body');
+  const getRevisionFiles = vi.fn(
+    async (): Promise<RevisionFile[]> => [{ path: 'src/main.ts', status: 'modified', patch: null }],
   );
+  const { store } = setupTest({ getWorkItemBody, getRevisionFiles });
 
-  const task = store.getState().tasks.get(5);
-  expect(task).toBeDefined();
-  expect(task).toMatchObject({
-    issueNumber: 5,
-    title: 'My issue',
-    statusLabel: 'pending',
-    status: 'ready-to-implement',
-    priority: 'high',
-    agentCount: 0,
-    createdAt: '2026-01-01T00:00:00Z',
-    prs: [],
-    agent: null,
-  });
-});
+  store.getState().pinWorkItem('42');
 
-test('it updates a task title and status label when a status change is received', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 1,
-      title: 'Updated title',
-      newStatus: 'in-progress',
-    }),
-  );
-
-  const task = store.getState().tasks.get(1);
-  expect(task?.title).toBe('Updated title');
-  expect(task?.statusLabel).toBe('in-progress');
-  expect(task?.status).toBe('agent-implementing');
-});
-
-// ---------------------------------------------------------------------------
-// Task Lifecycle — issueStatusChanged (removal via newStatus: null)
-// ---------------------------------------------------------------------------
-
-test('it removes a task when a status change with null status is received', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-  expect(store.getState().tasks.has(1)).toBe(true);
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: null }));
-  expect(store.getState().tasks.has(1)).toBe(false);
-});
-
-test('it clears the issue detail cache when a task is removed', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-
-  const issueDetailCache = new Map(store.getState().issueDetailCache);
-  issueDetailCache.set(1, { body: 'test', labels: [], stale: false });
-  store.setState({ issueDetailCache });
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: null }));
-  expect(store.getState().issueDetailCache.has(1)).toBe(false);
-});
-
-test('it clears the PR detail cache entries when a task with linked PRs is removed', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-
-  // Link a PR
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 10,
-    url: 'https://example.com/pull/10',
-    ciStatus: null,
-  } satisfies PRLinkedEvent);
-
-  const prDetailCache = new Map(store.getState().prDetailCache);
-  prDetailCache.set(10, { title: 'PR', changedFilesCount: 2, stale: false });
-  store.setState({ prDetailCache });
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: null }));
-  expect(store.getState().prDetailCache.has(10)).toBe(false);
-});
-
-test('it clears the agent stream when a task with an active agent is removed', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
-
-  expect(store.getState().agentStreams.has('sess-1')).toBe(true);
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: null }));
-  expect(store.getState().agentStreams.has('sess-1')).toBe(false);
-});
-
-test('it nulls the pinned task when the pinned task is removed', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-  store.setState({ pinnedTask: 1 });
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: null }));
-  expect(store.getState().pinnedTask).toBeNull();
-});
-
-test('it preserves the pinned task when a different task is removed', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-  emit(buildIssueStatusChanged({ issueNumber: 2, newStatus: 'pending' }));
-  store.setState({ pinnedTask: 1 });
-
-  emit(buildIssueStatusChanged({ issueNumber: 2, newStatus: null }));
-  expect(store.getState().pinnedTask).toBe(1);
-});
-
-test('it moves the selection to the next task in sort order when the selected task is removed', () => {
-  const { store, emit } = setupTest();
-
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 1,
-      newStatus: 'pending',
-      priorityLabel: 'priority:high',
-    }),
-  );
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 2,
-      newStatus: 'pending',
-      priorityLabel: 'priority:medium',
-    }),
-  );
-  store.setState({ selectedIssue: 1 });
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: null }));
-  expect(store.getState().selectedIssue).toBe(2);
-});
-
-test('it sets the selection to null when the last task is removed', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-  store.setState({ selectedIssue: 1 });
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: null }));
-  expect(store.getState().selectedIssue).toBeNull();
-});
-
-test('it preserves the selection when a non-selected task is removed', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-  emit(buildIssueStatusChanged({ issueNumber: 2, newStatus: 'pending' }));
-  store.setState({ selectedIssue: 1 });
-
-  emit(buildIssueStatusChanged({ issueNumber: 2, newStatus: null }));
-  expect(store.getState().selectedIssue).toBe(1);
-});
-
-// ---------------------------------------------------------------------------
-// Task Lifecycle — agent preservation on issueStatusChanged
-// ---------------------------------------------------------------------------
-
-test('it preserves agent state when a recovery status change is received', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
-  emit({
-    type: 'agentFailed',
-    agentType: 'implementor',
-    issueNumber: 1,
-    error: 'timeout',
-    sessionID: 'sess-1',
-  } satisfies AgentFailedEvent);
-
-  expect(store.getState().tasks.get(1)?.agent?.crash).toBeDefined();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending', isRecovery: true }));
-
-  const task = store.getState().tasks.get(1);
-  expect(task?.agent).toBeDefined();
-  expect(task?.agent?.crash?.error).toBe('timeout');
-  expect(task?.status).toBe('agent-crashed');
-});
-
-test('it preserves agent state when an engine transition status change is received', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
-
-  expect(store.getState().tasks.get(1)?.agent?.running).toBe(true);
-
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 1,
-      newStatus: 'review',
-      isEngineTransition: true,
-    }),
-  );
-
-  const task = store.getState().tasks.get(1);
-  expect(task?.agent).toBeDefined();
-  expect(task?.agent?.sessionID).toBe('sess-1');
-});
-
-test('it clears agent state when a human-initiated status change is received', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
-  emit({
-    type: 'agentFailed',
-    agentType: 'implementor',
-    issueNumber: 1,
-    error: 'timeout',
-    sessionID: 'sess-1',
-  } satisfies AgentFailedEvent);
-
-  expect(store.getState().tasks.get(1)?.agent?.crash).toBeDefined();
-
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 1,
-      newStatus: 'pending',
-      isRecovery: false,
-      isEngineTransition: false,
-    }),
-  );
-
-  const task = store.getState().tasks.get(1);
-  expect(task?.agent).toBeNull();
-  expect(task?.status).toBe('ready-to-implement');
-});
-
-// ---------------------------------------------------------------------------
-// Caching — issueDetailCache stale marking
-// ---------------------------------------------------------------------------
-
-test('it marks cached issue details as stale when an issue status changes', () => {
-  const { store, emit } = setupTest();
-
-  const issueDetailCache = new Map(store.getState().issueDetailCache);
-  issueDetailCache.set(1, { body: 'test', labels: [], stale: false });
-  store.setState({ issueDetailCache });
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'review' }));
-
-  expect(store.getState().issueDetailCache.get(1)?.stale).toBe(true);
-});
-
-// ---------------------------------------------------------------------------
-// Agent Lifecycle — agentStarted
-// ---------------------------------------------------------------------------
-
-test('it sets the planner to running and does not update any task when the planner starts', () => {
-  const { store, emit, engine } = setupTest();
-
-  emit({
-    type: 'agentStarted',
-    agentType: 'planner',
-    specPaths: ['docs/specs/decree.md'],
-    sessionID: 'sess-plan-1',
-  } satisfies AgentStartedEvent);
-
-  expect(store.getState().plannerStatus).toBe('running');
-  expect(store.getState().tasks.size).toBe(0);
-  expect(engine.getAgentStream).not.toHaveBeenCalled();
-});
-
-test('it sets agent metadata and increments agent count when an implementor starts', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-    branchName: 'issue-1-1700000000',
-    logFilePath: '/logs/agent.log',
-  } satisfies AgentStartedEvent);
-
-  const task = store.getState().tasks.get(1);
-  expect(task?.agent).toMatchObject({
-    type: 'implementor',
-    running: true,
-    sessionID: 'sess-1',
-    branchName: 'issue-1-1700000000',
-    logFilePath: '/logs/agent.log',
-  });
-  expect(task?.agentCount).toBe(1);
-  expect(task?.status).toBe('agent-implementing');
-});
-
-test('it increments agent count on each subsequent agent start', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
-
-  emit({
-    type: 'agentCompleted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentCompletedEvent);
-
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-2',
-  } satisfies AgentStartedEvent);
-
-  expect(store.getState().tasks.get(1)?.agentCount).toBe(2);
-});
-
-test('it subscribes to a stream by session ID when an agent starts', () => {
-  const { store, emit, engine } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
-
-  expect(engine.getAgentStream).toHaveBeenCalledWith('sess-1');
-  expect(store.getState().agentStreams.has('sess-1')).toBe(true);
-  expect(store.getState().agentStreams.get('sess-1')).toStrictEqual([]);
-});
-
-test('it skips the agent start when no task exists for the issue number', () => {
-  const { store, emit, engine } = setupTest();
-
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 999,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
-
-  expect(store.getState().tasks.size).toBe(0);
-  expect(engine.getAgentStream).not.toHaveBeenCalled();
-});
-
-// ---------------------------------------------------------------------------
-// Agent Lifecycle — agentCompleted
-// ---------------------------------------------------------------------------
-
-test('it sets agent running to false when an agent completes', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
-
-  emit({
-    type: 'agentCompleted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentCompletedEvent);
-
-  const task = store.getState().tasks.get(1);
-  expect(task?.agent?.running).toBe(false);
-  expect(task?.agent?.sessionID).toBe('sess-1');
-});
-
-test('it finds the task by session ID when an agent completes', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-abc',
-  } satisfies AgentStartedEvent);
-
-  // agentCompleted uses sessionID for lookup
-  emit({
-    type: 'agentCompleted',
-    agentType: 'implementor',
-    sessionID: 'sess-abc',
-  } satisfies AgentCompletedEvent);
-
-  expect(store.getState().tasks.get(1)?.agent?.running).toBe(false);
-});
-
-test('it sets the planner to idle when the planner completes', () => {
-  const { store, emit } = setupTest();
-
-  emit({
-    type: 'agentStarted',
-    agentType: 'planner',
-    specPaths: ['docs/specs/test.md'],
-    sessionID: 'sess-p-1',
-  } satisfies AgentStartedEvent);
-
-  expect(store.getState().plannerStatus).toBe('running');
-
-  emit({
-    type: 'agentCompleted',
-    agentType: 'planner',
-    specPaths: ['docs/specs/test.md'],
-    sessionID: 'sess-p-1',
-  } satisfies AgentCompletedEvent);
-
-  expect(store.getState().plannerStatus).toBe('idle');
-});
-
-// ---------------------------------------------------------------------------
-// Agent Lifecycle — agentFailed
-// ---------------------------------------------------------------------------
-
-test('it sets agent crash data when an agent fails', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
-
-  emit({
-    type: 'agentFailed',
-    agentType: 'implementor',
-    issueNumber: 1,
-    error: 'process crashed',
-    sessionID: 'sess-1',
-  } satisfies AgentFailedEvent);
-
-  const task = store.getState().tasks.get(1);
-  expect(task?.agent?.running).toBe(false);
-  expect(task?.agent?.crash).toStrictEqual({ error: 'process crashed' });
-  expect(task?.status).toBe('agent-crashed');
-});
-
-test('it finds the task by session ID when an agent fails', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-xyz',
-  } satisfies AgentStartedEvent);
-
-  emit({
-    type: 'agentFailed',
-    agentType: 'implementor',
-    error: 'timeout',
-    sessionID: 'sess-xyz',
-  } satisfies AgentFailedEvent);
-
-  expect(store.getState().tasks.get(1)?.agent?.crash?.error).toBe('timeout');
-});
-
-test('it sets the planner to idle when the planner fails', () => {
-  const { store, emit } = setupTest();
-
-  emit({
-    type: 'agentStarted',
-    agentType: 'planner',
-    specPaths: ['docs/specs/test.md'],
-    sessionID: 'sess-p-1',
-  } satisfies AgentStartedEvent);
-
-  emit({
-    type: 'agentFailed',
-    agentType: 'planner',
-    error: 'planner error',
-    sessionID: 'sess-p-1',
-  } satisfies AgentFailedEvent);
-
-  expect(store.getState().plannerStatus).toBe('idle');
-});
-
-// ---------------------------------------------------------------------------
-// specChanged — no-op
-// ---------------------------------------------------------------------------
-
-test('it does not update any task or state when a spec change event is received', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-  const tasksBefore = store.getState().tasks;
-
-  emit({
-    type: 'specChanged',
-    filePath: 'docs/specs/decree.md',
-    frontmatterStatus: 'approved',
-    changeType: 'added',
-    commitSHA: 'abc123def',
+  await vi.waitFor(() => {
+    const cached = store.getState().detailCache.get('42');
+    expect(cached).toBeDefined();
+    expect(cached?.loading).toBe(false);
   });
 
-  expect(store.getState().tasks).toBe(tasksBefore);
-});
-
-// ---------------------------------------------------------------------------
-// PR Tracking — prLinked
-// ---------------------------------------------------------------------------
-
-test('it appends a new PR to the task when a PR linked event is received', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 10,
-    url: 'https://example.com/pull/10',
-    ciStatus: 'pending',
-  } satisfies PRLinkedEvent);
-
-  const task = store.getState().tasks.get(1);
-  expect(task?.prs).toStrictEqual([
-    { number: 10, url: 'https://example.com/pull/10', ciStatus: 'pending' },
+  const cached = store.getState().detailCache.get('42');
+  expect(cached?.body).toBe('fetched body');
+  expect(cached?.revisionFiles).toStrictEqual([
+    { path: 'src/main.ts', status: 'modified', patch: null },
   ]);
 });
 
-test('it updates an existing PR when a PR linked event has a matching number', () => {
-  const { store, emit } = setupTest();
+test('it sets the detail cache to loading while fetch is in progress', () => {
+  let resolveBody: (value: string) => void = () => {
+    // default no-op, replaced by promise constructor
+  };
+  const bodyPromise = new Promise<string>((resolve) => {
+    resolveBody = resolve;
+  });
+  const getWorkItemBody = vi.fn(() => bodyPromise);
+  const getRevisionFiles = vi.fn(async (): Promise<RevisionFile[]> => []);
+  const { store } = setupTest({ getWorkItemBody, getRevisionFiles });
 
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 10,
-    url: 'https://example.com/pull/10',
-    ciStatus: null,
-  } satisfies PRLinkedEvent);
+  store.getState().pinWorkItem('42');
 
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 10,
-    url: 'https://example.com/pull/10',
-    ciStatus: 'success',
-  } satisfies PRLinkedEvent);
+  const cached = store.getState().detailCache.get('42');
+  expect(cached?.loading).toBe(true);
 
-  const task = store.getState().tasks.get(1);
-  expect(task?.prs).toHaveLength(1);
-  expect(task?.prs[0]?.ciStatus).toBe('success');
+  // Clean up
+  resolveBody('body');
 });
 
-test('it ignores a PR linked event when no task exists for the issue', () => {
-  const { store, emit } = setupTest();
+test('it discards fetch results if pinned work item changed during fetch', async () => {
+  let resolveFirstBody: (value: string) => void = () => {
+    // default no-op, replaced by promise constructor
+  };
+  const firstBodyPromise = new Promise<string>((resolve) => {
+    resolveFirstBody = resolve;
+  });
 
-  emit({
-    type: 'prLinked',
-    issueNumber: 999,
-    prNumber: 10,
-    url: 'https://example.com/pull/10',
-    ciStatus: null,
-  } satisfies PRLinkedEvent);
+  let callCount = 0;
+  const getWorkItemBody = vi.fn((id: string) => {
+    callCount += 1;
+    if (callCount === 1) {
+      // First call (for '42') — returns deferred promise
+      return firstBodyPromise;
+    }
+    // Second call (for '99') — resolves immediately
+    return Promise.resolve(`body for ${id}`);
+  });
+  const getRevisionFiles = vi.fn(async (): Promise<RevisionFile[]> => []);
+  const { store } = setupTest({ getWorkItemBody, getRevisionFiles });
 
-  expect(store.getState().tasks.size).toBe(0);
-});
+  store.getState().pinWorkItem('42');
 
-test('it marks PR detail cache as stale when a PR linked event is received', () => {
-  const { store, emit } = setupTest();
+  // Pin a different work item before fetch for '42' completes
+  store.getState().pinWorkItem('99');
 
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
+  // Wait for the second fetch to complete
+  await vi.waitFor(() => {
+    const cached = store.getState().detailCache.get('99');
+    expect(cached?.loading).toBe(false);
+  });
 
-  const prDetailCache = new Map(store.getState().prDetailCache);
-  prDetailCache.set(10, { title: 'PR', changedFilesCount: 2, stale: false });
-  store.setState({ prDetailCache });
+  // Now resolve the stale first fetch
+  resolveFirstBody('stale body for 42');
+  await new Promise((r) => setTimeout(r, 0));
 
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 10,
-    url: 'https://example.com/pull/10',
-    ciStatus: 'success',
-  } satisfies PRLinkedEvent);
+  // The cache entry for '42' should not exist — cleared when pinning '99'
+  expect(store.getState().detailCache.has('42')).toBe(false);
 
-  expect(store.getState().prDetailCache.get(10)?.stale).toBe(true);
-});
-
-// ---------------------------------------------------------------------------
-// PR Tracking — ciStatusChanged
-// ---------------------------------------------------------------------------
-
-test('it updates CI status on a matching PR when a CI status change is received', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'review' }));
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 10,
-    url: 'https://example.com/pull/10',
-    ciStatus: 'pending',
-  } satisfies PRLinkedEvent);
-
-  emit({
-    type: 'ciStatusChanged',
-    prNumber: 10,
-    issueNumber: 1,
-    oldCIStatus: 'pending',
-    newCIStatus: 'success',
-  } satisfies CIStatusChangedEvent);
-
-  expect(store.getState().tasks.get(1)?.prs[0]?.ciStatus).toBe('success');
-});
-
-test('it creates a partial PR entry when a CI status change has no matching PR', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'review' }));
-
-  emit({
-    type: 'ciStatusChanged',
-    prNumber: 10,
-    issueNumber: 1,
-    oldCIStatus: null,
-    newCIStatus: 'pending',
-  } satisfies CIStatusChangedEvent);
-
-  const task = store.getState().tasks.get(1);
-  expect(task?.prs).toHaveLength(1);
-  expect(task?.prs[0]).toStrictEqual({ number: 10, url: '', ciStatus: 'pending' });
-});
-
-test('it ignores a CI status change when no issue number is present', () => {
-  const { store, emit } = setupTest();
-
-  const stateBefore = store.getState();
-
-  emit({
-    type: 'ciStatusChanged',
-    prNumber: 99,
-    oldCIStatus: null,
-    newCIStatus: 'pending',
-  } satisfies CIStatusChangedEvent);
-
-  expect(store.getState().tasks).toBe(stateBefore.tasks);
-});
-
-test('it ignores a CI status change when no task exists for the issue', () => {
-  const { store, emit } = setupTest();
-
-  emit({
-    type: 'ciStatusChanged',
-    prNumber: 10,
-    issueNumber: 999,
-    oldCIStatus: null,
-    newCIStatus: 'failure',
-  } satisfies CIStatusChangedEvent);
-
-  expect(store.getState().tasks.size).toBe(0);
-});
-
-test('it marks PR detail cache as stale when a CI status change is received', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'review' }));
-
-  const prDetailCache = new Map(store.getState().prDetailCache);
-  prDetailCache.set(10, { title: 'PR', changedFilesCount: 2, stale: false });
-  store.setState({ prDetailCache });
-
-  emit({
-    type: 'ciStatusChanged',
-    prNumber: 10,
-    issueNumber: 1,
-    oldCIStatus: null,
-    newCIStatus: 'failure',
-  } satisfies CIStatusChangedEvent);
-
-  expect(store.getState().prDetailCache.get(10)?.stale).toBe(true);
+  // The cache for '99' should have its own body, not the stale one
+  const cached99 = store.getState().detailCache.get('99');
+  expect(cached99?.body).toBe('body for 99');
 });
 
 // ---------------------------------------------------------------------------
-// Selectors — sortedTasks
+// Action — cycleFocus
 // ---------------------------------------------------------------------------
 
-test('it places action tasks before agent tasks in the sorted list', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-  emit(buildIssueStatusChanged({ issueNumber: 2, newStatus: 'in-progress' }));
-
-  const sorted = selectSortedTasks(store.getState().tasks);
-  expect(sorted).toHaveLength(2);
-  expect(sorted[0]?.section).toBe('action');
-  expect(sorted[0]?.task.issueNumber).toBe(1);
-  expect(sorted[1]?.section).toBe('agents');
-  expect(sorted[1]?.task.issueNumber).toBe(2);
-});
-
-test('it assigns all action statuses to the action section', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'approved' }));
-  emit(buildIssueStatusChanged({ issueNumber: 2, newStatus: 'blocked' }));
-  emit(buildIssueStatusChanged({ issueNumber: 3, newStatus: 'needs-refinement' }));
-  emit(buildIssueStatusChanged({ issueNumber: 4, newStatus: 'pending' }));
-
-  // Create a crashed task
-  emit(buildIssueStatusChanged({ issueNumber: 5, newStatus: 'in-progress' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 5,
-    sessionID: 'sess-5',
-  } satisfies AgentStartedEvent);
-  emit({
-    type: 'agentFailed',
-    agentType: 'implementor',
-    error: 'fail',
-    sessionID: 'sess-5',
-  } satisfies AgentFailedEvent);
-
-  const sorted = selectSortedTasks(store.getState().tasks);
-  const actionTasks = sorted.filter((s) => s.section === 'action');
-  expect(actionTasks).toHaveLength(5);
-});
-
-test('it assigns agent-implementing and agent-reviewing to the agents section', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit(buildIssueStatusChanged({ issueNumber: 2, newStatus: 'review' }));
-
-  const sorted = selectSortedTasks(store.getState().tasks);
-  const agentTasks = sorted.filter((s) => s.section === 'agents');
-  expect(agentTasks).toHaveLength(2);
-});
-
-test('it sorts by status weight descending within a section', () => {
-  const { store, emit } = setupTest();
-
-  // approved (100) should come before blocked (80) should come before pending (50)
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 1,
-      newStatus: 'pending',
-      priorityLabel: 'priority:high',
-    }),
-  );
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 2,
-      newStatus: 'blocked',
-      priorityLabel: 'priority:high',
-    }),
-  );
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 3,
-      newStatus: 'approved',
-      priorityLabel: 'priority:high',
-    }),
-  );
-
-  const sorted = selectSortedTasks(store.getState().tasks);
-  expect(sorted[0]?.task.issueNumber).toBe(3); // approved, weight 100
-  expect(sorted[1]?.task.issueNumber).toBe(2); // blocked, weight 80
-  expect(sorted[2]?.task.issueNumber).toBe(1); // pending, weight 50
-});
-
-test('it sorts by priority weight descending when status weights are equal', () => {
-  const { store, emit } = setupTest();
-
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 1,
-      newStatus: 'pending',
-      priorityLabel: 'priority:low',
-    }),
-  );
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 2,
-      newStatus: 'pending',
-      priorityLabel: 'priority:high',
-    }),
-  );
-
-  const sorted = selectSortedTasks(store.getState().tasks);
-  expect(sorted[0]?.task.issueNumber).toBe(2); // high priority
-  expect(sorted[1]?.task.issueNumber).toBe(1); // low priority
-});
-
-test('it sorts by issue number ascending when status and priority are equal', () => {
-  const { store, emit } = setupTest();
-
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 10,
-      newStatus: 'pending',
-      priorityLabel: 'priority:medium',
-    }),
-  );
-  emit(
-    buildIssueStatusChanged({
-      issueNumber: 5,
-      newStatus: 'pending',
-      priorityLabel: 'priority:medium',
-    }),
-  );
-
-  const sorted = selectSortedTasks(store.getState().tasks);
-  expect(sorted[0]?.task.issueNumber).toBe(5);
-  expect(sorted[1]?.task.issueNumber).toBe(10);
-});
-
-test('it excludes tasks with an unrecognized status label from the sorted list', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-  emit(buildIssueStatusChanged({ issueNumber: 2, newStatus: 'unknown-future-label' }));
-
-  const sorted = selectSortedTasks(store.getState().tasks);
-  expect(sorted).toHaveLength(1);
-  expect(sorted[0]?.task.issueNumber).toBe(1);
-});
-
-// ---------------------------------------------------------------------------
-// Selectors — actionCount, agentSectionCount, runningAgentCount
-// ---------------------------------------------------------------------------
-
-test('it counts action section tasks', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-  emit(buildIssueStatusChanged({ issueNumber: 2, newStatus: 'blocked' }));
-  emit(buildIssueStatusChanged({ issueNumber: 3, newStatus: 'in-progress' }));
-
-  expect(selectActionCount(store.getState())).toBe(2);
-});
-
-test('it counts agent section tasks', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit(buildIssueStatusChanged({ issueNumber: 2, newStatus: 'review' }));
-  emit(buildIssueStatusChanged({ issueNumber: 3, newStatus: 'pending' }));
-
-  expect(selectAgentSectionCount(store.getState())).toBe(2);
-});
-
-test('it counts running agents including the planner', () => {
-  const { store, emit } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit(buildIssueStatusChanged({ issueNumber: 2, newStatus: 'in-progress' }));
-
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 2,
-    sessionID: 'sess-2',
-  } satisfies AgentStartedEvent);
-  emit({
-    type: 'agentStarted',
-    agentType: 'planner',
-    specPaths: ['docs/specs/test.md'],
-    sessionID: 'sess-p-1',
-  } satisfies AgentStartedEvent);
-
-  expect(selectRunningAgentCount(store.getState())).toBe(3);
-});
-
-test('it reports zero running agents when none have started', () => {
+test('it toggles focus from work item list to detail pane', () => {
   const { store } = setupTest();
-  expect(selectRunningAgentCount(store.getState())).toBe(0);
+
+  expect(store.getState().focusedPane).toBe('workItemList');
+
+  store.getState().cycleFocus();
+  expect(store.getState().focusedPane).toBe('detailPane');
+});
+
+test('it toggles focus from detail pane back to work item list', () => {
+  const { store } = setupTest();
+
+  store.getState().cycleFocus();
+  store.getState().cycleFocus();
+  expect(store.getState().focusedPane).toBe('workItemList');
 });
 
 // ---------------------------------------------------------------------------
-// Actions — dispatch
+// Action — dispatchImplementor
 // ---------------------------------------------------------------------------
 
-test('it dispatches an implementor for a ready-to-implement task', () => {
-  const { store, emit, sentCommands } = setupTest();
+test('it enqueues a user-requested implementor run event', () => {
+  const { store, enqueuedEvents } = setupTest();
 
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-  store.getState().dispatch(1);
+  store.getState().dispatchImplementor('42');
 
-  expect(sentCommands).toContainEqual({ command: 'dispatchImplementor', issueNumber: 1 });
+  expect(enqueuedEvents).toStrictEqual([{ type: 'userRequestedImplementorRun', workItemID: '42' }]);
 });
 
-test('it dispatches an implementor when retrying a crashed implementor', () => {
-  const { store, emit, sentCommands } = setupTest();
+test('it calls engine enqueue with the correct event shape', () => {
+  const enqueue = vi.fn();
+  const { store } = setupTest({ enqueue });
 
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
-  emit({
-    type: 'agentFailed',
-    agentType: 'implementor',
-    error: 'fail',
-    sessionID: 'sess-1',
-  } satisfies AgentFailedEvent);
+  store.getState().dispatchImplementor('100');
 
-  store.getState().dispatch(1);
-
-  expect(sentCommands).toContainEqual({ command: 'dispatchImplementor', issueNumber: 1 });
+  expect(enqueue).toHaveBeenCalledWith({
+    type: 'userRequestedImplementorRun',
+    workItemID: '100',
+  });
 });
 
-test('it dispatches a reviewer when retrying a crashed reviewer', () => {
-  const { store, emit, sentCommands } = setupTest();
+test('it does not call engine send for dispatch', () => {
+  const { store, engine } = setupTest();
 
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'review' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'reviewer',
-    issueNumber: 1,
-    sessionID: 'sess-r-1',
-  } satisfies AgentStartedEvent);
-  emit({
-    type: 'agentFailed',
-    agentType: 'reviewer',
-    error: 'fail',
-    sessionID: 'sess-r-1',
-  } satisfies AgentFailedEvent);
+  store.getState().dispatchImplementor('42');
 
-  store.getState().dispatch(1);
-
-  expect(sentCommands).toContainEqual({ command: 'dispatchReviewer', issueNumber: 1 });
-});
-
-test('it does not dispatch for a blocked task', () => {
-  const { store, emit, sentCommands } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'blocked' }));
-  store.getState().dispatch(1);
-
-  expect(sentCommands).toHaveLength(0);
+  // Verify engine.enqueue was called (not engine.send which doesn't exist)
+  expect(engine.enqueue).toHaveBeenCalledTimes(1);
 });
 
 // ---------------------------------------------------------------------------
-// Actions — shutdown
+// Action — shutdown
 // ---------------------------------------------------------------------------
 
-test('it sets the shutting down flag and sends a shutdown command', () => {
-  const { store, sentCommands } = setupTest();
+test('it sets the shutting down flag when shutdown is called', () => {
+  const { store } = setupTest();
 
   store.getState().shutdown();
 
   expect(store.getState().shuttingDown).toBe(true);
-  expect(sentCommands).toContainEqual({ command: 'shutdown' });
+});
+
+test('it calls engine stop when shutdown is called', () => {
+  const { store, engine } = setupTest();
+
+  store.getState().shutdown();
+
+  expect(engine.stop).toHaveBeenCalledTimes(1);
 });
 
 // ---------------------------------------------------------------------------
-// Actions — selectIssue
+// Stream buffer helpers — appendStreamLines
 // ---------------------------------------------------------------------------
 
-test('it updates the selected issue', () => {
+test('it appends stream lines to the buffer keyed by session identifier', () => {
   const { store } = setupTest();
 
-  store.getState().selectIssue(5);
-  expect(store.getState().selectedIssue).toBe(5);
+  appendStreamLines(store, 'sess-1', ['line1', 'line2']);
+
+  const buffer = store.getState().streamBuffers.get('sess-1');
+  expect(buffer).toStrictEqual(['line1', 'line2']);
 });
 
-// ---------------------------------------------------------------------------
-// Actions — pinTask
-// ---------------------------------------------------------------------------
-
-test('it sets the pinned task and triggers on-demand fetch', () => {
-  const { store, emit, engine } = setupTest();
-
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-
-  store.getState().pinTask(1);
-
-  expect(store.getState().pinnedTask).toBe(1);
-  expect(engine.getIssueDetails).toHaveBeenCalledWith(1);
-});
-
-// ---------------------------------------------------------------------------
-// Actions — cycleFocus
-// ---------------------------------------------------------------------------
-
-test('it toggles focus between task list and detail pane', () => {
+test('it appends additional lines to an existing buffer', () => {
   const { store } = setupTest();
 
-  expect(store.getState().focusedPane).toBe('taskList');
+  appendStreamLines(store, 'sess-1', ['line1']);
+  appendStreamLines(store, 'sess-1', ['line2', 'line3']);
 
-  store.getState().cycleFocus();
-  expect(store.getState().focusedPane).toBe('detailPane');
+  const buffer = store.getState().streamBuffers.get('sess-1');
+  expect(buffer).toStrictEqual(['line1', 'line2', 'line3']);
+});
 
-  store.getState().cycleFocus();
-  expect(store.getState().focusedPane).toBe('taskList');
+test('it drops the oldest lines when the buffer exceeds the limit', () => {
+  const { store } = setupTest();
+
+  const lines: string[] = [];
+  for (let i = 0; i < 10_001; i += 1) {
+    lines.push(`line-${i}`);
+  }
+
+  appendStreamLines(store, 'sess-1', lines);
+
+  const buffer = store.getState().streamBuffers.get('sess-1');
+  expect(buffer).toBeDefined();
+  expect(buffer?.length).toBe(10_000);
+  expect(buffer?.[0]).toBe('line-1');
+  expect(buffer?.[buffer.length - 1]).toBe('line-10000');
+});
+
+test('it caps an existing buffer when new lines cause overflow', () => {
+  const { store } = setupTest();
+
+  // Fill buffer to 9999 lines
+  const initialLines: string[] = [];
+  for (let i = 0; i < 9999; i += 1) {
+    initialLines.push(`initial-${i}`);
+  }
+  appendStreamLines(store, 'sess-1', initialLines);
+
+  // Add 2 more lines, causing 1 line to overflow
+  appendStreamLines(store, 'sess-1', ['extra-1', 'extra-2']);
+
+  const buffer = store.getState().streamBuffers.get('sess-1');
+  expect(buffer?.length).toBe(10_000);
+  expect(buffer?.[0]).toBe('initial-1');
+  expect(buffer?.[buffer.length - 1]).toBe('extra-2');
+});
+
+test('it produces a new stream buffer collection reference when lines are appended', () => {
+  const { store } = setupTest();
+
+  const initialBuffers = store.getState().streamBuffers;
+  appendStreamLines(store, 'sess-1', ['line1']);
+
+  expect(store.getState().streamBuffers).not.toBe(initialBuffers);
 });
 
 // ---------------------------------------------------------------------------
-// Stream buffer
+// Stream buffer helpers — clearStreamBuffer
 // ---------------------------------------------------------------------------
 
-test('it appends stream lines to the buffer keyed by session ID', async () => {
-  const { store, emit, engine } = setupTest();
+test('it removes a stream buffer entry by session identifier', () => {
+  const { store } = setupTest();
 
+  appendStreamLines(store, 'sess-1', ['line1']);
+  expect(store.getState().streamBuffers.has('sess-1')).toBe(true);
+
+  clearStreamBuffer(store, 'sess-1');
+  expect(store.getState().streamBuffers.has('sess-1')).toBe(false);
+});
+
+test('it is a no-op when clearing a non-existent buffer', () => {
+  const { store } = setupTest();
+
+  const buffersBefore = store.getState().streamBuffers;
+  clearStreamBuffer(store, 'non-existent');
+
+  expect(store.getState().streamBuffers).toBe(buffersBefore);
+});
+
+// ---------------------------------------------------------------------------
+// Stream consumption — consumeAgentStream
+// ---------------------------------------------------------------------------
+
+test('it consumes a stream and appends lines to the buffer', async () => {
   let resolveStream: () => void;
   const streamDone = new Promise<void>((resolve) => {
     resolveStream = resolve;
@@ -1226,26 +435,28 @@ test('it appends stream lines to the buffer keyed by session ID', async () => {
     resolveStream();
   }
 
-  vi.mocked(engine.getAgentStream).mockReturnValue(generate());
+  const getAgentStream = vi.fn(() => generate());
+  const { store, engine } = setupTest({ getAgentStream });
 
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
+  consumeAgentStream(store, engine, 'sess-1');
 
   await streamDone;
   await new Promise((r) => setTimeout(r, 0));
 
-  const buffer = store.getState().agentStreams.get('sess-1');
+  const buffer = store.getState().streamBuffers.get('sess-1');
   expect(buffer).toStrictEqual(['line1', 'line2']);
 });
 
-test('it drops the oldest lines when the stream buffer exceeds the limit', async () => {
-  const { store, emit, engine } = setupTest();
+test('it does nothing when the engine returns null for a stream', () => {
+  const getAgentStream = vi.fn(() => null);
+  const { store, engine } = setupTest({ getAgentStream });
 
+  consumeAgentStream(store, engine, 'sess-1');
+
+  expect(store.getState().streamBuffers.has('sess-1')).toBe(false);
+});
+
+test('it caps the buffer at ten thousand lines during stream consumption', async () => {
   const chunks: string[] = [];
   for (let i = 0; i < 10_001; i += 1) {
     chunks.push(`chunk-${i}`);
@@ -1263,20 +474,15 @@ test('it drops the oldest lines when the stream buffer exceeds the limit', async
     resolveStream();
   }
 
-  vi.mocked(engine.getAgentStream).mockReturnValue(generateChunks());
+  const getAgentStream = vi.fn(() => generateChunks());
+  const { store, engine } = setupTest({ getAgentStream });
 
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
+  consumeAgentStream(store, engine, 'sess-1');
 
   await streamPromise;
   await new Promise((r) => setTimeout(r, 0));
 
-  const buffer = store.getState().agentStreams.get('sess-1');
+  const buffer = store.getState().streamBuffers.get('sess-1');
   expect(buffer).toBeDefined();
   expect(buffer?.length).toBe(10_000);
   expect(buffer?.[0]).toBe('chunk-1');
@@ -1284,31 +490,55 @@ test('it drops the oldest lines when the stream buffer exceeds the limit', async
 });
 
 // ---------------------------------------------------------------------------
+// No domain state duplication
+// ---------------------------------------------------------------------------
+
+test('it does not store work items in the tui local state', () => {
+  const { store } = setupTest();
+  const state = store.getState();
+
+  // The state should not have any domain collections
+  expect('workItems' in state).toBe(false);
+  expect('revisions' in state).toBe(false);
+  expect('agentRuns' in state).toBe(false);
+  expect('specs' in state).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// No engine.on() or engine.send()
+// ---------------------------------------------------------------------------
+
+test('it uses engine.enqueue not engine.send for mutations', () => {
+  const enqueue = vi.fn();
+  const { store } = setupTest({ enqueue });
+
+  store.getState().dispatchImplementor('42');
+
+  expect(enqueue).toHaveBeenCalledWith(
+    expect.objectContaining({ type: 'userRequestedImplementorRun' }),
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Map immutability for Zustand change detection
 // ---------------------------------------------------------------------------
 
-test('it produces a new tasks collection reference on every update', () => {
-  const { store, emit } = setupTest();
+test('it produces a new detail cache reference when a work item is pinned', () => {
+  const { store } = setupTest();
 
-  const initialMap = store.getState().tasks;
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'pending' }));
-  const updatedMap = store.getState().tasks;
+  const initialCache = store.getState().detailCache;
+  store.getState().pinWorkItem('42');
 
-  expect(initialMap).not.toBe(updatedMap);
+  expect(store.getState().detailCache).not.toBe(initialCache);
 });
 
-test('it produces a new stream buffer collection reference when an agent starts', () => {
-  const { store, emit } = setupTest();
+test('it produces a new stream buffers reference when buffers are cleared on pin', () => {
+  const { store } = setupTest();
 
-  emit(buildIssueStatusChanged({ issueNumber: 1, newStatus: 'in-progress' }));
-  const initialMap = store.getState().agentStreams;
+  appendStreamLines(store, 'sess-1', ['line1']);
+  const initialBuffers = store.getState().streamBuffers;
 
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  } satisfies AgentStartedEvent);
+  store.getState().pinWorkItem('42');
 
-  expect(store.getState().agentStreams).not.toBe(initialMap);
+  expect(store.getState().streamBuffers).not.toBe(initialBuffers);
 });
