@@ -815,7 +815,7 @@ Spec writing and implementation for this step are deferred to the cutover track 
 
 ### Step 11a: Workflow spec
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 
