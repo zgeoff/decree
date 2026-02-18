@@ -1,7 +1,7 @@
 ---
 title: Implementor Agent
-version: 0.13.0
-last_updated: 2026-02-18
+version: 1.0.0
+last_updated: 2026-02-19
 status: approved
 ---
 
@@ -9,32 +9,38 @@ status: approved
 
 ## Overview
 
-Agent that executes assigned tasks by reading task issues and referenced specs, writing code and
-tests within declared scope, and surfacing blockers when it cannot proceed. An Implementor works on
-one task at a time; parallelism is achieved by running multiple Implementor instances, not by
-assigning multiple tasks to one agent.
+Agent that executes assigned work items by reading the work item body and referenced specs, writing
+code and tests within declared scope, and surfacing blockers when it cannot proceed. An Implementor
+works on one work item at a time; parallelism is achieved by running multiple Implementor instances,
+not by assigning multiple work items to one agent.
+
+The Implementor produces structured output only. It does not push branches, open revisions, post
+comments, or change work item status. All external mutations are performed by the engine after
+processing the agent's result. See
+[002-architecture.md: Implementor](./v2/002-architecture.md#implementor) for the role contract.
 
 ## Constraints
 
-- Must work on exactly one task at a time.
-- Must use `scripts/workflow/gh.sh` for all GitHub CLI operations (see
-  [skill-github-workflow.md: Authentication](./skill-github-workflow.md#authentication) for wrapper
-  behavior).
+- Must work on exactly one work item at a time.
+- Must not perform any GitHub operations — no `gh` CLI, no `gh.sh`, no API calls. All external
+  mutations (revision creation, status transitions, comments) are performed by the engine's
+  CommandExecutor after processing the agent's `ImplementorResult`.
+- Must not push branches or create revisions. Code changes are committed locally in the worktree;
+  the runtime adapter extracts a patch artifact after the session completes.
+- Must not change work item status labels. Status transitions (`ready` to `in-progress`, etc.) are
+  handled reactively by engine handlers in response to agent lifecycle events.
 - Must conform to the project's code style, naming conventions, and patterns defined in `CLAUDE.md`.
-- Must use conventional commit format for commit messages and PR titles.
-- Must not reprioritize tasks or change task sequencing. Executes what is assigned.
+- Must use conventional commit format for commit messages.
+- Must not reprioritize work items or change sequencing. Executes what is assigned.
 - Must not make interpretive decisions when the spec is ambiguous, contradictory, or incomplete.
-  Escalate as a blocker instead.
-- The PR is the agent's primary deliverable. Code changes without a submitted PR have no value to
-  the workflow — the engine cannot detect completion, the Reviewer cannot be dispatched, and the
-  worktree will be destroyed. A task is not complete until a PR exists.
+  Report the blocker in the structured output instead.
 - The agent definition body must include the permitted bash command list from
   [agent-hook-bash-validator.md: Allowlist Prefixes](./agent-hook-bash-validator.md#allowlist-prefixes)
   to prevent wasted turns on blocked commands.
 - When debugging a test or validation failure, re-reading a file the agent has already read in the
   current session indicates the failure exceeds the agent's ability to resolve efficiently. The
-  agent must escalate as a blocker (type: `debugging-limit`) rather than re-reading files to trace a
-  failure.
+  agent must report a blocker (outcome: `validation-failure`) rather than re-reading files to trace
+  a failure.
 
 ## Agent Profile
 
@@ -46,189 +52,245 @@ assigning multiple tasks to one agent.
 | Permission model | Non-interactive with bash validation             | Runs unattended; bash validator enforces command safety                                 |
 
 The agent definition (`.claude/agents/implementor.md`) implements these constraints as frontmatter.
-The Engine overrides the model at dispatch time based on the task's complexity label (see
-[control-plane-engine.md: Dispatch Logic](./control-plane-engine.md#dispatch-logic)). See
-[control-plane-engine-agent-manager.md: Agent Definition Loading](./control-plane-engine-agent-manager.md#agent-definition-loading)
-for how the Engine parses frontmatter.
+See
+[control-plane-engine-runtime-adapter-claude.md: Agent Definition Loading](./control-plane-engine-runtime-adapter-claude.md#agent-definition-loading)
+for how the runtime adapter parses frontmatter.
 
 ## Trigger
 
-The Implementor is invoked with a task issue number under three scenarios:
+The Implementor is dispatched when a work item transitions to `ready` status. The engine's
+`handleImplementation` handler emits `RequestImplementorRun` in response to `WorkItemChanged`
+events. See
+[control-plane-engine-handlers.md: handleImplementation](./control-plane-engine-handlers.md#handleimplementation)
+for dispatch logic.
 
-1. **New task** — A `status:pending` task is selected for implementation.
-2. **Task unblocked** — A previously blocked task moves to `status:unblocked`.
-3. **Task needs changes** — A reviewed task moves to `status:needs-changes`.
+The agent receives the work item in one of two contexts:
 
-The agent determines the scenario from the task's current status label.
+1. **New implementation** — No linked revision exists. The agent implements the work item from
+   scratch.
+2. **Resume** — A linked revision exists (from a prior run that was blocked, failed validation, or
+   was rejected by the reviewer). The enriched prompt includes revision files, CI status, and prior
+   review history.
+
+The agent determines the context from the presence or absence of a revision section in its enriched
+prompt.
 
 ## Inputs
 
-The Engine injects the following into the agent's session at dispatch time (see
-[control-plane-engine-agent-manager.md: Trigger Context](./control-plane-engine-agent-manager.md#trigger-context)
-and [Project Context Injection](./control-plane-engine-agent-manager.md#project-context-injection)):
+The runtime adapter assembles an enriched trigger prompt from
+`ImplementorStartParams { workItemID, branchName }`. See
+[control-plane-engine-runtime-adapter-claude.md: Implementor Context](./control-plane-engine-runtime-adapter-claude.md#implementor-context)
+for the prompt format and data resolution.
 
-1. **Trigger prompt:** An enriched prompt containing the task issue details (number, title, body,
-   labels). When a linked PR exists (resume scenarios), the prompt additionally includes per-file PR
-   diffs and prior review history. See
-   [control-plane-engine-context-precomputation.md: Implementor Context Pre-computation](./control-plane-engine-context-precomputation.md#implementor-context-pre-computation)
-   for the prompt format.
+1. **Trigger prompt:** An enriched prompt containing the work item details (ID, title, body,
+   status). When a linked revision exists (resume scenarios), the prompt additionally includes
+   per-file revision diffs, CI failure details (when pipeline has failed), and prior review history.
 2. **Project context:** CLAUDE.md content (coding conventions, style rules, architecture) appended
-   to the agent's system prompt.
-3. **Working directory:** A git worktree (see
-   [control-plane-engine-agent-manager.md: Agent Lifecycle](./control-plane-engine-agent-manager.md#agent-lifecycle),
-   step 2). For new tasks, the worktree is on a fresh branch. For resumed tasks (`status:unblocked`,
-   `status:needs-changes`), the worktree is on the existing PR branch.
+   to the agent's system prompt. See
+   [control-plane-engine-runtime-adapter-claude.md: Project Context Injection](./control-plane-engine-runtime-adapter-claude.md#project-context-injection).
+3. **Working directory:** A git worktree on a fresh branch based on `defaultBranch`. The branch name
+   is assigned by the engine — the agent works on whatever branch its worktree starts on. See
+   [control-plane-engine-runtime-adapter-claude.md: Worktree Management](./control-plane-engine-runtime-adapter-claude.md#worktree-management).
 
 The agent fetches remaining data via tool calls: referenced spec sections and in-scope file state.
-The task issue body, PR diffs, and review comments are pre-computed in the trigger prompt.
+The work item body, revision diffs, and review comments are pre-computed in the trigger prompt.
 
-## Execution Scenarios
+## Execution
 
-The agent's behavior differs based on the task's status label at invocation. The engine guarantees
-dispatch preconditions (valid status label, task structure, spec existence, PR existence for resume
-scenarios) — the agent trusts its input.
+### Implementation Workflow
 
-### New Task (status:pending)
+Regardless of context (new or resume), the agent follows this workflow:
 
-The agent transitions the label to `status:in-progress` before any code changes, then implements the
-task and submits a ready-for-review PR linked to the task issue via `Closes #<issue-number>`. The PR
-title follows conventional commit format. The branch name is assigned by the engine — the agent
-pushes on whatever branch its worktree starts on.
+1. **Understand the assignment.** Read the work item body from the enriched prompt. Identify the
+   objective, spec reference, scope boundaries, acceptance criteria, and constraints.
 
-### Resume from Unblocked (status:unblocked)
+2. **Read referenced specs.** Fetch the spec file and relevant sections via tool calls. The spec
+   content is not included in the enriched prompt — the agent reads it from disk.
 
-The worktree is on the existing PR branch. The agent reviews the original blocker and any resolution
-comments, transitions the label to `status:in-progress`, then continues implementation from
-preserved progress. On completion, the existing draft PR is converted to ready-for-review (not a new
-PR).
+3. **Assess resume context** (resume only). When the enriched prompt includes revision files and
+   prior review history, review them to understand:
+   - What code changes already exist.
+   - What review feedback needs to be addressed.
+   - What CI failures need to be fixed.
 
-### Resume from Needs-Changes (status:needs-changes)
+4. **Implement.** Write code and tests within the declared scope. Commit changes locally using
+   conventional commit format. The agent may make multiple commits during a session.
 
-The worktree is on the existing PR branch. The agent reads the PR review comments to understand
-requested changes, transitions the label to `status:in-progress`, then addresses each review comment
-within scope. Fixes are pushed to the existing PR — no new PR is opened, and the draft-to-ready
-conversion does not apply (the PR is already ready-for-review).
+5. **Validate.** Run pre-submit validation (lint, format, typecheck, tests) before completing. See
+   [Pre-submit Validation](#pre-submit-validation).
 
-If a review comment requests changes to out-of-scope files, the agent posts an escalation comment
-(see
-[workflow-contracts.md: Escalation Comment Format](./workflow-contracts.md#escalation-comment-format))
-explaining the scope constraint and continues with in-scope fixes. Exception: if the project owner
-explicitly requests a scope extension in their review, the agent treats it as an authorized override
-— it posts an escalation comment for traceability and proceeds with the implementation.
+6. **Produce structured output.** Return an `ImplementorResult` via the SDK's structured output
+   mechanism. See [Structured Output](#structured-output).
 
 ### Pre-submit Validation
 
-In all scenarios, the agent runs pre-submit validation (lint, format, typecheck, tests) before
-completing. If validation fails due to the agent's changes, it fixes and re-runs. If validation
-fails due to something outside the agent's scope (pre-existing failure, broken dependency), it
-treats the failure as a blocker.
+The agent runs the project's validation suite before completing. The specific commands are defined
+in `CLAUDE.md` (typically `yarn check` or equivalent).
 
-## Blocker Handling
+- **Validation passes:** The agent proceeds to produce a `completed` outcome.
+- **Validation fails due to the agent's changes:** The agent fixes the issues and re-runs
+  validation.
+- **Validation fails due to something outside the agent's scope** (pre-existing failure, broken
+  dependency, infrastructure issue): The agent produces a `validation-failure` outcome with a
+  summary describing the external failure.
+- **Repeated re-reads during debugging:** If the agent re-reads a file it has already read in the
+  current session while debugging a validation failure, it must stop and produce a
+  `validation-failure` outcome rather than continuing to loop.
 
-When the agent encounters something that prevents continued progress:
+### Scope Enforcement
 
-1. Stop work immediately.
-2. Open a draft PR to preserve progress (if no PR exists yet).
-3. Post a blocker comment on the task issue using the Blocker Comment Format (see
-   [workflow-contracts.md: Blocker Comment Format](./workflow-contracts.md#blocker-comment-format)).
-4. Transition the label from `status:in-progress` to:
-   - `status:needs-refinement` for spec blockers (ambiguity, contradiction, gap)
-   - `status:blocked` for non-spec blockers (external dependency, technical constraint, debugging
-     limit)
-
-### Escalations
-
-When the agent identifies a non-blocking issue (e.g., scope conflict with another task, priority
-conflict, judgment call), it posts an escalation comment using the Escalation Comment Format (see
-[workflow-contracts.md: Escalation Comment Format](./workflow-contracts.md#escalation-comment-format))
-and continues working. Escalations do not stop work and do not change the status label. If the issue
-later prevents progress, it becomes a blocker.
-
-## Scope Enforcement
-
-The agent must only modify files listed in the task issue's "In Scope" section, subject to the scope
+The agent must only modify files listed in the work item's "In Scope" section, subject to the scope
 enforcement rules defined in
 [workflow-contracts.md: Scope Enforcement Rules](./workflow-contracts.md#scope-enforcement-rules)
 (primary scope, co-located test files, incidental changes, scope inaccuracy).
 
 When non-incidental changes to out-of-scope files are needed:
 
-- If it blocks progress: treat as a blocker (type: `technical-constraint`).
-- If it does not block progress: post an escalation (type: `scope-conflict`) and continue.
+- If it blocks progress: produce a `blocked` outcome with a summary describing the scope constraint.
+  Include the blocker type (`technical-constraint`) in the summary text.
+- If it does not block progress: note the scope conflict in the summary and continue with in-scope
+  work.
 
-## Status Transitions
+When the In Scope list names a file that does not contain the expected code:
 
-| From                   | To                        | When                               |
-| ---------------------- | ------------------------- | ---------------------------------- |
-| `status:pending`       | `status:in-progress`      | Starting work on a new task        |
-| `status:unblocked`     | `status:in-progress`      | Resuming a previously blocked task |
-| `status:needs-changes` | `status:in-progress`      | Resuming after reviewer feedback   |
-| `status:in-progress`   | `status:needs-refinement` | Blocked by spec issue              |
-| `status:in-progress`   | `status:blocked`          | Blocked by non-spec issue          |
+- If the task intent is unambiguous and the correct target is identifiable from the codebase: the
+  agent determines the correct target file, treats it as effective primary scope, and documents the
+  discrepancy in a commit message.
+- If the discrepancy makes the task intent unclear: produce a `blocked` outcome. Include the blocker
+  type (`spec-gap`) in the summary text.
 
-The agent must not perform any other status transitions.
+## Blocker Handling
 
-## Completion Output
+When the agent encounters something that prevents continued progress, it stops work and produces a
+structured output with the appropriate outcome. The agent does not post comments, open draft PRs, or
+change labels — all of that is handled by the engine.
 
-On every run (success or blocker), the agent returns the Implementor Completion Output (see
-[workflow-contracts.md: Implementor Completion Output](./workflow-contracts.md#implementor-completion-output))
-as its final text output to the invoking process.
+| Blocker type                                | Outcome              | Summary content                                                        |
+| ------------------------------------------- | -------------------- | ---------------------------------------------------------------------- |
+| Spec ambiguity, contradiction, or gap       | `blocked`            | Blocker type, description, spec reference, options, and recommendation |
+| External dependency or technical constraint | `blocked`            | Blocker type, description, what was attempted, and impact              |
+| Debugging limit (re-reading files)          | `validation-failure` | Description of the failure and what was attempted before stopping      |
+| Pre-existing validation failure             | `validation-failure` | Which validation step failed and why it is outside the agent's scope   |
+
+The `summary` field in the structured output replaces the Blocker Comment Format from v1 — it
+carries the same information (blocker type label, description, options, recommendation, impact) as
+plain text rather than as a GitHub issue comment. Blocker type is not a separate schema field — it
+is embedded in the summary text (e.g., "Type: spec-gap — …").
+
+> **Rationale:** In the v2 architecture, the agent produces artifacts only. The engine's
+> `ApplyImplementorResult` command handles outcome-dependent operations — transitioning status to
+> `blocked` or `needs-refinement`, and including the summary in the work item update if needed. The
+> agent does not need to know how blocker information is surfaced.
+
+## Structured Output
+
+The agent produces an `ImplementorResult` as its structured output on every run. The runtime adapter
+validates this against a Zod schema and enriches it with the extracted patch. See
+[control-plane-engine-runtime-adapter-claude.md: Structured Output](./control-plane-engine-runtime-adapter-claude.md#structured-output)
+for the schema and validation process.
+
+The agent outputs:
+
+```
+{
+  "role": "implementor",
+  "outcome": "completed" | "blocked" | "validation-failure",
+  "summary": "<what was done, or why it could not be done>"
+}
+```
+
+The `patch` field in the full `ImplementorResult` is not agent-produced — the runtime adapter
+extracts it from the worktree via `git diff` after the session completes. See
+[control-plane-engine-runtime-adapter-claude.md: Patch Extraction](./control-plane-engine-runtime-adapter-claude.md#patch-extraction).
+
+### Outcome Semantics
+
+| Outcome              | Meaning                                                                                  | Engine response                                     |
+| -------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `completed`          | Work item fully implemented and validated. Worktree contains committable changes.        | Create revision from patch, transition to `review`. |
+| `blocked`            | Progress prevented by an issue outside the agent's control (spec, dependency, scope).    | Transition to `blocked`.                            |
+| `validation-failure` | Pre-submit validation failed due to something outside the agent's scope or debug limits. | Transition to `needs-refinement`.                   |
+
+The engine processes outcomes via `ApplyImplementorResult`. See
+[002-architecture.md: Implementor](./v2/002-architecture.md#implementor) for the full status flow.
+
+### Summary Guidelines
+
+The `summary` field serves two audiences: the engine (for status transitions and work item updates)
+and the human operator (for understanding what happened). Content varies by outcome:
+
+- **`completed`:** Brief description of what was implemented and tested.
+- **`blocked`:** Structured blocker information — type, description, spec reference (for spec
+  blockers), options with trade-offs, recommendation, and impact. This is the v2 equivalent of the
+  Blocker Comment Format.
+- **`validation-failure`:** Which validation step failed, what the agent tried, and why the failure
+  is outside its scope.
 
 ## Acceptance Criteria
 
-- [ ] Given a `status:pending` task, when the agent starts work, then the label is updated to
-      `status:in-progress` before any code changes are made.
-- [ ] Given a task issue with a "Spec Reference" field, when the agent starts work, then it reads
-      the referenced spec file and sections before writing code.
-- [ ] Given a task with an "In Scope" file list, when the agent completes work, then only files in
-      primary scope, co-located test files, incidental changes, and documented scope inaccuracies
+- [ ] Given a work item with a "Spec Reference" field, when the agent starts work, then it reads the
+      referenced spec file and sections via tool calls before writing code.
+- [ ] Given a work item with an "In Scope" file list, when the agent completes work, then only files
+      in primary scope, co-located test files, incidental changes, and documented scope inaccuracies
       have been modified.
-- [ ] Given a task whose In Scope list names a file that does not contain the expected code, when
-      the task intent is unambiguous, then the agent determines the correct target file, proceeds
-      with implementation, and documents the discrepancy in the PR body.
-- [ ] Given a task whose In Scope list names a file that does not contain the expected code, when
-      the discrepancy makes the task intent unclear, then the agent treats it as a blocker (type:
-      `spec-gap`).
-- [ ] Given a satisfiable task, when the agent completes work, then a ready-for-review PR exists
-      linked to the task issue via `Closes #<issue-number>`.
-- [ ] Given a spec ambiguity during implementation, when the agent stops work, then a draft PR
-      preserves progress, a blocker comment is posted, and the label is `status:needs-refinement`.
-- [ ] Given a non-spec blocker during implementation, when the agent stops work, then a draft PR
-      preserves progress, a blocker comment is posted, and the label is `status:blocked`.
-- [ ] Given a `status:unblocked` task, when the agent resumes, then it continues from preserved
-      progress on the existing PR branch.
-- [ ] Given a `status:unblocked` task, when the agent completes, then the existing draft PR is
-      converted to ready-for-review.
-- [ ] Given a `status:needs-changes` task, when the agent resumes, then it pushes fixes to the
-      existing PR branch.
-- [ ] Given a needs-changes review comment requesting out-of-scope changes, when the comment is not
-      from the project owner, then the agent posts an escalation comment and continues with in-scope
-      fixes.
-- [ ] Given a needs-changes review where the project owner explicitly requests a scope extension,
-      when the agent proceeds with the out-of-scope changes, then it posts an escalation comment for
-      traceability before implementing.
-- [ ] Given a non-blocking issue (scope conflict, priority conflict), when the agent posts an
-      escalation, then it continues working and does not change the status label.
-- [ ] Given the agent finishes execution (any outcome), then it returns a completion summary
-      matching the Implementor Completion Output format.
+- [ ] Given a work item whose In Scope list names a file that does not contain the expected code,
+      when the task intent is unambiguous, then the agent determines the correct target file and
+      proceeds with implementation.
+- [ ] Given a work item whose In Scope list names a file that does not contain the expected code,
+      when the discrepancy makes the task intent unclear, then the agent produces a `blocked`
+      outcome.
+- [ ] Given a satisfiable work item, when the agent completes work, then the structured output has
+      outcome `completed` and the worktree contains committed changes against the branch.
+- [ ] Given a spec ambiguity during implementation, when the agent stops work, then the structured
+      output has outcome `blocked` with a summary describing the spec issue, options, and
+      recommendation.
+- [ ] Given a non-spec blocker during implementation, when the agent stops work, then the structured
+      output has outcome `blocked` with a summary describing the constraint and impact.
+- [ ] Given a validation failure outside the agent's scope, when the agent stops work, then the
+      structured output has outcome `validation-failure` with a summary identifying the external
+      failure.
+- [ ] Given the agent re-reads a file during validation debugging, when the re-read is detected,
+      then the agent stops and produces a `validation-failure` outcome instead of continuing to
+      loop.
+- [ ] Given an enriched prompt with revision files and prior review history (resume scenario), when
+      the agent starts work, then it reviews the existing changes and feedback before making new
+      modifications.
+- [ ] Given an enriched prompt with a CI failure section (resume scenario), when the agent starts
+      work, then it addresses the CI failure as part of its implementation.
+- [ ] Given a review comment requesting changes to out-of-scope files, when the change does not
+      block progress, then the agent notes the scope conflict in the summary and continues with
+      in-scope work.
+- [ ] Given a non-incidental change needed to an out-of-scope file that blocks progress, when the
+      agent stops work, then the structured output has outcome `blocked` with a summary identifying
+      the blocker type as `technical-constraint`.
+- [ ] Given the agent finishes execution (any outcome), then its structured output matches the
+      `ImplementorResult` schema with `role: 'implementor'`, a valid outcome, and a non-empty
+      summary.
+- [ ] Given the agent finishes execution, then it has not performed any GitHub CLI operations, has
+      not pushed any branches, and has not opened any revisions.
 
 ## Dependencies
 
-- `scripts/workflow/gh.sh` — Authenticated `gh` CLI wrapper (see `docs/specs/decree/github-cli.md`).
-  All GitHub operations (label changes, issue comments, PR creation and updates).
+- `CLAUDE.md` — Code style, naming conventions, and patterns that the agent must conform to.
 - Project testing framework — Tests must be runnable locally via the commands defined in
   `CLAUDE.md`.
-- `CLAUDE.md` — Code style, naming conventions, and patterns that the agent must conform to.
-- `workflow-contracts.md` — Shared data formats: Blocker Comment Format, Escalation Comment Format,
-  Implementor Completion Output, Scope Enforcement Rules.
-- Agent Bash Tool Validator — PreToolUse hook that validates all Bash commands against
-  blocklist/allowlist before execution. See `agent-hook-bash-validator.md` (rules) and
-  `agent-hook-bash-validator-script.md` (shell implementation).
+- [workflow-contracts.md](./workflow-contracts.md) — Scope Enforcement Rules.
+- [agent-hook-bash-validator.md](./agent-hook-bash-validator.md) — PreToolUse hook that validates
+  all Bash commands against blocklist/allowlist before execution.
+- [control-plane-engine-runtime-adapter-claude.md](./control-plane-engine-runtime-adapter-claude.md)
+  — Context assembly (enriched prompt format), worktree management, patch extraction, structured
+  output validation.
+- [002-architecture.md](./v2/002-architecture.md) — `ImplementorResult` type definition, Implementor
+  role contract, `ApplyImplementorResult` command semantics.
 
 ## References
 
-- `docs/specs/decree/workflow.md` — Development Protocol (Implementor role, Implementation Phase)
-- `docs/specs/decree/skill-github-workflow.md` — GitHub Workflow Skill spec (reference for `gh`
-  command patterns and label rules; not loaded at runtime)
-- `docs/specs/decree/github-cli.md` — GitHub CLI wrapper spec
-- `docs/specs/decree/script-label-setup.md` — Label definitions for the repository
+- [002-architecture.md: Implementor](./v2/002-architecture.md#implementor) — Role contract, status
+  flow, concurrency.
+- [002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results) — `ImplementorResult`
+  type definition.
+- [control-plane-engine-handlers.md: handleImplementation](./control-plane-engine-handlers.md#handleimplementation)
+  — Dispatch and result processing logic.
+- [control-plane-engine-command-executor.md](./control-plane-engine-command-executor.md) —
+  `ApplyImplementorResult` execution (revision creation, status transitions).
+- [workflow.md](./workflow.md) — Development Protocol (Implementor role, Implementation Phase).
