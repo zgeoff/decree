@@ -854,7 +854,7 @@ consistent with the handler catalog. Role descriptions match agent spec changes.
 
 ### Step 11b: Workflow contracts
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 

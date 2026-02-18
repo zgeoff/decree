@@ -1,227 +1,205 @@
 ---
 title: Workflow Contracts
-version: 0.7.0
-last_updated: 2026-02-17
-status: approved
+version: 1.0.0
+last_updated: 2026-02-19
+status: draft
 ---
 
 # Workflow Contracts
 
 ## Overview
 
-Shared data formats and templates used across workflow agents. Each template is defined once here
-and referenced by the agent specs that produce or consume it.
+Shared data formats and templates used across workflow agents. Each format is defined once here and
+referenced by the agent specs that produce or consume it.
+
+In the v2 architecture, agents produce structured artifacts validated by runtime adapter schemas.
+The engine processes these artifacts into provider operations — agents do not perform external
+mutations. This spec defines the structured output types, work item body templates, and scope
+enforcement rules that govern agent behavior.
 
 ## Constraints
 
 - This spec is the single source of truth for all workflow output formats — agent definitions
-  reference these templates via cross-references, not inline copies
-- Agent definitions inline the templates they use at build time — agents do not fetch templates via
-  tool calls at runtime
-- Every template must include all required fields; optional fields must be explicitly marked as
-  optional
+  reference these formats via cross-references, not inline copies
+- All output types must match the `AgentResult` types defined in
+  [002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results)
+- Every field in a structured output type must be documented with its purpose and constraints
 - Template changes require a version bump in this spec and updates to all consuming agent specs
-- Format consistency across agents: all comment templates use markdown with the same heading
-  hierarchy and field structure
+- Agents produce structured artifacts only — no direct GitHub operations, no `gh.sh` usage, no
+  status transitions, no review posting
 
 ## Specification
 
-### Completion Output Formats
+### Structured Output Formats
 
-#### Implementor Completion Output
+All agent output types are defined in
+[002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results). This section documents
+each type with field-level semantics and usage rules. Runtime adapters validate these outputs
+against Zod schemas — see
+[control-plane-engine-runtime-adapter-claude.md: Agent Output Schemas](./control-plane-engine-runtime-adapter-claude.md#agent-output-schemas).
 
-Produced by the Implementor as structured JSON, returned to the invoking process.
+#### PlannerResult
 
-```json
-{
-  "workItemID": "#<issue-number>",
-  "revisionID": "#<pr-number>",
-  "outcome": "completed | blocked",
-  "summary": "Brief description of changes made (or 'No changes' if stopped before implementation)"
+Produced by the Planner as its structured output. Captures the full work item delta — every create,
+close, and update operation from the run — with dependency ordering via `tempID` references.
+
+```
+PlannerResult {
+  role:    'planner'
+  create:  PlannedWorkItem[]
+  close:   string[]                       // existing WorkItem ids to close
+  update:  PlannedWorkItemUpdate[]
+}
+
+PlannedWorkItem {
+  tempID:    string                       // planner-assigned, unique within this result
+  title:     string
+  body:      string
+  labels:    string[]
+  blockedBy: string[]                     // tempIDs (from this result) or existing WorkItem ids
+}
+
+PlannedWorkItemUpdate {
+  workItemID: string                      // existing WorkItem id
+  body:       string | null               // null = no change
+  labels:     string[] | null             // null = no change
 }
 ```
 
-#### Reviewer Completion Output
+Field rules:
 
-Produced by the Reviewer as structured JSON, returned to the invoking process.
+- `role` is always `'planner'`.
+- `create` contains new work items in creation order. Each has a unique `tempID` within the result.
+- `close` contains ids of existing work items to close (removed or superseded by spec changes).
+- `update` contains modifications to existing work items (revised body, updated labels).
+- `blockedBy` may reference `tempID` values from the same result (for inter-task dependencies) or
+  existing work item ids (for dependencies on prior work).
+- Gate-failure-only and idempotent no-op runs produce a `PlannerResult` with all arrays empty.
+- The `body` of each `PlannedWorkItem` follows the Task Issue Template or Refinement Issue Template
+  (see [Work Item Body Templates](#work-item-body-templates)).
 
-```json
-{
-  "issue": "#<issue-number>",
-  "pr": "#<pr-number>",
-  "outcome": "approved | needs-changes",
-  "summary": "Brief description of review result"
+The engine's `ApplyPlannerResult` command processes creates in order, builds a tempID-to-real-id
+map, resolves all `blockedBy` references, processes closes, and processes updates. See
+[002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results) for the resolution
+mechanism.
+
+#### ImplementorResult
+
+Produced by the Implementor as its structured output on every run. The runtime adapter validates the
+agent-produced fields and enriches the result with the extracted patch.
+
+```
+ImplementorResult {
+  role:     'implementor'
+  outcome:  'completed' | 'blocked' | 'validation-failure'
+  patch:    string | null                 // present only when outcome is completed
+  summary:  string                        // what was done, or why it couldn't be done
 }
 ```
 
-#### Planner Structured Output
+Field rules:
 
-Produced by the Planner as its final output. Captures the blocking delta — every issue action and
-dependency change from the run — as machine-readable structured data.
+- `role` is always `'implementor'`.
+- `outcome` is a three-way discriminator:
+  - `completed` — Work item fully implemented and validated. The worktree contains committable
+    changes.
+  - `blocked` — Progress prevented by an issue outside the agent's control (spec ambiguity,
+    dependency, scope constraint).
+  - `validation-failure` — Pre-submit validation failed due to something outside the agent's scope
+    or debugging limits were reached.
+- `patch` is populated by the runtime adapter (not the agent) via `git diff` after the session
+  completes. Present only when `outcome` is `completed`; `null` otherwise. See
+  [control-plane-engine-runtime-adapter-claude.md: Patch Extraction](./control-plane-engine-runtime-adapter-claude.md#patch-extraction).
+- `summary` serves two audiences: the engine (for status transitions and work item updates) and the
+  human operator (for understanding what happened). Content varies by outcome — see
+  [Summary Content by Outcome](#summary-content-by-outcome).
 
-```typescript
-interface PlannerStructuredOutput {
-  created: number[]; // issues created this run, in creation order
-  closed: number[]; // issues closed this run
-  updated: number[]; // issues updated this run (body/labels revised)
-  blocking: Record<string, number[]>; // issue → issues it blocks
+The engine's `ApplyImplementorResult` command handles outcome-dependent operations: creating a
+revision from the patch and transitioning status for `completed`, or transitioning status to
+`blocked` or `needs-refinement` for non-completed outcomes. See
+[002-architecture.md: Implementor](./v2/002-architecture.md#implementor) for the full status flow.
+
+##### Summary Content by Outcome
+
+The `summary` field replaces the v1 Blocker Comment Format and Escalation Comment Format. It carries
+the same information as plain text within the structured output rather than as separate GitHub issue
+comments.
+
+| Outcome              | Summary content                                                                                                                                                |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `completed`          | Brief description of what was implemented and tested.                                                                                                          |
+| `blocked`            | Blocker type (embedded as text, e.g., "Type: spec-gap"), description, spec reference (for spec blockers), options with trade-offs, recommendation, and impact. |
+| `validation-failure` | Which validation step failed, what the agent tried, and why the failure is outside its scope.                                                                  |
+
+For `blocked` outcomes, the summary must include:
+
+- **Blocker type** — one of: `spec-ambiguity`, `spec-contradiction`, `spec-gap`,
+  `external-dependency`, `technical-constraint`, `debugging-limit`.
+- **Description** — what is blocking progress.
+- **Spec reference** (required for spec blockers) — file path, section name, and relevant quote.
+- **Options** — at least two options with trade-offs.
+- **Recommendation** — which option and why.
+- **Impact** — what happens if the blocker is not resolved.
+
+#### ReviewerResult
+
+Produced by the Reviewer as its structured output. Contains a structured verdict with optional
+line-level comments.
+
+```
+ReviewerResult {
+  role:   'reviewer'
+  review: AgentReview
+}
+
+AgentReview {
+  verdict:     'approve' | 'needs-changes'
+  summary:     string
+  comments:    AgentReviewComment[]
+}
+
+AgentReviewComment {
+  path:        string
+  line:        number | null
+  body:        string
 }
 ```
 
-Rules:
+Field rules:
 
-- Every issue in `created` and `updated` appears as a key in `blocking`, even when the array is
-  empty (completeness guarantee).
-- Values in `blocking` may reference any issue number — created, updated, or existing issues not
-  otherwise touched in this run.
-- Closed issues do not appear as keys in `blocking` (they are removed from the graph) but may appear
-  as values if another issue still references them.
-- Gate-failure-only and idempotent no-op runs: all arrays are empty and `blocking` is `{}`.
+- `role` is always `'reviewer'`.
+- `verdict` is a two-way discriminator:
+  - `approve` — All review checklist steps pass with no findings. The summary confirms approval and
+    includes any warnings for visibility.
+  - `needs-changes` — One or more checklist steps have findings. The summary describes the findings.
+- `summary` provides a high-level overview of the review result. For approvals, it confirms all
+  checks passed and lists any warnings. For rejections, it summarizes the findings.
+- `comments` contains per-file findings and warnings. Each comment references a specific file path
+  and optionally a line number. Findings that are general (e.g., missing test coverage for a
+  criterion) use the most relevant file path with `line: null`.
+- Warnings are included in `comments` with a `[Warning]` prefix in the body to distinguish them from
+  findings. Warnings do not influence the verdict.
 
-Example:
+Each finding in a `needs-changes` review must include all three components:
 
-```json
-{
-  "created": [20, 21, 22, 23],
-  "closed": [12, 15],
-  "updated": [13],
-  "blocking": {
-    "13": [20],
-    "20": [21, 22],
-    "21": [],
-    "22": [23, 8],
-    "23": []
-  }
-}
-```
+- **What** — the specific file, line, or criterion with the issue.
+- **Why** — reference to the spec, convention, or criterion that is violated.
+- **Fix** — concrete, actionable guidance for resolving the issue.
 
-> **Rationale:** The structured output enables future engine consumption of the Planner's dependency
-> graph without parsing markdown. It is output-only for now (not consumed by the engine) to measure
-> prompt adherence before building ingestion.
+The engine's `ApplyReviewerResult` command posts the review to the revision (or updates an existing
+review) and transitions the work item status based on the verdict. See
+[002-architecture.md: Reviewer](./v2/002-architecture.md#reviewer) for the full status flow.
 
-### Issue Comment Formats
+### Work Item Body Templates
 
-#### Blocker Comment Format
-
-Posted to the task issue by the Implementor when it encounters something that prevents continued
-progress. The agent stops work, preserves progress in a draft PR, and transitions the task to
-`status:needs-refinement` (spec blockers) or `status:blocked` (non-spec blockers).
-
-Requirements:
-
-- At least two options must be provided.
-- A recommendation is required.
-- The "Spec Reference" section is required for spec blockers (types: `spec-ambiguity`,
-  `spec-contradiction`, `spec-gap`). For non-spec blockers (`external-dependency`,
-  `technical-constraint`, `debugging-limit`) it may be omitted.
-
-```markdown
-## Blocker: <Short Title>
-
-**Type:** spec-ambiguity | spec-contradiction | spec-gap | external-dependency |
-technical-constraint | debugging-limit
-
-**Description:** Clear explanation of what is blocking progress.
-
-**Spec Reference:**
-
-- File: `docs/specs/<name>.md`
-- Section: <section name>
-- Quote: "<relevant text from spec>"
-
-**Options:**
-
-1. **<Option A>**
-   - Description: ...
-   - Trade-offs: ...
-
-2. **<Option B>**
-   - Description: ...
-   - Trade-offs: ...
-
-**Recommendation:** Option <X> because <reasoning>.
-
-**Impact:** What happens if this isn't resolved (other blocked tasks, timeline impact).
-```
-
-#### Escalation Comment Format
-
-Posted to the task issue by the Implementor when it identifies a non-blocking issue (e.g., scope
-conflict, priority conflict, judgment call). The agent continues working and does not change the
-status label.
-
-```markdown
-## Escalation: <Short Title>
-
-**Type:** scope-conflict | priority-conflict | judgment-call
-
-**Description:** Clear explanation of the issue.
-
-**What I've Tried:** Steps taken before escalating.
-
-**Options:**
-
-1. <option> -- <trade-offs>
-2. <option> -- <trade-offs>
-
-**Recommendation:** <which option and why, or "No recommendation">
-
-**Blocked Tasks:** <issue references, or "None">
-
-**Decision Needed By:** <date, or "No deadline">
-```
-
-### PR Review Formats
-
-#### Review Approval Template
-
-Submitted as a PR review comment by the Reviewer when all review checklist steps pass (no findings
-recorded).
-
-```markdown
-## Review: Approved
-
-### Checklist
-
-- **Unresolved Review Findings:** No outstanding items (or N/A)
-- **Scope Compliance:** All modified files within scope
-- **Task Constraints:** All constraints satisfied
-- **Acceptance Criteria:** All N criteria verified
-- **Spec Conformance:** Implementation matches spec
-- **Code Quality:** Consistent with project standards
-
-### Warnings
-
-<any warnings from skipped steps or scope observations, or "None">
-```
-
-#### Review Rejection Template
-
-Submitted as a PR review comment by the Reviewer when one or more review checklist steps have
-findings. Only categories with findings are included. Each piece of feedback must include all three
-fields (What, Why, Fix).
-
-```markdown
-## Review: Needs Changes
-
-### Findings
-
-#### <Category>
-
-- **What:** <specific file, line, or criterion> **Why:** <reference to spec, convention, or
-  criterion> **Fix:** <concrete, actionable guidance>
-
-### Warnings
-
-<any warnings from skipped steps or scope observations, or "None">
-```
-
-### GitHub Issue Templates
+These templates define the structure of work item bodies created by the Planner. They are used for
+the `body` field of `PlannedWorkItem` entries in the `PlannerResult`. Consumed by the Implementor
+(reads the work item body to understand its assignment) and the Reviewer (reads the work item body
+to evaluate the revision against).
 
 #### Task Issue Template
 
-Created by the Planner for each implementation task. Consumed by the Implementor (reads the issue to
-understand its assignment) and the Reviewer (reads the issue to evaluate the PR against).
+Created by the Planner for each implementation task.
 
 ```markdown
 ## Objective
@@ -268,7 +246,8 @@ Labels at creation:
 - **Type:** `task:implement`
 - **Status:** `status:pending`
 - **Priority:** One of `priority:high`, `priority:medium`, `priority:low`
-- **Complexity:** One of `complexity:simple`, `complexity:complex`
+- **Complexity:** One of `complexity:trivial`, `complexity:low`, `complexity:medium`,
+  `complexity:high`
 
 #### Refinement Issue Template
 
@@ -329,15 +308,7 @@ enforces them during implementation) and the Reviewer (which audits compliance d
 4. **Scope inaccuracy:** When the In Scope list names a file that does not contain the expected code
    (e.g., the task describes modifying a handler in file A, but the handler actually lives in file
    B), the agent determines the correct target file from the codebase and treats it as the effective
-   primary scope. The agent documents the discrepancy in the PR body using a "Scope correction"
-   section:
-
-   ```
-   ## Scope correction
-   - **Listed:** `<file from In Scope list>`
-   - **Actual:** `<correct file>`
-   - **Reason:** <why the listed file is wrong and the actual file is correct>
-   ```
+   primary scope. The agent documents the discrepancy in a commit message.
 
    This rule applies when the task intent is unambiguous and the correct target is identifiable from
    reading the code. If the discrepancy makes the task intent unclear, the agent treats it as a
@@ -345,63 +316,79 @@ enforces them during implementation) and the Reviewer (which audits compliance d
 
 When a file outside scope needs non-incidental changes:
 
-- **Implementor:** Treats it as a blocker (type: `technical-constraint`) if it blocks progress, or
-  an escalation (type: `scope-conflict`) if it does not.
+- **Implementor:** Produces a `blocked` outcome (type: `technical-constraint`) if it blocks
+  progress, or notes the scope conflict in the summary and continues if it does not.
 - **Reviewer:** Records it as a warning (does not trigger rejection).
 
 ## Acceptance Criteria
 
-- [ ] Given a completion output, when inspected, then it contains all required fields for that
-      agent's output format with no optional fields left undefined.
-- [ ] Given a blocker comment, when the type is a spec blocker (`spec-ambiguity`,
-      `spec-contradiction`, `spec-gap`), then the Spec Reference section is present with File,
-      Section, and Quote fields.
-- [ ] Given a blocker comment, when the type is a non-spec blocker (`external-dependency`,
-      `technical-constraint`, `debugging-limit`), then the Spec Reference section may be omitted
-      without invalidating the comment.
-- [ ] Given a blocker comment, when inspected, then it contains at least two options and a
-      recommendation.
-- [ ] Given a review rejection comment, when inspected, then every finding includes all three fields
-      (What, Why, Fix) and only categories with findings are included.
-- [ ] Given a task issue created from the template, when inspected, then it has labels from all four
-      categories: type, status, priority, and complexity.
-- [ ] Given a refinement issue created from the template, when inspected, then it does not have a
-      complexity label.
-- [ ] Given a Planner Structured Output, when inspected, then every issue in `created` and `updated`
-      appears as a key in `blocking`.
-- [ ] Given a Planner Structured Output from a gate-failure-only or idempotent no-op run, when
-      inspected, then all arrays are empty and `blocking` is `{}`.
+### Structured Output Formats
+
+- [ ] Given a `PlannerResult`, when inspected, then every `PlannedWorkItem` in `create` has a unique
+      `tempID` within the result.
+- [ ] Given a `PlannerResult`, when inspected, then every `PlannedWorkItem.body` follows the Task
+      Issue Template or Refinement Issue Template structure.
+- [ ] Given a `PlannerResult` from a gate-failure-only or idempotent no-op run, when inspected, then
+      all arrays are empty.
+- [ ] Given an `ImplementorResult` with `completed` outcome, when inspected, then `patch` is
+      non-null and `summary` describes what was implemented.
+- [ ] Given an `ImplementorResult` with `blocked` outcome, when inspected, then `summary` contains
+      the blocker type, description, at least two options, and a recommendation.
+- [ ] Given an `ImplementorResult` with `blocked` outcome and a spec blocker type, when inspected,
+      then `summary` contains a spec reference with file path, section, and quote.
+- [ ] Given an `ImplementorResult` with `validation-failure` outcome, when inspected, then `summary`
+      identifies which validation step failed and why it is outside the agent's scope.
+- [ ] Given a `ReviewerResult` with `needs-changes` verdict, when inspected, then every finding in
+      `comments` includes all three fields (What, Why, Fix).
+- [ ] Given a `ReviewerResult` with `approve` verdict, when inspected, then `comments` contains no
+      findings (only warnings, if any, with `[Warning]` prefix).
+
+### Work Item Body Templates
+
+- [ ] Given a task work item created from the Task Issue Template, when inspected, then it has
+      labels from all four categories: type, status, priority, and complexity.
+- [ ] Given a refinement work item created from the Refinement Issue Template, when inspected, then
+      it does not have a complexity label.
+
+### Scope Enforcement
+
 - [ ] Given a scope enforcement decision, when a change qualifies under all three incidental-change
       criteria, then it is permitted without listing the file in "In Scope".
 - [ ] Given a scope enforcement decision, when a change fails any one of the three incidental-change
-      criteria, then the Implementor treats it as a blocker or escalation (not a silent
-      modification).
+      criteria, then the Implementor produces a `blocked` outcome or notes the scope conflict in the
+      summary (not a silent modification).
 - [ ] Given a task whose In Scope list names a file that does not contain the expected code, when
       the correct target is identifiable from reading the codebase and the task intent is
       unambiguous, then the agent treats the correct file as effective primary scope and documents
-      the discrepancy in the PR body.
+      the discrepancy in a commit message.
 - [ ] Given a task whose In Scope list names a file that does not contain the expected code, when
       the discrepancy makes the task intent unclear, then the agent treats it as a blocker (type:
       `spec-gap`).
 
 ## Dependencies
 
-- [workflow.md](./workflow.md) -- status labels, label taxonomy, lifecycle phases, and quality gates
+- [002-architecture.md](./v2/002-architecture.md) — `PlannerResult`, `PlannedWorkItem`,
+  `PlannedWorkItemUpdate`, `ImplementorResult`, `ReviewerResult`, `AgentReview`,
+  `AgentReviewComment` type definitions
+- [workflow.md](./workflow.md) — status labels, label taxonomy, lifecycle phases, and quality gates
   referenced by templates
-- [agent-planner.md](./agent-planner.md) -- consumes task issue template, refinement issue template,
-  and Planner Structured Output format
-- [agent-implementor.md](./agent-implementor.md) -- consumes completion output, blocker comment,
-  escalation comment, and scope enforcement rules
-- [agent-reviewer.md](./agent-reviewer.md) -- consumes review approval template, review rejection
-  template, and scope enforcement rules
-- [script-label-setup.md](./script-label-setup.md) -- label definitions (names, descriptions,
-  colors) used in issue templates
+- [agent-planner.md](./agent-planner.md) — consumes Task Issue Template, Refinement Issue Template,
+  and `PlannerResult` format
+- [agent-implementor.md](./agent-implementor.md) — consumes `ImplementorResult` format and scope
+  enforcement rules
+- [agent-reviewer.md](./agent-reviewer.md) — consumes `ReviewerResult` / `AgentReview` format and
+  scope enforcement rules
+- [control-plane-engine-runtime-adapter-claude.md](./control-plane-engine-runtime-adapter-claude.md)
+  — Zod schemas for structured output validation, patch extraction
+- [script-label-setup.md](./script-label-setup.md) — label definitions (names, descriptions, colors)
+  used in work item templates
 
 ## References
 
+- `docs/specs/decree/v2/002-architecture.md`
 - `docs/specs/decree/workflow.md`
 - `docs/specs/decree/agent-planner.md`
 - `docs/specs/decree/agent-implementor.md`
 - `docs/specs/decree/agent-reviewer.md`
+- `docs/specs/decree/control-plane-engine-runtime-adapter-claude.md`
 - `docs/specs/decree/script-label-setup.md`
-- `docs/specs/decree/skill-agent-spec-writing.md`
