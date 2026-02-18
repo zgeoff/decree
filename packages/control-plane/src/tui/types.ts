@@ -1,3 +1,4 @@
+import type { RevisionFile } from '../engine/github-provider/types.ts';
 import type {
   AgentRun,
   ImplementorRun,
@@ -48,14 +49,6 @@ export interface CachedDetail {
   body: string | null;
   revisionFiles: RevisionFile[] | null;
   loading: boolean;
-}
-
-export interface RevisionFile {
-  path: string;
-  status: 'added' | 'modified' | 'removed' | 'renamed';
-  additions: number;
-  deletions: number;
-  previousPath: string | null;
 }
 
 export interface TUILocalState {
