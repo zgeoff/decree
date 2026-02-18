@@ -137,7 +137,7 @@ export async function translateAndExecute(
       applyPlannerResult(cmd.result, state, deps),
     )
     .with({ command: 'applyImplementorResult' }, async (cmd) =>
-      applyImplementorResult(cmd.workItemID, cmd.result, state, deps),
+      applyImplementorResult(cmd, state, deps),
     )
     .with({ command: 'applyReviewerResult' }, async (cmd) => applyReviewerResult(cmd, state, deps))
     .exhaustive();
@@ -181,40 +181,35 @@ async function applyPlannerResult(
 }
 
 async function applyImplementorResult(
-  workItemID: string,
-  result: ImplementorResult,
+  command: { workItemID: string; branchName: string; result: ImplementorResult },
   state: EngineState,
   deps: CommandExecutorDeps,
 ): Promise<EngineEvent[]> {
-  return match(result)
+  return match(command.result)
     .with({ outcome: 'completed' }, async (r) => {
-      const activeRun = getActiveAgentRun(state, workItemID);
-      invariant(activeRun, `no active agent run for work item ${workItemID}`);
-      invariant(activeRun.role === 'implementor', 'active run is not an implementor');
-      const branchName = activeRun.branchName;
       invariant(r.patch !== null, 'implementor completed without a patch');
       const createdRevision = await deps.revisionWriter.createFromPatch(
-        workItemID,
+        command.workItemID,
         r.patch,
-        branchName,
+        command.branchName,
       );
-      const revisionEvent = buildRevisionChangedFromCreated(createdRevision, workItemID);
-      await deps.workItemWriter.transitionStatus(workItemID, 'review');
-      const workItem = state.workItems.get(workItemID);
-      invariant(workItem, `work item ${workItemID} not found in state`);
+      const revisionEvent = buildRevisionChangedFromCreated(createdRevision, command.workItemID);
+      await deps.workItemWriter.transitionStatus(command.workItemID, 'review');
+      const workItem = state.workItems.get(command.workItemID);
+      invariant(workItem, `work item ${command.workItemID} not found in state`);
       const workItemEvent = buildWorkItemChangedFromExisting(workItem, 'review');
       return [revisionEvent, workItemEvent];
     })
     .with({ outcome: 'blocked' }, async () => {
-      await deps.workItemWriter.transitionStatus(workItemID, 'blocked');
-      const workItem = state.workItems.get(workItemID);
-      invariant(workItem, `work item ${workItemID} not found in state`);
+      await deps.workItemWriter.transitionStatus(command.workItemID, 'blocked');
+      const workItem = state.workItems.get(command.workItemID);
+      invariant(workItem, `work item ${command.workItemID} not found in state`);
       return [buildWorkItemChangedFromExisting(workItem, 'blocked')];
     })
     .with({ outcome: 'validation-failure' }, async () => {
-      await deps.workItemWriter.transitionStatus(workItemID, 'needs-refinement');
-      const workItem = state.workItems.get(workItemID);
-      invariant(workItem, `work item ${workItemID} not found in state`);
+      await deps.workItemWriter.transitionStatus(command.workItemID, 'needs-refinement');
+      const workItem = state.workItems.get(command.workItemID);
+      invariant(workItem, `work item ${command.workItemID} not found in state`);
       return [buildWorkItemChangedFromExisting(workItem, 'needs-refinement')];
     })
     .exhaustive();

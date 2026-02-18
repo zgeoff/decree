@@ -372,6 +372,7 @@ export interface ApplyPlannerResult {
 export interface ApplyImplementorResult {
   command: 'applyImplementorResult';
   workItemID: string;
+  branchName: string;
   result: ImplementorResult;
 }
 

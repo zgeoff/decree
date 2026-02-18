@@ -8,7 +8,7 @@ test('it returns an implementor completed event with default values', () => {
     type: 'implementorCompleted',
     workItemID: 'wi-1',
     sessionID: 'session-impl-1',
-    branchName: 'feature/wi-1',
+    branchName: 'decree/wi-1',
     result: { role: 'implementor', outcome: 'completed', patch: 'diff', summary: 'Done' },
     logFilePath: '/logs/implementor.log',
   });

@@ -9,7 +9,7 @@ import type {
   ReviewerResult,
   WorkItem,
 } from '../state-store/domain-type-stubs.ts';
-import type { AgentRun, EngineState, ImplementorRun, PlannerRun } from '../state-store/types.ts';
+import type { AgentRun, EngineState, PlannerRun } from '../state-store/types.ts';
 import { translateAndExecute } from './translate-and-execute.ts';
 import type { CommandExecutorDeps, RuntimeAdapter } from './types.ts';
 
@@ -53,20 +53,6 @@ function buildPlannerRun(overrides: Partial<PlannerRun> & { sessionID: string })
     role: 'planner',
     status: 'running',
     specPaths: ['docs/specs/test.md'],
-    logFilePath: null,
-    startedAt: '2026-01-01T00:00:00Z',
-    ...overrides,
-  };
-}
-
-function buildImplementorRun(
-  overrides: Partial<ImplementorRun> & { sessionID: string },
-): ImplementorRun {
-  return {
-    role: 'implementor',
-    status: 'running',
-    workItemID: 'wi-1',
-    branchName: 'decree/wi-1',
     logFilePath: null,
     startedAt: '2026-01-01T00:00:00Z',
     ...overrides,
@@ -467,14 +453,8 @@ test('it propagates the error when the second create fails in a planner result',
 test('it creates a revision and transitions status when implementor completes', async () => {
   const workItem = buildWorkItem({ id: 'wi-1', status: 'in-progress' });
   const createdRevision = buildRevision({ id: 'rev-new', workItemID: 'wi-1' });
-  const run = buildImplementorRun({
-    sessionID: 'session-impl',
-    workItemID: 'wi-1',
-    branchName: 'decree/wi-1',
-  });
   const state = setupState({
     workItems: [['wi-1', workItem]],
-    agentRuns: [run],
   });
   const deps = buildMockDeps();
   vi.mocked(deps.revisionWriter.createFromPatch).mockResolvedValue(createdRevision);
@@ -487,6 +467,7 @@ test('it creates a revision and transitions status when implementor completes', 
   const command: EngineCommand = {
     command: 'applyImplementorResult',
     workItemID: 'wi-1',
+    branchName: 'decree/wi-1',
     result: implResult,
   };
 
@@ -528,6 +509,7 @@ test('it transitions to blocked when implementor outcome is blocked', async () =
   const command: EngineCommand = {
     command: 'applyImplementorResult',
     workItemID: 'wi-1',
+    branchName: 'decree/wi-1',
     result: implResult,
   };
 
@@ -545,27 +527,6 @@ test('it transitions to blocked when implementor outcome is blocked', async () =
     },
   ]);
   expect(deps.revisionWriter.createFromPatch).not.toHaveBeenCalled();
-});
-
-// --- ApplyImplementorResult: completed with no active run ---
-
-test('it throws when implementor completes but there is no active agent run', async () => {
-  const workItem = buildWorkItem({ id: 'wi-1', status: 'in-progress' });
-  const state = setupState({ workItems: [['wi-1', workItem]] });
-  const deps = buildMockDeps();
-  const implResult: ImplementorResult = {
-    role: 'implementor',
-    outcome: 'completed',
-    patch: 'diff content',
-    summary: 'Done',
-  };
-  const command: EngineCommand = {
-    command: 'applyImplementorResult',
-    workItemID: 'wi-1',
-    result: implResult,
-  };
-
-  await expect(translateAndExecute(command, state, deps, noopStartAgentAsync)).rejects.toThrow();
 });
 
 // --- ApplyReviewerResult: no linked revision ---
