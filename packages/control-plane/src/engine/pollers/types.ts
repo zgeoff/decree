@@ -62,7 +62,6 @@ export interface SpecPollerV2Config {
   getState: () => EngineState;
   enqueue: (event: SpecChanged) => void;
   interval: number;
-  getDefaultBranchSHA: () => Promise<string>;
 }
 
 export interface SpecPollerV2 {

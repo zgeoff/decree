@@ -192,3 +192,23 @@ test('it returns domain types without GitHub-specific fields', async () => {
     frontmatterStatus: 'approved',
   });
 });
+
+// --- getDefaultBranchSHA ---
+
+test('it returns the SHA of the configured default branch HEAD commit', async () => {
+  const client = createMockGitHubClient();
+
+  vi.mocked(client.git.getRef).mockResolvedValue({
+    data: { object: { sha: 'def456' } },
+  });
+
+  const reader = createSpecReader({ client, config: buildConfig() });
+  const result = await reader.getDefaultBranchSHA();
+
+  expect(result).toBe('def456');
+  expect(client.git.getRef).toHaveBeenCalledWith({
+    owner: 'test-owner',
+    repo: 'test-repo',
+    ref: 'heads/main',
+  });
+});

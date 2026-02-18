@@ -78,6 +78,18 @@ export function createSpecReader(deps: SpecReaderDeps): SpecProviderReader {
 
       return specs;
     },
+
+    getDefaultBranchSHA: async (): Promise<string> => {
+      const response = await retryWithBackoff(() =>
+        deps.client.git.getRef({
+          owner: deps.config.owner,
+          repo: deps.config.repo,
+          ref: `heads/${deps.config.defaultBranch}`,
+        }),
+      );
+
+      return response.data.object.sha;
+    },
   };
 }
 
