@@ -34,6 +34,8 @@ never merges — that is the Human's responsibility.
   comments referencing unmodified code must be investigated.
 - Must fetch referenced spec sections via tool calls; spec content is not included in the enriched
   prompt.
+- When uncertain whether an issue constitutes a finding, the agent must err toward recording it as a
+  finding — false positives are correctable in revision, but false negatives ship to integration.
 
 ## Agent Profile
 
