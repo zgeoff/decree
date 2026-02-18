@@ -454,6 +454,7 @@ ApplyPlannerResult {
 ApplyImplementorResult {
   command:    'applyImplementorResult'
   workItemID: string
+  branchName: string
   result:     ImplementorResult
 }
 

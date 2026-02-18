@@ -152,7 +152,8 @@ lifecycle transitions, and applying results.
 
 **`ImplementorCompleted` behavior:**
 
-1. Emit `ApplyImplementorResult { workItemID: event.workItemID, result: event.result }`.
+1. Emit
+   `ApplyImplementorResult { workItemID: event.workItemID, branchName: event.branchName, result: event.result }`.
 
 The `ApplyImplementorResult` compound command encapsulates outcome-dependent operations. See
 [control-plane-engine-command-executor.md](./control-plane-engine-command-executor.md) for

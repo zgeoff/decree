@@ -281,8 +281,7 @@ Processes the implementor's structured output based on the outcome.
 
 **Outcome: `completed`**
 
-1. Look up `branchName` from the `ImplementorRun` in the agent runs map
-   (`getActiveAgentRun(state, command.workItemID)`). Throws if no active run is found.
+1. Read `branchName` from `command.branchName`.
 2. Call `revisionWriter.createFromPatch(command.workItemID, result.patch, branchName)`.
 3. Construct a `RevisionChanged` event (same construction as `CreateRevisionFromPatch`).
 4. Call `workItemWriter.transitionStatus(command.workItemID, 'review')`.
@@ -526,9 +525,7 @@ adapter module is implemented, move these types to their permanent home and upda
 - [ ] Given `ApplyImplementorResult` with outcome `blocked`, when executed, then the result contains
       one `WorkItemChanged` event with `newStatus: 'blocked'` and `createFromPatch` is not called.
 - [ ] Given `ApplyImplementorResult` with outcome `completed`, when `branchName` is needed, then it
-      is looked up from the active `ImplementorRun` in the state snapshot.
-- [ ] Given `ApplyImplementorResult` with outcome `completed` and no active agent run exists for the
-      work item, when the `branchName` lookup fails, then `CommandFailed` is returned.
+      is read from `command.branchName` (carried through from the `ImplementorCompleted` event).
 - [ ] Given `ApplyReviewerResult` where the work item has no linked revision in state, when the
       lookup fails, then `CommandFailed` is returned.
 - [ ] Given `ApplyReviewerResult` where the revision has no prior engine-posted review
