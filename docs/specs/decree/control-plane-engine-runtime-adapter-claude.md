@@ -568,9 +568,10 @@ file lifecycle, format, message formatting, error handling, and log file path co
 ### Module Location
 
 > **v2 module.** This is new v2 code in `engine/runtime-adapter/`, implemented alongside the v1
-> agent manager (`engine/agent-manager/`). The v1 module continues to function on `main` until the
-> engine replacement (migration plan Step 8). Do not modify or delete v1 modules when implementing
-> this spec.
+> agent manager (`engine/agent-manager/`). The v1 control plane remains the running system until the
+> full v2 stack (engine, TUI, agents, workflow) ships as a single cutover — see
+> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
+> Do not modify or delete v1 modules when implementing this spec.
 
 The Claude adapter lives in `engine/runtime-adapter/`. Directory structure:
 

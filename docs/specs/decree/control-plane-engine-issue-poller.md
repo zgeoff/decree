@@ -135,9 +135,10 @@ interface WorkItemPollerConfig {
 ### Module Location
 
 > **v2 module.** This is new v2 code (`create-work-item-poller.ts`) in `engine/pollers/`, coexisting
-> with the v1 issue poller (`create-issue-poller.ts`). The v1 poller continues to function on `main`
-> until the engine replacement (migration plan Step 8). Do not modify or delete v1 modules when
-> implementing this spec.
+> with the v1 issue poller (`create-issue-poller.ts`). The v1 control plane remains the running
+> system until the full v2 stack (engine, TUI, agents, workflow) ships as a single cutover — see
+> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
+> Do not modify or delete v1 modules when implementing this spec.
 
 The poller lives in `engine/pollers/`. Files:
 

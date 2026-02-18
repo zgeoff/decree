@@ -550,7 +550,7 @@ AgentReviewComment {
 flowchart TD
     P[Pollers] -->|domain events| Q[Event Queue]
     RA[Runtime Adapters] -->|agent lifecycle events| Q
-    TUI -->|user commands| Q
+    TUI -->|user events| Q
 
     Q --> Loop[Processing Loop]
     Loop -->|1. update| Store[State Store]
@@ -761,6 +761,7 @@ RevisionProviderReader {
 
 SpecProviderReader {
   listSpecs():                  Spec[]
+  getDefaultBranchSHA():        string   // HEAD commit SHA of the default branch
 }
 ```
 
@@ -817,21 +818,30 @@ The engine setup function threads each interface to the component that needs it:
 
 ```
 createEngine(config):
-  provider = createGitHubProvider(config.github)
+  store = createEngineStore()
+  queue = createEventQueue()
+
+  // Engine builds RuntimeAdapterDeps, caller's factory builds adapters
+  runtimeAdapters = config.createRuntimeAdapters({
+    workItemReader:   config.provider.workItemReader,
+    revisionReader:   config.provider.revisionReader,
+    getState:         store.getState,
+    getReviewHistory: buildReviewHistoryFetcher(config.provider.revisionReader),
+  })
 
   executor = createCommandExecutor({
-    workItemWriter:   provider.workItemWriter,
-    revisionWriter:   provider.revisionWriter,
-    runtimeAdapters:  config.runtimeAdapters,
+    workItemWriter:   config.provider.workItemWriter,
+    revisionWriter:   config.provider.revisionWriter,
+    runtimeAdapters,
     policy:           config.policy,
     getState:         store.getState,
     enqueue:          queue.enqueue,
   })
 
   pollers = [
-    createWorkItemPoller({  reader: provider.workItemReader,  ... }),
-    createRevisionPoller({ reader: provider.revisionReader, ... }),
-    createSpecPoller({     reader: provider.specReader,     ... }),
+    createWorkItemPoller({  reader: config.provider.workItemReader,  ... }),
+    createRevisionPoller({ reader: config.provider.revisionReader, ... }),
+    createSpecPoller({     reader: config.provider.specReader,     ... }),
   ]
 
   handlers = createHandlers()
@@ -1068,18 +1078,19 @@ naming from the work item id and title). The runtime adapter receives `branchNam
 start params and uses it when setting up the worktree. The engine's `ImplementorRequested` event and
 `ImplementorRun` state both carry the `branchName` produced at this point.
 
-The engine holds a per-role adapter map — each role's runtime is independently configurable:
+The engine holds a per-role adapter map — each role's runtime is independently configurable. The
+caller provides a factory that receives `RuntimeAdapterDeps` from the engine and returns the map:
 
 ```
-runtimeAdapters: Record<AgentRole, RuntimeAdapter> {
-  planner:     createClaudeAdapter(claudeConfig)
-  implementor: createClaudeAdapter(claudeConfig)
-  reviewer:    createCodexAdapter(codexConfig)
-}
+createRuntimeAdapters: (deps) => ({
+  planner:     createClaudeAdapter(claudeConfig, deps),
+  implementor: createClaudeAdapter(claudeConfig, deps),
+  reviewer:    createCodexAdapter(codexConfig, deps),
+})
 ```
 
 The CommandExecutor looks up the adapter by role when dispatching agent commands. Swapping a role's
-runtime is a configuration change.
+runtime is a configuration change — the caller provides a different factory.
 
 #### Mutation Boundary
 

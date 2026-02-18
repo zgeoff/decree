@@ -33,7 +33,8 @@ The SpecPoller runs on its own interval.
 1. Call `reader.listSpecs()` to get the current set of spec files from the provider.
 2. Read the current state via `getState()` to obtain `EngineState.specs`.
 3. Diff the provider result against the store (see [Diff Logic](#diff-logic)).
-4. If any changes are detected, call `getDefaultBranchSHA()` to obtain the current commit SHA.
+4. If any changes are detected, call `reader.getDefaultBranchSHA()` to obtain the current commit
+   SHA.
 5. Enqueue a `SpecChanged` event for each detected difference.
 
 > **Rationale:** `getDefaultBranchSHA` is called only when changes are detected, avoiding an extra
@@ -100,9 +101,9 @@ If `reader.listSpecs()` fails (after provider-internal retries are exhausted), t
 skipped — no events are emitted. The error is logged. The next interval-triggered poll cycle
 proceeds normally.
 
-If `getDefaultBranchSHA()` fails after changes were detected, the poll cycle is skipped — no events
-are emitted for that cycle. The next cycle re-detects the same changes (the store was not updated)
-and retries.
+If `reader.getDefaultBranchSHA()` fails after changes were detected, the poll cycle is skipped — no
+events are emitted for that cycle. The next cycle re-detects the same changes (the store was not
+updated) and retries.
 
 > **Rationale:** Provider-internal retry handles transient failures. If the call still fails, the
 > poller skips the cycle rather than emitting events with missing commit metadata.
@@ -120,22 +121,18 @@ interface SpecPollerConfig {
   getState: () => EngineState;
   enqueue: (event: SpecChanged) => void;
   interval: number; // seconds
-  getDefaultBranchSHA: () => Promise<string>;
 }
 
 // createSpecPoller(config: SpecPollerConfig): SpecPoller
 ```
 
-> **Rationale:** `getDefaultBranchSHA` is injected separately from the reader because the
-> `SpecProviderReader` interface returns `Spec[]` without commit metadata. The engine wiring
-> provides this capability from the provider.
-
 ### Module Location
 
 > **v2 module.** This is new v2 code (`create-spec-poller-v2.ts`) in `engine/pollers/`, coexisting
-> with the v1 spec poller (`create-spec-poller.ts`). The v1 poller continues to function on `main`
-> until the engine replacement (migration plan Step 8). Do not modify or delete v1 modules when
-> implementing this spec.
+> with the v1 spec poller (`create-spec-poller.ts`). The v1 control plane remains the running system
+> until the full v2 stack (engine, TUI, agents, workflow) ships as a single cutover — see
+> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
+> Do not modify or delete v1 modules when implementing this spec.
 
 The poller lives in `engine/pollers/`. Files:
 
@@ -157,11 +154,11 @@ engine/pollers/
 - [ ] Given a spec is present in the store but absent from the provider result (file deleted), when
       the poller processes the cycle, then no event is emitted for that spec.
 - [ ] Given the provider result is identical to the store, when the poller diffs, then no events are
-      emitted and `getDefaultBranchSHA` is not called.
+      emitted and `reader.getDefaultBranchSHA` is not called.
 - [ ] Given the provider reader throws an error, when the poll cycle runs, then no events are
       emitted and the next poll cycle proceeds normally.
-- [ ] Given `getDefaultBranchSHA` throws an error after changes were detected, when the poll cycle
-      runs, then no events are emitted and the next poll cycle re-detects the same changes.
+- [ ] Given `reader.getDefaultBranchSHA` throws an error after changes were detected, when the poll
+      cycle runs, then no events are emitted and the next poll cycle re-detects the same changes.
 - [ ] Given `Engine.start()` is called, when the first SpecPoller cycle runs, then it is executed as
       a direct invocation (not via the interval timer) and `start()` awaits its completion before
       resolving.

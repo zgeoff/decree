@@ -18,17 +18,17 @@ made and the phases of work. Once each phase is complete, this document gets cle
       Each step identifies: what changes, affected modules, verification criteria, and spec impact
       (new spec / spec becomes redundant / spec needs modification).
 - [ ] **Phase 3: Spec-driven migration** — For each migration step: write or rework the affected
-      spec, then implement, then mark the step done. Implementation follows two tracks:
-  - **Module track (Steps 1–7):** Each step produces a module with clean boundaries that can be
-    implemented and unit-tested independently. Module implementation proceeds immediately after its
-    spec is written. Modules do not depend on the v1 engine — they are new code with new interfaces.
-  - **Integration track (Step 8):** The engine spec defines how all v2 modules are wired together.
-    Its implementation is a **replacement** of `create-engine.ts`, not an incremental migration. The
-    v1 engine stays running on `main` until the v2 engine is ready. V1 module deletions (old
-    pollers, dispatch, recovery, planner-cache) happen as part of the Step 8 engine replacement.
-    There is no intermediate state where v1 and v2 pollers run side-by-side in the same engine — the
-    v1 poller APIs are too deeply coupled to the engine's dispatch, recovery, and planner-cache
-    patterns to be swapped individually.
+      spec, then implement, then mark the step done. Implementation follows three tracks — see
+      [003-migration-plan.md: Implementation phasing](./003-migration-plan.md#implementation-phasing)
+      for the full breakdown:
+  - **Module track (Steps 1–6):** Each step produces a self-contained v2 module that can be
+    implemented and unit-tested independently. Modules do not depend on the v1 engine — they are new
+    code with new interfaces.
+  - **Engine track (Steps 7–9):** Engine, TUI, and deprecation specs. Can be specced and partially
+    implemented (new files, unit tests) ahead of the cutover.
+  - **Cutover (Steps 7, 8, 10, 11):** The v2 engine, TUI, agent contracts, and workflow ship
+    together as a single replacement. The v1 control plane remains the running system until then. No
+    intermediate state where v1 and v2 components run together at runtime.
 
 ## Decisions
 

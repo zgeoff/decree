@@ -52,35 +52,48 @@ concurrently.
 
 Implementation follows three tracks, reflected in the step numbering:
 
+**Usability invariant.** The v1 control plane remains the running, buildable system until the
+cutover. There is no intermediate state where some components are v2 and others are v1 at runtime.
+V2 modules are developed and unit-tested in isolation; the v1 engine, TUI, agents, and workflow
+continue to function on `main` throughout.
+
 **Module track (Steps 1–6) — COMPLETE.** Each step produced a self-contained v2 module with clean
 boundaries — state store, provider, pollers, handlers, command executor, runtime adapter. These
 modules were implemented and unit-tested independently. They do not depend on the v1 engine; they
 are new code with new interfaces.
 
-**Engine track (Steps 7–9).** Specs that describe v2 engine behavior without affecting v1 agents at
-runtime. The engine spec (Step 7) references `002-architecture.md` for agent role contracts
-(`AgentStartParams`, `AgentResult` types) instead of requiring the reworked agent specs from
-Step 10. The engine code is new code in new files and can be specced and partially implemented ahead
-of the cutover. The TUI spec (Step 8) depends on the v2 engine, not on agents. Deprecations (Step 9)
-are frontmatter-only changes to specs already replaced by Steps 1, 4, and 6b.
+**Engine track (Steps 7–9).** Specs that describe v2 engine and TUI behavior without affecting v1
+agents at runtime. The engine spec (Step 7) references `002-architecture.md` for agent role
+contracts (`AgentStartParams`, `AgentResult` types) instead of requiring the reworked agent specs
+from Step 10. The TUI spec (Step 8) depends on the v2 engine, not on agents. Deprecations (Step 9)
+are frontmatter-only changes to specs already replaced by Steps 1, 4, and 6b. All engine track specs
+can be written ahead of the cutover. Engine and TUI code can be partially implemented (new files,
+unit-tested in isolation) but cannot run as a system until the cutover.
 
 **Cutover track (Steps 10–12).** Specs that v1 agents depend on at runtime — agent behavior
 (`agent-planner.md`, `agent-implementor.md`, `agent-reviewer.md`), workflow protocol
 (`workflow.md`), output contracts (`workflow-contracts.md`), and label names
-(`script-label-setup.md`). Both spec writing and implementation for this track are deferred until
-the engine track is complete. These are specced and then implemented **together with the Step 7
-engine replacement** as a single cutover. No intermediate state where v1 agents run against v2
-contracts.
+(`script-label-setup.md`). Spec writing for this track is deferred until the engine track specs are
+complete.
 
-This three-track model exists because the v1 pollers are deeply coupled to the engine's internal
-dispatch, recovery, and planner-cache patterns. They cannot be swapped individually — attempting to
-wire a v2 poller into the v1 engine requires rewriting every consumer of the v1 poller's
-snapshot/callback API, which cascades into a full engine rewrite. The clean cut is to implement all
-v2 modules independently (module track), spec the engine (engine track), then cut over agents,
-workflow, and engine together (cutover track).
+**Cutover implementation scope.** Once all specs are written (Steps 7–12), implementation of Steps
+7, 8, 10, and 11 happens as a **single cutover** — the v2 engine, v2 TUI, v2 agent contracts, and v2
+workflow all ship together. Step 9 is frontmatter-only (no code). Step 12 (overview) is spec-only
+(no code). The cutover replaces `create-engine.ts` wholesale, adapts the TUI to the v2 engine
+interface, and switches agents to structured artifact output. No intermediate state where v1 agents
+run against v2 contracts or the v2 engine runs with the v1 TUI.
+
+This model exists because the v1 pollers are deeply coupled to the engine's internal dispatch,
+recovery, and planner-cache patterns. They cannot be swapped individually — attempting to wire a v2
+poller into the v1 engine requires rewriting every consumer of the v1 poller's snapshot/callback
+API, which cascades into a full engine rewrite. The v2 TUI depends on the v2 engine interface
+(`engine.store` for Zustand binding, `engine.enqueue` for user actions, domain types) which is
+incompatible with the v1 interface. The clean cut is to implement all v2 modules independently
+(module track), spec everything (engine + cutover tracks), then replace engine, TUI, agents, and
+workflow together.
 
 **V1 module deletions** — old poller files, the dispatch module, recovery module, and planner-cache
-module — happen as part of the Step 7 engine replacement, not as separate tasks.
+module — happen as part of the cutover, not as separate tasks.
 
 ### Key documents
 
@@ -529,7 +542,7 @@ step replaces `create-engine.ts` wholesale with a new engine that wires all v2 m
 v1 engine, its dispatch module, recovery module, planner-cache module, and v1 poller files are
 deleted as part of this step's implementation — not beforehand.
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 

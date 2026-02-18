@@ -353,9 +353,11 @@ In practice, handlers produce at most one or two commands per event:
 
 ### Module Location
 
-> **v2 module.** This is new v2 code implemented alongside the existing v1 engine. The v1 engine
-> continues to function on `main` until the engine replacement (migration plan Step 8). Do not
-> modify or delete v1 modules when implementing this spec.
+> **v2 module.** This is new v2 code implemented alongside the existing v1 engine. The v1 control
+> plane remains the running system until the full v2 stack (engine, TUI, agents, workflow) ships as
+> a single cutover — see
+> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
+> Do not modify or delete v1 modules when implementing this spec.
 
 Handlers live in `engine/handlers/`. Each handler is in its own file:
 

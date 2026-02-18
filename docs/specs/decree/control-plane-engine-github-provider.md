@@ -107,11 +107,15 @@ interface RevisionProviderWriter {
 ```ts
 interface SpecProviderReader {
   listSpecs(): Promise<Spec[]>;
+  getDefaultBranchSHA(): Promise<string>;
 }
 ```
 
 - `listSpecs` — returns all files (recursively) in the configured specs directory on the default
   branch. Every file in the tree is treated as a spec — no file extension filtering is applied.
+- `getDefaultBranchSHA` — returns the current HEAD commit SHA of the configured default branch. Used
+  by the spec poller to stamp `commitSHA` on `SpecChanged` events (for diff URLs). Resolves the ref
+  via the GitHub Git Data API (`git.getRef`).
 
 ### RevisionFile
 
@@ -506,9 +510,10 @@ automatic token refresh. The App must have: `issues:write` (work item operations
 ### Module Location
 
 > **v2 module.** This is new v2 code in `engine/github-provider/`, implemented alongside the v1
-> `engine/github-client/` module. The v1 module continues to function on `main` until the engine
-> replacement (migration plan Step 8). Do not modify or delete v1 modules when implementing this
-> spec.
+> `engine/github-client/` module. The v1 control plane remains the running system until the full v2
+> stack (engine, TUI, agents, workflow) ships as a single cutover — see
+> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
+> Do not modify or delete v1 modules when implementing this spec.
 
 The provider lives in `engine/github-provider/`. Directory structure:
 
@@ -690,6 +695,8 @@ engine/github-provider/
       repo-relative path (e.g., `docs/specs/decree/workflow.md`).
 - [ ] Given `listSpecs` encounters a file content fetch that fails after retries are exhausted, when
       the error occurs, then the entire `listSpecs` call fails — no partial results are returned.
+- [ ] Given `getDefaultBranchSHA` is called, when the ref is resolved, then it returns the SHA of
+      the configured default branch's HEAD commit.
 
 ## Known Limitations
 
@@ -720,7 +727,5 @@ engine/github-provider/
   `Revision`, `Spec`, status enums.
 - [002-architecture.md: Error Handling](./v2/002-architecture.md#error-handling) — Provider-internal
   retry strategy.
-- [control-plane-engine.md: GitHub Client](./control-plane-engine.md#github-client) — Current
-  `GitHubClient` interface being replaced by the provider abstraction.
-- [control-plane-engine.md: Query Interface](./control-plane-engine.md#query-interface) — Current CI
-  status derivation and closing-keyword matching logic.
+- [control-plane-engine.md](./control-plane-engine.md) — Engine spec (wiring, public interface,
+  configuration).
