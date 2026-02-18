@@ -71,7 +71,7 @@ test('it emits the implementor result when the implementor completes', () => {
   const commands = handleImplementation(event, state);
 
   expect(commands).toStrictEqual([
-    { command: 'applyImplementorResult', workItemID: 'wi-5', result },
+    { command: 'applyImplementorResult', workItemID: 'wi-5', branchName: 'decree/wi-5', result },
   ]);
 });
 

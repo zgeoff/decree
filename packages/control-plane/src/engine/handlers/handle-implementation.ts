@@ -20,6 +20,7 @@ export function handleImplementation(event: EngineEvent, _state: EngineState): E
       {
         command: 'applyImplementorResult' as const,
         workItemID: e.workItemID,
+        branchName: e.branchName,
         result: e.result,
       },
     ])
