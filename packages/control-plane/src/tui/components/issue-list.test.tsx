@@ -1,54 +1,87 @@
 import { render } from 'ink-testing-library';
-import { expect, test, vi } from 'vitest';
-import type { EngineEvent } from '../../types.ts';
-import { createTUIStore } from '../store.ts';
-import { createMockEngine } from '../test-utils/create-mock-engine.ts';
+import { expect, test } from 'vitest';
+import type { Revision, WorkItem } from '../../engine/state-store/types.ts';
+import type { DisplayStatus, DisplayWorkItem } from '../types.ts';
 import {
   computeSectionCapacities,
-  getCIStatusColor,
   getIssuePriorityColor,
-  getVisibleTasks,
-  getWorstCIStatus,
+  getPipelineStatusColor,
+  getVisibleWorkItems,
   IssueList,
 } from './issue-list.tsx';
 
-function setupTest(config?: { paneHeight?: number; paneWidth?: number }): ReturnType<
-  typeof render
-> & {
-  store: ReturnType<typeof createTUIStore>;
-  emit: (event: EngineEvent) => void;
-} {
-  const { engine, emit } = createMockEngine();
-  const store = createTUIStore({ engine });
-  const paneHeight = config?.paneHeight ?? 20;
-  const paneWidth = config?.paneWidth ?? 60;
-
-  const instance = render(
-    <IssueList store={store} paneWidth={paneWidth} paneHeight={paneHeight} />,
-  );
-
-  return { ...instance, store, emit };
+function buildWorkItem(overrides: Partial<WorkItem> & { id: string }): WorkItem {
+  return {
+    title: `Work item ${overrides.id}`,
+    status: 'pending',
+    priority: null,
+    complexity: null,
+    blockedBy: [],
+    createdAt: '2026-02-01T00:00:00Z',
+    linkedRevision: null,
+    ...overrides,
+  };
 }
 
-function addIssue(
-  emit: (event: EngineEvent) => void,
-  issueNumber: number,
-  overrides?: {
-    title?: string;
-    status?: string;
-    priority?: string;
-    createdAt?: string;
-  },
-): void {
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber,
-    title: overrides?.title ?? `Issue ${issueNumber}`,
-    oldStatus: null,
-    newStatus: overrides?.status ?? 'pending',
-    priorityLabel: overrides?.priority ?? 'priority:medium',
-    createdAt: overrides?.createdAt ?? '2026-01-01T00:00:00Z',
-  });
+function buildRevision(overrides: Partial<Revision> & { id: string }): Revision {
+  return {
+    title: `Revision ${overrides.id}`,
+    url: `https://github.com/owner/repo/pull/${overrides.id}`,
+    headSHA: 'abc123',
+    headRef: 'feature-branch',
+    author: 'author',
+    body: '',
+    isDraft: false,
+    workItemID: null,
+    pipeline: null,
+    reviewID: null,
+    ...overrides,
+  };
+}
+
+function buildDisplayWorkItem(
+  overrides: Partial<DisplayWorkItem> & { workItem: WorkItem; displayStatus: DisplayStatus },
+): DisplayWorkItem {
+  const section = (
+    ['approved', 'failed', 'blocked', 'needs-refinement', 'dispatch', 'pending'] as DisplayStatus[]
+  ).includes(overrides.displayStatus)
+    ? 'action'
+    : 'agents';
+
+  return {
+    section,
+    linkedRevision: null,
+    latestRun: null,
+    dispatchCount: 0,
+    ...overrides,
+  };
+}
+
+interface SetupTestConfig {
+  items?: DisplayWorkItem[];
+  selectedWorkItem?: string | null;
+  actionCount?: number;
+  agentSectionCount?: number;
+  paneHeight?: number;
+  paneWidth?: number;
+}
+
+function setupTest(config?: SetupTestConfig): ReturnType<typeof render> {
+  const items = config?.items ?? [];
+  const actionCount = config?.actionCount ?? items.filter((i) => i.section === 'action').length;
+  const agentSectionCount =
+    config?.agentSectionCount ?? items.filter((i) => i.section === 'agents').length;
+
+  return render(
+    <IssueList
+      items={items}
+      selectedWorkItem={config?.selectedWorkItem ?? null}
+      actionCount={actionCount}
+      agentSectionCount={agentSectionCount}
+      paneWidth={config?.paneWidth ?? 60}
+      paneHeight={config?.paneHeight ?? 20}
+    />,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -63,350 +96,401 @@ test('it renders ACTION and AGENTS section headers even when empty', () => {
   expect(frame).toContain('AGENTS (0)');
 });
 
-test('it shows the correct count in section headers', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it shows the correct count in section headers', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'pending' }),
+      displayStatus: 'pending',
+    }),
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '2', status: 'blocked' }),
+      displayStatus: 'blocked',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'pending' });
-  addIssue(emit, 2, { status: 'blocked' });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('ACTION (2)');
-    expect(frame).toContain('AGENTS (0)');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('ACTION (2)');
+  expect(frame).toContain('AGENTS (0)');
 });
 
-test('it shows AGENTS count when agent tasks exist', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it shows AGENTS count when agent items exist', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'in-progress' }),
+      displayStatus: 'implementing',
+      dispatchCount: 1,
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'in-progress' });
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('ACTION (0)');
-    expect(frame).toContain('AGENTS (1)');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('ACTION (0)');
+  expect(frame).toContain('AGENTS (1)');
 });
 
 // ---------------------------------------------------------------------------
 // Row Format
 // ---------------------------------------------------------------------------
 
-test('it renders the issue number in the row', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it renders the work item ID in the row', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '42', title: 'My feature' }),
+      displayStatus: 'dispatch',
+    }),
+  ];
 
-  addIssue(emit, 42, { title: 'My feature' });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('#42');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('#42');
 });
 
-test('it renders the status label in the row', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it renders the DISPATCH status label for dispatch items', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'ready' }),
+      displayStatus: 'dispatch',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'pending' });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('DISPATCH');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('DISPATCH');
 });
 
-test('it renders APPROVED status for approved tasks', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it renders PENDING status for pending items', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'pending' }),
+      displayStatus: 'pending',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'approved' });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('APPROVED');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('PENDING');
 });
 
-test('it renders FAILED status for crashed tasks', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it renders APPROVED status for approved items', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'approved' }),
+      displayStatus: 'approved',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'in-progress' });
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  });
-  emit({
-    type: 'agentFailed',
-    agentType: 'implementor',
-    issueNumber: 1,
-    error: 'boom',
-    sessionID: 'sess-1',
-  });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('FAILED');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('APPROVED');
 });
 
-test('it renders WIP with agent count for implementing tasks', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it renders FAILED status for failed items', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1' }),
+      displayStatus: 'failed',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'in-progress' });
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('WIP(1)');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('FAILED');
 });
 
-test('it renders the title in the row', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it renders BLOCKED status for blocked items', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'blocked' }),
+      displayStatus: 'blocked',
+    }),
+  ];
 
-  addIssue(emit, 1, { title: 'Feature X' });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('Feature X');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('BLOCKED');
+});
+
+test('it renders REFINE status for needs-refinement items', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'needs-refinement' }),
+      displayStatus: 'needs-refinement',
+    }),
+  ];
+
+  const { lastFrame } = setupTest({ items });
+
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('REFINE');
+});
+
+test('it renders REVIEW status for reviewing items', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'review' }),
+      displayStatus: 'reviewing',
+    }),
+  ];
+
+  const { lastFrame } = setupTest({ items });
+
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('REVIEW');
+});
+
+test('it renders WIP with dispatch count for implementing items', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'in-progress' }),
+      displayStatus: 'implementing',
+      dispatchCount: 3,
+    }),
+  ];
+
+  const { lastFrame } = setupTest({ items });
+
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('WIP(3)');
+});
+
+test('it renders the title in the row', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', title: 'Feature X' }),
+      displayStatus: 'dispatch',
+    }),
+  ];
+
+  const { lastFrame } = setupTest({ items });
+
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('Feature X');
 });
 
 // ---------------------------------------------------------------------------
-// PR Column
+// Revision Column
 // ---------------------------------------------------------------------------
 
-test('it shows a dash when no PRs are linked', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it shows a dash when no revision is linked', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1' }),
+      displayStatus: 'dispatch',
+      linkedRevision: null,
+    }),
+  ];
 
-  addIssue(emit, 1);
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('\u2014');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('\u2014');
 });
 
-test('it shows PR number when one PR is linked', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it shows revision ID when a revision is linked', () => {
+  const revision = buildRevision({ id: '482' });
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', linkedRevision: '482' }),
+      displayStatus: 'dispatch',
+      linkedRevision: revision,
+    }),
+  ];
 
-  addIssue(emit, 1);
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 482,
-    url: 'https://github.com/owner/repo/pull/482',
-    ciStatus: null,
-  });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('PR#482');
-  });
-});
-
-test('it shows PR count when multiple PRs are linked', async () => {
-  const { lastFrame, emit } = setupTest();
-
-  addIssue(emit, 1);
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 10,
-    url: 'https://github.com/owner/repo/pull/10',
-    ciStatus: null,
-  });
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 11,
-    url: 'https://github.com/owner/repo/pull/11',
-    ciStatus: null,
-  });
-
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('PRx2');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('PR#482');
 });
 
 // ---------------------------------------------------------------------------
 // Section Assignment
 // ---------------------------------------------------------------------------
 
-test('it places ready-to-implement tasks in the ACTION section', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it places dispatch items in the ACTION section', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'ready' }),
+      displayStatus: 'dispatch',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'pending', title: 'Ready' });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('ACTION (1)');
-    expect(frame).toContain('AGENTS (0)');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('ACTION (1)');
+  expect(frame).toContain('AGENTS (0)');
 });
 
-test('it places blocked tasks in the ACTION section', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it places pending items in the ACTION section', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'pending' }),
+      displayStatus: 'pending',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'blocked' });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('ACTION (1)');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('ACTION (1)');
 });
 
-test('it places needs-refinement tasks in the ACTION section', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it places blocked items in the ACTION section', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'blocked' }),
+      displayStatus: 'blocked',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'needs-refinement' });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('ACTION (1)');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('ACTION (1)');
 });
 
-test('it places approved tasks in the ACTION section', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it places needs-refinement items in the ACTION section', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'needs-refinement' }),
+      displayStatus: 'needs-refinement',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'approved' });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('ACTION (1)');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('ACTION (1)');
 });
 
-test('it places agent-implementing tasks in the AGENTS section', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it places approved items in the ACTION section', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'approved' }),
+      displayStatus: 'approved',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'in-progress' });
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
-    sessionID: 'sess-1',
-  });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('AGENTS (1)');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('ACTION (1)');
 });
 
-test('it places agent-reviewing tasks in the AGENTS section', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it places failed items in the ACTION section', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1' }),
+      displayStatus: 'failed',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'review' });
-  emit({
-    type: 'agentStarted',
-    agentType: 'reviewer',
-    issueNumber: 1,
-    sessionID: 'sess-r-1',
-  });
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('AGENTS (1)');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('ACTION (1)');
+});
+
+test('it places implementing items in the AGENTS section', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'in-progress' }),
+      displayStatus: 'implementing',
+      dispatchCount: 1,
+    }),
+  ];
+
+  const { lastFrame } = setupTest({ items });
+
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('AGENTS (1)');
+});
+
+test('it places reviewing items in the AGENTS section', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'review' }),
+      displayStatus: 'reviewing',
+    }),
+  ];
+
+  const { lastFrame } = setupTest({ items });
+
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('AGENTS (1)');
 });
 
 // ---------------------------------------------------------------------------
 // Overflow Indicator
 // ---------------------------------------------------------------------------
 
-test('it shows overflow indicator when items exceed capacity', async () => {
-  const { lastFrame, emit } = setupTest({ paneHeight: 4 });
+test('it shows overflow indicator when items exceed capacity', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', priority: 'high' }),
+      displayStatus: 'dispatch',
+    }),
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '2', priority: 'medium' }),
+      displayStatus: 'pending',
+    }),
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '3', priority: 'low' }),
+      displayStatus: 'blocked',
+    }),
+  ];
+
   // With paneHeight 4: ACTION gets ceil(4/2)=2 rows, 1 header = 1 capacity
-  // AGENTS gets floor(4/2)=2 rows, 1 header = 1 capacity
+  const { lastFrame } = setupTest({ items, paneHeight: 4, actionCount: 3 });
 
-  addIssue(emit, 1, { status: 'pending', title: 'First', priority: 'priority:high' });
-  addIssue(emit, 2, { status: 'pending', title: 'Second', priority: 'priority:medium' });
-  addIssue(emit, 3, { status: 'pending', title: 'Third', priority: 'priority:low' });
-
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    // ACTION should show (1/3) overflow
-    expect(frame).toContain('ACTION (1/3)');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('ACTION (1/3)');
 });
 
 // ---------------------------------------------------------------------------
-// Sorting
+// Selection highlight
 // ---------------------------------------------------------------------------
 
-test('it sorts tasks by status weight within a section', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it highlights the selected work item row', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', title: 'Selected task' }),
+      displayStatus: 'dispatch',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'pending', title: 'Ready', priority: 'priority:medium' });
-  addIssue(emit, 2, { status: 'approved', title: 'Approved', priority: 'priority:medium' });
+  const { lastFrame } = setupTest({ items, selectedWorkItem: '1' });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    const approvedPos = frame.indexOf('Approved');
-    const readyPos = frame.indexOf('Ready');
-    expect(approvedPos).toBeLessThan(readyPos);
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('Selected task');
 });
 
-test('it sorts tasks by priority within the same status weight', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it does not crash when selected work item is not in the list', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', title: 'Only task' }),
+      displayStatus: 'dispatch',
+    }),
+  ];
 
-  addIssue(emit, 1, { status: 'pending', title: 'Low', priority: 'priority:low' });
-  addIssue(emit, 2, { status: 'pending', title: 'High', priority: 'priority:high' });
+  const { lastFrame } = setupTest({ items, selectedWorkItem: '999' });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    const highPos = frame.indexOf('High');
-    const lowPos = frame.indexOf('Low');
-    expect(highPos).toBeLessThan(lowPos);
-  });
-});
-
-test('it sorts tasks by issue number within the same priority', async () => {
-  const { lastFrame, emit } = setupTest();
-
-  addIssue(emit, 10, { status: 'pending', title: 'Higher', priority: 'priority:medium' });
-  addIssue(emit, 5, { status: 'pending', title: 'Lower', priority: 'priority:medium' });
-
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    const lowerPos = frame.indexOf('Lower');
-    const higherPos = frame.indexOf('Higher');
-    expect(lowerPos).toBeLessThan(higherPos);
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('Only task');
 });
 
 // ---------------------------------------------------------------------------
-// Exported helpers
+// Exported helpers: priority colors
 // ---------------------------------------------------------------------------
-
-test('it returns the worst CI status from a set of PRs', () => {
-  expect(getWorstCIStatus([{ ciStatus: 'success' }, { ciStatus: 'failure' }])).toBe('failure');
-  expect(getWorstCIStatus([{ ciStatus: 'success' }, { ciStatus: 'pending' }])).toBe('pending');
-  expect(getWorstCIStatus([{ ciStatus: 'success' }])).toBe('success');
-  expect(getWorstCIStatus([{ ciStatus: null }])).toBe(null);
-});
-
-test('it returns the correct CI status color', () => {
-  expect(getCIStatusColor('failure')).toBe('red');
-  expect(getCIStatusColor('pending')).toBe('dim');
-  expect(getCIStatusColor('success')).toBe('green');
-  expect(getCIStatusColor(null)).toBe('dim');
-});
 
 test('it returns the correct priority color', () => {
   expect(getIssuePriorityColor('high')).toBe('red');
@@ -414,6 +498,21 @@ test('it returns the correct priority color', () => {
   expect(getIssuePriorityColor('low')).toBe('dim');
   expect(getIssuePriorityColor(null)).toBeUndefined();
 });
+
+// ---------------------------------------------------------------------------
+// Exported helpers: pipeline status colors
+// ---------------------------------------------------------------------------
+
+test('it returns the correct pipeline status color', () => {
+  expect(getPipelineStatusColor('failure')).toBe('red');
+  expect(getPipelineStatusColor('pending')).toBe('dim');
+  expect(getPipelineStatusColor('success')).toBe('green');
+  expect(getPipelineStatusColor(null)).toBe('dim');
+});
+
+// ---------------------------------------------------------------------------
+// Exported helpers: section capacities
+// ---------------------------------------------------------------------------
 
 test('it computes section capacities correctly for even pane height', () => {
   const result = computeSectionCapacities(20);
@@ -431,35 +530,115 @@ test('it gives the extra row to ACTION when pane height is odd', () => {
   expect(result.agentsCapacity).toBe(9);
 });
 
-test('it computes visible tasks respecting section capacities', () => {
-  const sortedTasks = [
-    { task: { issueNumber: 1 }, section: 'action' as const },
-    { task: { issueNumber: 2 }, section: 'action' as const },
-    { task: { issueNumber: 3 }, section: 'action' as const },
-    { task: { issueNumber: 4 }, section: 'agents' as const },
-    { task: { issueNumber: 5 }, section: 'agents' as const },
+// ---------------------------------------------------------------------------
+// Exported helpers: visible work items
+// ---------------------------------------------------------------------------
+
+test('it computes visible work items respecting section capacities', () => {
+  const items: DisplayWorkItem[] = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1' }),
+      displayStatus: 'dispatch',
+      section: 'action',
+    }),
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '2' }),
+      displayStatus: 'pending',
+      section: 'action',
+    }),
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '3' }),
+      displayStatus: 'blocked',
+      section: 'action',
+    }),
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '4' }),
+      displayStatus: 'implementing',
+      section: 'agents',
+      dispatchCount: 1,
+    }),
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '5' }),
+      displayStatus: 'reviewing',
+      section: 'agents',
+    }),
   ];
 
-  // biome-ignore lint/suspicious/noExplicitAny: test utility with partial task objects
-  const result = getVisibleTasks(sortedTasks as any, 2, 1);
+  const result = getVisibleWorkItems(items, 2, 1);
   expect(result).toHaveLength(3);
-  expect(result[0]?.task.issueNumber).toBe(1);
-  expect(result[1]?.task.issueNumber).toBe(2);
-  expect(result[2]?.task.issueNumber).toBe(4);
+  expect(result[0]?.workItem.id).toBe('1');
+  expect(result[1]?.workItem.id).toBe('2');
+  expect(result[2]?.workItem.id).toBe('4');
 });
 
 // ---------------------------------------------------------------------------
-// Selection highlight
+// Status icons
 // ---------------------------------------------------------------------------
 
-test('it highlights the selected task row', async () => {
-  const { lastFrame, emit, store } = setupTest();
+test('it renders the approved icon for approved items', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'approved' }),
+      displayStatus: 'approved',
+    }),
+  ];
 
-  addIssue(emit, 1, { title: 'Selected task' });
-  store.getState().selectIssue(1);
+  const { lastFrame } = setupTest({ items });
 
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('Selected task');
-  });
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('\u2714');
+});
+
+test('it renders the dispatch icon for dispatch items', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'ready' }),
+      displayStatus: 'dispatch',
+    }),
+  ];
+
+  const { lastFrame } = setupTest({ items });
+
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('\u25CF');
+});
+
+test('it renders the pending icon for pending items', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', status: 'pending' }),
+      displayStatus: 'pending',
+    }),
+  ];
+
+  const { lastFrame } = setupTest({ items });
+
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('\u25CC');
+});
+
+// ---------------------------------------------------------------------------
+// Mixed sections render together
+// ---------------------------------------------------------------------------
+
+test('it renders both action and agent items in their respective sections', () => {
+  const items = [
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '1', title: 'Ready item' }),
+      displayStatus: 'dispatch',
+    }),
+    buildDisplayWorkItem({
+      workItem: buildWorkItem({ id: '2', title: 'Implementing item' }),
+      displayStatus: 'implementing',
+      dispatchCount: 1,
+    }),
+  ];
+
+  const { lastFrame } = setupTest({ items });
+
+  const frame = lastFrame() ?? '';
+  expect(frame).toContain('ACTION (1)');
+  expect(frame).toContain('AGENTS (1)');
+  expect(frame).toContain('Ready item');
+  expect(frame).toContain('Implementing item');
 });
