@@ -1,7 +1,7 @@
 ---
 title: Control Plane Engine — State Store
-version: 0.1.0
-last_updated: 2026-02-16
+version: 0.2.0
+last_updated: 2026-02-19
 status: approved
 ---
 
@@ -51,6 +51,7 @@ interface PlannerRun {
   status: AgentRunStatus;
   specPaths: string[];
   logFilePath: string | null;
+  error: string | null;
   startedAt: string; // ISO 8601
 }
 
@@ -61,6 +62,7 @@ interface ImplementorRun {
   workItemID: string;
   branchName: string;
   logFilePath: string | null;
+  error: string | null;
   startedAt: string;
 }
 
@@ -71,6 +73,7 @@ interface ReviewerRun {
   workItemID: string;
   revisionID: string;
   logFilePath: string | null;
+  error: string | null;
   startedAt: string;
 }
 
@@ -158,15 +161,15 @@ event type without a dispatch entry is a compile error.
 | `plannerRequested`            | `applyPlannerRequested`     | Create `PlannerRun` in `requested` status           |
 | `plannerStarted`              | `applyPlannerStarted`       | Transition to `running`, set `logFilePath`          |
 | `plannerCompleted`            | `applyPlannerCompleted`     | Transition to `completed`, update `lastPlannedSHAs` |
-| `plannerFailed`               | `applyPlannerFailed`        | Transition to `failed`                              |
+| `plannerFailed`               | `applyPlannerFailed`        | Transition to `failed`, set `error`                 |
 | `implementorRequested`        | `applyImplementorRequested` | Create `ImplementorRun` in `requested` status       |
 | `implementorStarted`          | `applyImplementorStarted`   | Transition to `running`, set `logFilePath`          |
 | `implementorCompleted`        | `applyImplementorCompleted` | Transition to `completed`                           |
-| `implementorFailed`           | `applyImplementorFailed`    | Transition to `failed`                              |
+| `implementorFailed`           | `applyImplementorFailed`    | Transition to `failed`, set `error`                 |
 | `reviewerRequested`           | `applyReviewerRequested`    | Create `ReviewerRun` in `requested` status          |
 | `reviewerStarted`             | `applyReviewerStarted`      | Transition to `running`, set `logFilePath`          |
 | `reviewerCompleted`           | `applyReviewerCompleted`    | Transition to `completed`                           |
-| `reviewerFailed`              | `applyReviewerFailed`       | Transition to `failed`                              |
+| `reviewerFailed`              | `applyReviewerFailed`       | Transition to `failed`, set `error`                 |
 | `commandRejected`             | `applyCommandRejected`      | Append `ErrorEntry` to `errors`                     |
 | `commandFailed`               | `applyCommandFailed`        | Append `ErrorEntry` to `errors`                     |
 | `userRequestedImplementorRun` | _(no-op)_                   | No state update — handled only by handlers          |
@@ -198,7 +201,7 @@ transition is invalid, the update is rejected and logged — the store state is 
 **`applyPlannerRequested(store, event)`:**
 
 1. Create a `PlannerRun` entry in `agentRuns` keyed by `event.sessionID`:
-   `{ role: 'planner', sessionID: event.sessionID, status: 'requested', specPaths: event.specPaths, logFilePath: null, startedAt: <current ISO 8601 timestamp> }`.
+   `{ role: 'planner', sessionID: event.sessionID, status: 'requested', specPaths: event.specPaths, logFilePath: null, error: null, startedAt: <current ISO 8601 timestamp> }`.
 
 **`applyPlannerStarted(store, event)`:**
 
@@ -220,7 +223,7 @@ transition is invalid, the update is rejected and logged — the store state is 
 **`applyPlannerFailed(store, event)`:**
 
 1. Look up the run by `event.sessionID`. Validate transition from current status to `failed`.
-2. Set `status` to `'failed'` and `logFilePath` to `event.logFilePath`.
+2. Set `status` to `'failed'`, `logFilePath` to `event.logFilePath`, and `error` to `event.error`.
 
 > **Rationale:** `lastPlannedSHAs` is not updated on failure, ensuring the next poll cycle
 > re-detects the approved specs and re-triggers planning.
@@ -228,7 +231,7 @@ transition is invalid, the update is rejected and logged — the store state is 
 **`applyImplementorRequested(store, event)`:**
 
 1. Create an `ImplementorRun` entry in `agentRuns` keyed by `event.sessionID`:
-   `{ role: 'implementor', sessionID: event.sessionID, status: 'requested', workItemID: event.workItemID, branchName: event.branchName, logFilePath: null, startedAt: <current ISO 8601 timestamp> }`.
+   `{ role: 'implementor', sessionID: event.sessionID, status: 'requested', workItemID: event.workItemID, branchName: event.branchName, logFilePath: null, error: null, startedAt: <current ISO 8601 timestamp> }`.
 
 **`applyImplementorStarted(store, event)`:**
 
@@ -243,12 +246,12 @@ transition is invalid, the update is rejected and logged — the store state is 
 **`applyImplementorFailed(store, event)`:**
 
 1. Look up the run by `event.sessionID`. Validate transition to `failed`.
-2. Set `status` to `'failed'` and `logFilePath` to `event.logFilePath`.
+2. Set `status` to `'failed'`, `logFilePath` to `event.logFilePath`, and `error` to `event.error`.
 
 **`applyReviewerRequested(store, event)`:**
 
 1. Create a `ReviewerRun` entry in `agentRuns` keyed by `event.sessionID`:
-   `{ role: 'reviewer', sessionID: event.sessionID, status: 'requested', workItemID: event.workItemID, revisionID: event.revisionID, logFilePath: null, startedAt: <current ISO 8601 timestamp> }`.
+   `{ role: 'reviewer', sessionID: event.sessionID, status: 'requested', workItemID: event.workItemID, revisionID: event.revisionID, logFilePath: null, error: null, startedAt: <current ISO 8601 timestamp> }`.
 
 **`applyReviewerStarted(store, event)`:**
 
@@ -263,7 +266,7 @@ transition is invalid, the update is rejected and logged — the store state is 
 **`applyReviewerFailed(store, event)`:**
 
 1. Look up the run by `event.sessionID`. Validate transition to `failed`.
-2. Set `status` to `'failed'` and `logFilePath` to `event.logFilePath`.
+2. Set `status` to `'failed'`, `logFilePath` to `event.logFilePath`, and `error` to `event.error`.
 
 #### Error Update Functions
 

@@ -1,8 +1,8 @@
 ---
 title: Development Workflow
-version: 0.3.0
-last_updated: 2026-02-12
-status: approved
+version: 0.4.0
+last_updated: 2026-02-19
+status: draft
 ---
 
 # Development Workflow
@@ -11,19 +11,24 @@ status: approved
 
 System-level specification for the AI-led development workflow. Defines the principles, roles,
 lifecycle, quality gates, and escalation protocol that govern how specifications are authored,
-decomposed into tasks, implemented, reviewed, and integrated. This document is the entry point to
-the workflow system — individual component specs define agent behavior, GitHub operations, and
+decomposed into work items, implemented, reviewed, and integrated. This document is the entry point
+to the workflow system — individual component specs define agent behavior, engine mechanics, and
 tooling in detail.
 
 ## Constraints
 
-- All workflow state is tracked via GitHub Issues and labels — no external tracking systems
-- Specifications are the source of truth for all implementation work
-- Only the Human can approve spec changes and merge code
-- Agents must not make interpretive decisions when specs are ambiguous — they must escalate
-- Each task issue has exactly one label from each mutually exclusive category (type, status,
-  priority, and complexity for `task:implement` issues)
-- Status transitions must follow the valid transition table — no skipping phases
+- All workflow state is tracked via work items (GitHub Issues) and status labels — no external
+  tracking systems.
+- Specifications are the source of truth for all implementation work.
+- Only the Human can approve spec changes and merge code.
+- Agents must not make interpretive decisions when specs are ambiguous — they must escalate.
+- Each work item has exactly one label from each mutually exclusive category (type, status,
+  priority, and complexity for `task:implement` work items).
+- Status transitions follow the valid transition table — no skipping phases. Transitions are
+  handler-mediated: the engine's handlers react to domain events and emit commands that drive status
+  changes.
+- Agents produce structured artifacts only — no direct GitHub operations, status transitions, or
+  review posting. All external mutations are performed by the engine's CommandExecutor.
 
 ## Specification
 
@@ -50,41 +55,48 @@ tooling in detail.
 The final authority in the workflow. Responsible for:
 
 - Authoring and approving specifications (using the `/spec-writing` skill)
-- Assigning tasks to Implementors
-- Merging approved PRs into the codebase
+- Dispatching work items for implementation (via the TUI)
+- Merging approved revisions into the codebase
 - Resolving escalations that agents cannot handle (ambiguity, priority conflicts, judgment calls)
-- Unblocking tasks that require human decision-making
+- Unblocking work items that require human decision-making
 
 Agents propose; the Human decides. No spec change, merge, or architectural decision is final without
 Human approval.
 
 #### Planner
 
-Agent that decomposes approved specifications into executable GitHub Issues. Triggered when a spec
-is committed or updated. Reviews existing issues for relevance, creates well-scoped tasks with
-dependencies and priority, and closes stale issues.
+Agent role that decomposes approved specifications into structured work item operations. Triggered
+when spec files change with approved frontmatter status. Reviews existing work items for relevance,
+assesses what work remains against the current codebase, and produces a `PlannerResult` containing
+work items to create, close, and update with dependency ordering.
 
-Does not assign tasks — that is the Human's responsibility.
+Does not perform any external mutations — the engine's CommandExecutor processes the
+`PlannerResult`.
 
 See `agent-planner.md` for full behavior specification.
 
 #### Implementor
 
-Agent that executes assigned tasks. Reads the task issue and referenced spec, writes code and tests
-within declared scope, and surfaces blockers when it cannot proceed. Works on exactly one task at a
-time; parallelism is achieved by running multiple Implementor instances.
+Agent role that executes assigned work items. Reads the work item body and referenced spec, writes
+code and tests within declared scope, and produces an `ImplementorResult` with an outcome
+(`completed`, `blocked`, or `validation-failure`), a summary, and a patch artifact (when completed).
+Works on exactly one work item at a time; parallelism is achieved by running multiple Implementor
+instances.
 
-Does not make interpretive decisions — escalates ambiguity instead.
+Does not perform any GitHub operations — no branch pushing, revision creation, status transitions,
+or comments. All external mutations are performed by the engine after processing the agent's result.
 
 See `agent-implementor.md` for full behavior specification.
 
 #### Reviewer
 
-Agent that reviews completed work before integration. Checks acceptance criteria, evaluates code
-quality and spec conformance, and confirms scope compliance. Approves work for Human integration or
-rejects with actionable feedback.
+Agent role that reviews completed work before integration. Checks acceptance criteria, evaluates
+code quality and spec conformance, and confirms scope compliance. Produces a `ReviewerResult`
+containing a verdict (`approve` or `needs-changes`), a summary, and line-level comments.
 
-Does not merge — approval means setting `status:approved`. The Human performs the merge.
+Does not post reviews or transition status — the engine's CommandExecutor processes the
+`ReviewerResult`, posts the review to the revision, and transitions the work item status based on
+the verdict.
 
 See `agent-reviewer.md` for full behavior specification.
 
@@ -99,46 +111,47 @@ scope, they escalate rather than act.
 The workflow operates in five phases. Each phase has a primary role, a trigger, and a defined output
 that feeds the next phase.
 
-| Phase         | Primary Role | Trigger                                                       | Output                                                |
-| ------------- | ------------ | ------------------------------------------------------------- | ----------------------------------------------------- |
-| **Spec**      | Human        | Feature request, identified gap, or amendment needed          | Approved spec committed to `docs/specs/`              |
-| **Plan**      | Planner      | Spec committed or updated                                     | GitHub Issues with labels, dependencies, and priority |
-| **Implement** | Implementor  | Human assigns a task                                          | PR linked to task issue                               |
-| **Review**    | Reviewer     | Engine dispatches after Implementor completion + non-draft PR | Approval or rejection with feedback                   |
-| **Integrate** | Human        | Task has `status:approved`                                    | PR merged, issue closed                               |
+| Phase         | Primary Role | Trigger                                              | Output                                                          |
+| ------------- | ------------ | ---------------------------------------------------- | --------------------------------------------------------------- |
+| **Spec**      | Human        | Feature request, identified gap, or amendment needed | Approved spec committed to `docs/specs/`                        |
+| **Plan**      | Planner      | Spec committed or updated with approved frontmatter  | `PlannerResult` — work items to create, close, and update       |
+| **Implement** | Implementor  | Work item reaches `ready` status                     | `ImplementorResult` — outcome, patch artifact, and summary      |
+| **Review**    | Reviewer     | Revision pipeline status transitions to `success`    | `ReviewerResult` — verdict with summary and line-level comments |
+| **Integrate** | Human        | Work item has `status:approved`                      | Revision merged, work item closed                               |
 
-Handoffs between phases are mediated by state changes: spec file commits trigger planning,
-Implementor completion triggers review (via engine dispatch when a non-draft PR exists), and
-approval labels signal readiness for integration. The Human is the manual bridge for task assignment
-(Plan → Implement) and merging (Review → Integrate).
+Handoffs between phases are mediated by engine handlers reacting to domain events: spec file commits
+trigger planning via `handlePlanning`, work items reaching `ready` status trigger implementation via
+`handleImplementation`, and revision pipeline success triggers review via `handleReview`. The Human
+is the manual bridge for unblocking work items and merging approved revisions.
 
-The mechanism for detecting state changes and invoking agents (polling, webhooks, manual invocation)
-is outside the scope of this spec.
+See [control-plane-engine-handlers.md](./control-plane-engine-handlers.md) for handler dispatch
+logic.
 
 Feedback loops exist at two points:
 
-- **Review rejection:** Reviewer sets `status:needs-changes`, Implementor addresses feedback and
-  resubmits.
-- **Spec issue:** Implementor sets `status:needs-refinement`, Human amends the spec, task is
-  unblocked and Implementor resumes.
+- **Review rejection:** Engine transitions work item to `needs-refinement`. Human reviews the
+  feedback and transitions the work item to `pending` via the TUI. `handleReadiness` promotes it to
+  `ready`, and a new Implementor run addresses the feedback.
+- **Implementation blocker:** Engine transitions work item to `blocked` or `needs-refinement` based
+  on the Implementor's outcome. Human resolves the issue (amends the spec, removes the external
+  blocker) and transitions the work item to `pending` via the TUI. `handleReadiness` promotes it to
+  `ready` for re-dispatch.
 
 #### Standard Flow
 
 ```mermaid
 flowchart TD
-    Spec[Human authors spec] -->|Commits approved spec| Plan[Planner decomposes into tasks]
-    Plan -->|Creates GitHub Issues| Assign[Human assigns task]
-    Assign -->|Dispatches Implementor| Impl[Implementor writes code and tests]
+    Spec[Human authors spec] -->|Commits approved spec| Plan[Planner produces PlannerResult]
+    Plan -->|Engine creates work items| Dispatch[Work item reaches ready status]
+    Dispatch -->|Engine dispatches Implementor| Impl[Implementor writes code and tests]
     Impl --> Result{Outcome}
-    Result -->|Work complete| Review[Reviewer evaluates PR]
-    Result -->|Spec issue| NeedsRefinement[Spec Amendment Flow]
-    Result -->|Non-spec blocker| Blocked[Human resolves blocker]
+    Result -->|completed| Review[Reviewer evaluates revision]
+    Result -->|blocked / validation-failure| Resolve[Human resolves issue]
     Review --> Verdict{Verdict}
-    Verdict -->|Approved| Integrate[Human merges PR]
-    Verdict -->|Needs changes| Impl
-    NeedsRefinement -->|Spec amended| Unblocked[Implementor resumes]
-    Blocked -->|Blocker resolved| Unblocked
-    Unblocked --> Impl
+    Verdict -->|approve| Integrate[Human merges revision]
+    Verdict -->|needs-changes| Feedback[Human reviews feedback]
+    Resolve -->|Transitions to pending| Dispatch
+    Feedback -->|Transitions to pending| Dispatch
 ```
 
 #### Spec Amendment Flow
@@ -146,57 +159,70 @@ flowchart TD
 When an Implementor encounters a spec issue (ambiguity, contradiction, or gap) during
 implementation:
 
-1. Implementor stops work on the affected task.
-2. Implementor opens a draft PR to preserve progress.
-3. Implementor adds a blocker comment to the task issue with the spec reference, options, and a
-   recommendation.
-4. Implementor sets the task label to `status:needs-refinement`.
-5. Human is notified of the blocked task.
-6. Human reviews the blocker details and uses the `/spec-writing` skill to draft a spec amendment.
-   The Human provides: (a) the spec file path from the blocker comment's Spec Reference, (b) the
-   issue URL so the spec-writing session can read the blocker's Options and Recommendation, and (c)
-   the specific section that needs amendment. The `/spec-writing` skill handles the structured
-   authoring process; the Human's role is to supply the right context from the blocker.
-7. Human approves and commits the amended spec.
-8. Human sets the task label to `status:unblocked`.
-9. Implementor resumes from the draft PR with the updated spec.
+1. Implementor stops work on the affected work item.
+2. Implementor produces a `blocked` outcome with a summary describing the spec reference, options,
+   and a recommendation.
+3. Engine transitions the work item to `blocked` and includes the summary in the work item update.
+4. Human is notified of the blocked work item.
+5. Human reviews the blocker details and uses the `/spec-writing` skill to draft a spec amendment.
+   The Human provides: (a) the spec file path from the blocker summary's Spec Reference, (b) the
+   work item URL so the spec-writing session can read the blocker's Options and Recommendation, and
+   (c) the specific section that needs amendment.
+6. Human approves and commits the amended spec.
+7. Human transitions the work item to `pending` via the TUI.
+8. `handleReadiness` promotes the work item to `ready`, and `handleImplementation` dispatches a new
+   Implementor run.
 
 ```mermaid
 flowchart TD
-    Hit[Implementor encounters spec issue] --> Stop[Stop work on task]
-    Stop --> Draft[Open draft PR to preserve progress]
-    Draft --> Comment[Post blocker comment to task issue]
-    Comment --> Label[Set status:needs-refinement]
-    Label --> Notify[Human notified]
+    Hit[Implementor encounters spec issue] --> Stop[Produces blocked outcome with summary]
+    Stop --> Engine[Engine transitions work item to blocked]
+    Engine --> Notify[Human notified]
     Notify --> HumanReview[Human reviews blocker details]
     HumanReview --> Amend[Human amends spec via /spec-writing]
     Amend --> Commit[Human approves and commits amended spec]
-    Commit --> Unblock[Human sets status:unblocked]
-    Unblock --> Resume[Implementor resumes from draft PR]
+    Commit --> Unblock[Human transitions work item to pending]
+    Unblock --> Ready[handleReadiness promotes to ready]
+    Ready --> Resume[Implementor dispatched for the work item]
 ```
 
-#### Task Status Transitions
+#### Work Item Status Transitions
 
-Task status is tracked via mutually exclusive `status:*` labels on GitHub Issues. The valid
-transitions are:
+Work item status is tracked via mutually exclusive `status:*` labels. The valid transitions are:
 
-| From                      | To                        | Triggered By                                                      |
-| ------------------------- | ------------------------- | ----------------------------------------------------------------- |
-| `status:pending`          | `status:in-progress`      | Implementor starts work                                           |
-| `status:in-progress`      | `status:review`           | Engine sets after Implementor completion when non-draft PR exists |
-| `status:in-progress`      | `status:blocked`          | Implementor hits non-spec blocker                                 |
-| `status:in-progress`      | `status:needs-refinement` | Implementor hits spec issue                                       |
-| `status:blocked`          | `status:unblocked`        | Human resolves blocker                                            |
-| `status:needs-refinement` | `status:unblocked`        | Human amends spec                                                 |
-| `status:unblocked`        | `status:in-progress`      | Implementor resumes                                               |
-| `status:review`           | `status:approved`         | Reviewer approves                                                 |
-| `status:review`           | `status:needs-changes`    | Reviewer rejects with feedback                                    |
-| `status:needs-changes`    | `status:in-progress`      | Implementor addresses feedback                                    |
+| From                      | To                        | Triggered By                                                                  |
+| ------------------------- | ------------------------- | ----------------------------------------------------------------------------- |
+| `status:pending`          | `status:ready`            | `handleReadiness` or `handleDependencyResolution` — all `blockedBy` resolved  |
+| `status:ready`            | `status:in-progress`      | `handleImplementation` — reacts to `ImplementorRequested` event               |
+| `status:in-progress`      | `status:review`           | `ApplyImplementorResult` — `completed` outcome, revision created from patch   |
+| `status:in-progress`      | `status:blocked`          | `ApplyImplementorResult` — `blocked` outcome                                  |
+| `status:in-progress`      | `status:needs-refinement` | `ApplyImplementorResult` — `validation-failure` outcome                       |
+| `status:in-progress`      | `status:pending`          | `handleOrphanedWorkItem` (recovery) or `handleImplementation` (agent failure) |
+| `status:review`           | `status:approved`         | `ApplyReviewerResult` — `approve` verdict                                     |
+| `status:review`           | `status:needs-refinement` | `ApplyReviewerResult` — `needs-changes` verdict                               |
+| `status:review`           | `status:pending`          | `handleReview` — reviewer agent failure (recovery)                            |
+| `status:needs-refinement` | `status:pending`          | Human transitions via TUI (`UserTransitionedStatus`)                          |
+| `status:blocked`          | `status:pending`          | Human transitions via TUI (`UserTransitionedStatus`)                          |
 
-No other agent-initiated transitions are valid. The engine performs two administrative overrides
-outside this table: `in-progress → pending` (recovery) and `in-progress → review`
-(completion-dispatch) — see [control-plane-engine-recovery.md](./control-plane-engine-recovery.md)
-and [control-plane-engine.md: Completion-dispatch](./control-plane-engine.md#completion-dispatch).
+All status transitions are handler-mediated — handlers react to domain events and emit commands that
+the CommandExecutor translates into provider operations. Agents do not perform status transitions
+directly.
+
+> **Rationale:** Reactive status transitions prevent status drift when commands are rejected by
+> concurrency guards or policy. The work item remains in its current status until the engine
+> confirms the operation was accepted. `pending` and `ready` are distinct states — work items must
+> pass a readiness check (`handleReadiness`) before entering the dispatch pool. Recovery transitions
+> always return to `pending`, forcing a readiness check before re-dispatch.
+
+The `UserTransitionedStatus` event allows the Human to manually transition work items via the TUI.
+The standard use cases are unblocking work items (`blocked` → `pending`, `needs-refinement` →
+`pending`). The event itself is unconstrained — the Human can attempt any transition, subject to the
+CommandExecutor's concurrency guards and policy gate.
+
+`closed` is not a label-based status — it is derived from the GitHub issue state when the Human
+closes the issue after merging the revision. The engine does not mediate this transition; the
+"Integrate to Complete" quality gate defines the conditions.
+
 This table is the normative home for status transitions.
 [skill-github-workflow.md](./skill-github-workflow.md) includes a convenience copy for agent
 reference.
@@ -204,25 +230,25 @@ reference.
 ```mermaid
 stateDiagram-v2
     state "status:pending" as pending
+    state "status:ready" as ready
     state "status:in-progress" as in_progress
     state "status:review" as review
     state "status:blocked" as blocked
     state "status:needs-refinement" as needs_refinement
-    state "status:unblocked" as unblocked
     state "status:approved" as approved
-    state "status:needs-changes" as needs_changes
 
     [*] --> pending
-    pending --> in_progress : Implementor starts
-    in_progress --> review : Engine (on completion + PR)
-    in_progress --> blocked : Non-spec blocker
-    in_progress --> needs_refinement : Spec issue
-    blocked --> unblocked : Human resolves
-    needs_refinement --> unblocked : Human amends spec
-    unblocked --> in_progress : Implementor resumes
-    review --> approved : Reviewer approves
-    review --> needs_changes : Reviewer rejects
-    needs_changes --> in_progress : Implementor addresses feedback
+    pending --> ready : Dependencies resolved
+    ready --> in_progress : ImplementorRequested
+    in_progress --> review : Completed outcome
+    in_progress --> blocked : Blocked outcome
+    in_progress --> needs_refinement : Validation-failure outcome
+    in_progress --> pending : Recovery / agent failure
+    review --> approved : Approve verdict
+    review --> needs_refinement : Needs-changes verdict
+    review --> pending : Reviewer failure (recovery)
+    needs_refinement --> pending : Human unblocks
+    blocked --> pending : Human unblocks
     approved --> [*] : Human merges
 ```
 
@@ -236,46 +262,44 @@ if any gate is not satisfied.
 - Spec frontmatter `status` is `approved`
 - All acceptance criteria are testable (observable outcomes)
 - Spec is committed to the repository
-- No open `task:refinement` issues exist for the spec
+- No existing work items with `needs-refinement` status reference this spec
 
 #### Plan to Implement
 
-- Task issue exists with all required sections (Objective, Spec Reference, Scope, Acceptance
+- Work item exists with all required sections (Objective, Spec Reference, Scope, Acceptance
   Criteria)
 - Referenced spec is `approved`
 - Scope boundaries are explicit (In Scope / Out of Scope)
-- Dependencies documented via issue references
+- Dependencies documented via `blockedBy` references
 - Priority label assigned
-- Blocking tasks (referenced as "Blocked by #X") are resolved
+- Blocking work items (referenced in `blockedBy`) are in terminal status (`closed` or `approved`)
 
-> **Rationale:** Dependency resolution is the Human's responsibility. The control plane dispatches
-> based on status labels, not dependency graphs. Before dispatching an Implementor, the Human should
-> verify that tasks referenced as "Blocked by #X" are resolved. This is intentional — the system is
-> a dispatch tool, not a project manager.
+> **Rationale:** Two complementary handlers automate dependency resolution. `handleReadiness`
+> promotes newly-pending work items to `ready` when their `blockedBy` list is already satisfied.
+> `handleDependencyResolution` promotes already-pending work items when their last blocker reaches
+> terminal status. Together they ensure work items only enter the dispatch pool when all
+> dependencies are satisfied.
 
 #### Implement to Review
 
 - All acceptance criteria addressed
 - Tests pass locally
-- PR opened (not draft) and linked to task issue via `Closes #<N>`
+- Revision created from patch and linked to work item
 - Changes are within declared scope or qualify as incidental (minimal, directly required by in-scope
   changes, non-behavioral — see `agent-implementor.md` for full definition)
-- Branch name follows the engine's dispatch convention (`issue-<N>-<timestamp>` for new tasks, PR's
-  head branch for resume scenarios — see
-  [control-plane.md: Worktree Isolation](./control-plane.md#worktree-isolation))
 
 #### Review to Integrate
 
 - All acceptance criteria verified by Reviewer
 - Code quality and spec conformance confirmed
 - No unresolved review comments
-- `status:approved` label applied (canonical approval signal)
-- PR review comment submitted confirming the approval
+- `status:approved` label applied (via `ApplyReviewerResult` with `approve` verdict)
+- Review posted to revision confirming the approval
 
 #### Integrate to Complete
 
-- PR merged to main
-- Issue closed
+- Revision merged to main
+- Work item closed
 - No broken builds or failing tests on main
 
 ### Escalation Protocol
@@ -285,11 +309,11 @@ if any gate is not satisfied.
 Agents must escalate when they encounter any of the following:
 
 1. **Spec issue** — Ambiguity, contradiction, or gap in the specification
-2. **Scope conflict** — Task requires changes outside declared scope
-3. **Dependency conflict** — Two tasks need to modify the same code
+2. **Scope conflict** — Work item requires changes outside declared scope
+3. **Dependency conflict** — Two work items need to modify the same code
 4. **Technical constraint** — Implementation is impossible or impractical as specified
 5. **External blocker** — Waiting on an external system, API, or third party
-6. **Priority conflict** — Unclear which task takes precedence
+6. **Priority conflict** — Unclear which work item takes precedence
 7. **Judgment call** — Decision requires human input (architectural, UX, business logic)
 
 #### Routing
@@ -297,46 +321,54 @@ Agents must escalate when they encounter any of the following:
 All escalations are directed to the Human. The Human decides how to resolve:
 
 - **Spec issues** → Human uses `/spec-writing` to amend the spec
-- **Scope/dependency conflicts** → Human adjusts task scope or sequencing
+- **Scope/dependency conflicts** → Human adjusts work item scope or sequencing
 - **Technical constraints** → Human decides whether to change the spec or accept the constraint
 - **External blockers** → Human coordinates with the external party
 - **Priority/judgment calls** → Human makes the decision
 
 #### Blocker vs. Escalation
 
-Agents distinguish between two types of issues:
+Agents report issues through their structured output:
 
-- **Blocker** — Prevents further progress on the current task. Work stops immediately. The agent
-  opens a draft PR, posts a blocker comment, and changes the status label (`status:blocked` or
-  `status:needs-refinement`). See `agent-implementor.md` for blocker comment format.
-- **Escalation** — Does not prevent progress on the current task but needs Human attention (e.g.,
-  scope conflict with another task, priority question). The agent posts an escalation comment and
-  continues working. See `agent-implementor.md` for escalation comment format.
+- **Blocker** — Prevents further progress on the current work item. The agent produces a structured
+  result with an appropriate outcome (`blocked` or `validation-failure`) and a summary describing
+  the issue. The engine handles status transitions and work item updates. See `agent-implementor.md`
+  for blocker handling and outcome semantics.
+- **Escalation** — Does not prevent progress on the current work item but needs Human attention
+  (e.g., scope conflict with another work item, priority question). The agent notes the issue in its
+  summary and continues working.
 
 ### Artifacts
 
-| Artifact      | Location                   | Created By                  | Template Defined In        |
-| ------------- | -------------------------- | --------------------------- | -------------------------- |
-| Specification | `docs/specs/*.md`          | Human (via `/spec-writing`) | `skill-spec-writing.md`    |
-| Task Issue    | GitHub Issues              | Planner                     | `agent-planner.md`         |
-| Pull Request  | GitHub PRs                 | Implementor                 | `skill-github-workflow.md` |
-| Plan          | GitHub Issues (live state) | Planner                     | N/A                        |
+| Artifact      | Location                          | Created By                  | Format Defined In       |
+| ------------- | --------------------------------- | --------------------------- | ----------------------- |
+| Specification | `docs/specs/*.md`                 | Human (via `/spec-writing`) | `skill-spec-writing.md` |
+| Work Item     | GitHub Issues                     | Engine (from PlannerResult) | `workflow-contracts.md` |
+| Revision      | GitHub PRs                        | Engine (from patch)         | N/A                     |
+| Plan          | PlannerResult (structured output) | Planner                     | `agent-planner.md`      |
 
-The Plan is not a separate document — it is the live state of GitHub Issues, queried via the `gh`
-CLI. See `skill-github-workflow.md` for query patterns.
+Work items are created by the engine's CommandExecutor when processing the Planner's
+`PlannerResult`. Revisions are created by the engine when processing the Implementor's
+`ImplementorResult` (completed outcome with patch artifact).
 
 #### Labels
 
-Task issues use four mutually exclusive label categories. An issue has exactly one label from each
-applicable category. Complexity is assigned to `task:implement` issues only; `task:refinement`
-issues do not receive a complexity label.
+Work items use four mutually exclusive label categories. A work item has exactly one label from each
+applicable category. Complexity is assigned to `task:implement` work items only; `task:refinement`
+work items do not receive a complexity label.
 
-| Category   | Labels                                                                                                                                                              | Applies To            | Defined In              |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- | ----------------------- |
-| Type       | `task:implement` (implementation work), `task:refinement` (spec clarification needed — created by Planner when spec is ambiguous)                                   | All issues            | `script-label-setup.md` |
-| Status     | `status:pending`, `status:in-progress`, `status:blocked`, `status:needs-refinement`, `status:unblocked`, `status:review`, `status:needs-changes`, `status:approved` | All issues            | `script-label-setup.md` |
-| Priority   | `priority:high`, `priority:medium`, `priority:low`                                                                                                                  | All issues            | `script-label-setup.md` |
-| Complexity | `complexity:simple` (straightforward, single-file, mechanical), `complexity:complex` (multi-file or architecturally nuanced)                                        | `task:implement` only | `script-label-setup.md` |
+| Category   | Labels                                                                                                                                  | Applies To            | Defined In              |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------- | ----------------------- |
+| Type       | `task:implement` (implementation work), `task:refinement` (spec clarification needed — created by Planner when spec is ambiguous)       | All work items        | `script-label-setup.md` |
+| Status     | `status:pending`, `status:ready`, `status:in-progress`, `status:blocked`, `status:needs-refinement`, `status:review`, `status:approved` | All work items        | `script-label-setup.md` |
+| Priority   | `priority:high`, `priority:medium`, `priority:low`                                                                                      | All work items        | `script-label-setup.md` |
+| Complexity | `complexity:trivial`, `complexity:low`, `complexity:medium`, `complexity:high`                                                          | `task:implement` only | `script-label-setup.md` |
+
+`task:refinement` work items are created by the Planner when spec ambiguity prevents task
+decomposition. They are informational — they signal to the Human that a spec needs clarification.
+Refinement work items do not flow through the Implement or Review phases. The Human resolves the
+ambiguity (via `/spec-writing`), and the next Planner run closes the refinement work item if the
+ambiguity is addressed.
 
 Label definitions (names, descriptions, colors) and the setup script are specified in
 `script-label-setup.md`.
@@ -345,81 +377,87 @@ Label definitions (names, descriptions, colors) and the setup script are specifi
 
 ### Lifecycle
 
-- [ ] Given a new specification with `status: approved`, when committed to `docs/specs/`, then the
-      Planner is triggered and produces GitHub Issues for unsatisfied acceptance criteria.
-- [ ] Given a task issue created by the Planner, when inspected, then it has exactly one type label,
-      one status label, and one priority label.
-- [ ] Given a task assigned to an Implementor, when the Implementor starts work, then the task label
-      transitions from `status:pending` to `status:in-progress` before any code changes are made.
-- [ ] Given an Implementor completes work on a task, when a non-draft PR is linked to the task
-      issue, then the task transitions to `status:review` and the Reviewer is dispatched (see
-      [control-plane-engine.md: Completion-dispatch](./control-plane-engine.md#completion-dispatch)
-      for the engine mechanism).
-- [ ] Given a Reviewer that approves a PR, when the task label transitions to `status:approved`,
-      then the Human can merge the PR and close the issue.
+- [ ] Given a new specification with `status: approved`, when committed to `docs/specs/`, then
+      `handlePlanning` dispatches a Planner run that produces a `PlannerResult` with work items for
+      unsatisfied acceptance criteria.
+- [ ] Given a work item created from a `PlannerResult`, when inspected, then it has exactly one type
+      label, one status label, and one priority label.
+- [ ] Given a work item that reaches `ready` status, when `handleImplementation` dispatches an
+      Implementor, then the work item transitions to `status:in-progress` only after the
+      `ImplementorRequested` event confirms the run was accepted.
+- [ ] Given an Implementor that produces a `completed` outcome, when the engine processes the
+      `ImplementorResult`, then a revision is created from the patch and the work item transitions
+      to `status:review`.
+- [ ] Given a Reviewer that produces an `approve` verdict, when the engine processes the
+      `ReviewerResult`, then the work item transitions to `status:approved` and the Human can merge
+      the revision.
 
 ### Quality Gates
 
-- [ ] Given a spec without `status: approved`, when the Planner is invoked, then it stops without
-      creating task issues.
-- [ ] Given a task issue missing a required section (Objective, Spec Reference, Scope, or Acceptance
-      Criteria), when the Implementor validates inputs, then it posts a validation failure and
-      stops. The Reviewer handles missing sections as warnings within its review checklist and
+- [ ] Given a spec without `status: approved`, when the Planner validates pre-planning gates, then
+      it skips that spec with a gate failure report.
+- [ ] Given a work item missing a required section (Objective, Spec Reference, Scope, or Acceptance
+      Criteria), when the Implementor validates inputs, then it produces a `validation-failure`
+      outcome. The Reviewer handles missing sections as warnings within its review checklist and
       continues.
-- [ ] Given a task without `status:approved`, when the Human attempts to integrate, then the quality
-      gate from Review to Integrate is not satisfied.
+- [ ] Given a work item without `status:approved`, when the Human attempts to integrate, then the
+      quality gate from Review to Integrate is not satisfied.
 
 ### Status Transitions
 
-- [ ] Given any status transition performed by an agent, when inspected, then it matches one of the
-      transitions in the valid transition table.
-- [ ] Given a task with `status:in-progress`, when the Implementor encounters a spec issue, then the
-      status transitions to `status:needs-refinement` (not `status:blocked`).
-- [ ] Given a task with `status:in-progress`, when the Implementor encounters a non-spec blocker,
-      then the status transitions to `status:blocked` (not `status:needs-refinement`).
-- [ ] Given a task with `status:needs-refinement`, when the Human amends the spec and sets
-      `status:unblocked`, then the Implementor resumes from the existing draft PR.
+- [ ] Given any status transition, when inspected, then it was performed by the engine's
+      CommandExecutor in response to a handler-emitted command — not by an agent directly.
+- [ ] Given a work item with `status:pending` and all `blockedBy` dependencies in terminal status,
+      when `handleReadiness` runs, then the work item transitions to `status:ready`.
+- [ ] Given a work item with `status:pending` and unresolved `blockedBy` dependencies, when
+      `handleReadiness` runs, then the work item remains in `status:pending`.
+- [ ] Given a work item with `status:in-progress` and no active agent run, when a `WorkItemChanged`
+      event is processed, then `handleOrphanedWorkItem` transitions the work item to
+      `status:pending`.
+- [ ] Given a work item with `status:needs-refinement`, when the Human transitions it to `pending`
+      via the TUI, then `handleReadiness` re-evaluates the work item for dispatch eligibility.
 
 ### Escalation
 
-- [ ] Given an agent that encounters a spec ambiguity, when it escalates, then work stops, a blocker
-      comment is posted with options and a recommendation, and the status label reflects the blocker
-      type.
-- [ ] Given an agent that encounters a non-blocking issue (e.g., scope conflict with another task),
-      when it posts an escalation comment, then work continues and the status label does not change.
+- [ ] Given an Implementor that encounters a spec ambiguity, when it produces its structured output,
+      then the outcome is `blocked` with a summary describing options and a recommendation, and the
+      engine transitions the work item to `status:blocked`.
+- [ ] Given an Implementor that encounters a non-blocking issue (e.g., scope conflict with another
+      work item), when it produces its structured output, then the issue is noted in the summary and
+      the outcome reflects continued progress.
 
 ### Roles
 
 - [ ] Given any spec change in the workflow, when inspected, then it was approved by the Human
       before being committed.
-- [ ] Given any PR merge, when inspected, then it was performed by the Human (not an agent).
-- [ ] Given the Planner creates task issues, when inspected, then no tasks have been assigned to an
-      Implementor by the Planner — assignment is the Human's responsibility.
-
-## Known Limitations
-
-- **No dependency graph enforcement** — Dispatch is label-driven, not dependency-driven. The Human
-  is responsible for verifying that blocking tasks are resolved before dispatching an Implementor
-  for a dependent task.
+- [ ] Given any revision merge, when inspected, then it was performed by the Human (not an agent).
+- [ ] Given the Planner produces a `PlannerResult`, when inspected, then no work items have been
+      assigned to an Implementor by the Planner — dispatch is the engine's responsibility based on
+      status transitions.
 
 ## Dependencies
 
 - `agent-planner.md` — Planner agent behavior specification
 - `agent-implementor.md` — Implementor agent behavior specification
 - `agent-reviewer.md` — Reviewer agent behavior specification
-- `skill-github-workflow.md` — GitHub operations skill (issue CRUD, PR lifecycle, label management,
-  query patterns)
+- `control-plane-engine-handlers.md` — Handler catalog (dispatch logic, status transitions)
+- `control-plane-engine-command-executor.md` — Command execution (provider operations, concurrency
+  guards, policy gate)
+- `skill-github-workflow.md` — GitHub operations skill (work item CRUD, revision lifecycle, label
+  management, query patterns)
 - `skill-spec-writing.md` — Spec authoring skill and template
 - `script-label-setup.md` — Label definitions and setup script
-- `github-cli.md` — GitHub CLI wrapper (authentication, token caching, `gh` dispatch)
 - `CLAUDE.md` — Code style, naming conventions, and project patterns
 
 ## References
 
+- `docs/specs/decree/v2/002-architecture.md` — Target architecture (domain model, handler catalog,
+  agent role contracts)
 - `docs/specs/decree/agent-planner.md`
 - `docs/specs/decree/agent-implementor.md`
 - `docs/specs/decree/agent-reviewer.md`
+- `docs/specs/decree/control-plane-engine-handlers.md`
+- `docs/specs/decree/control-plane-engine-command-executor.md`
 - `docs/specs/decree/skill-github-workflow.md`
 - `docs/specs/decree/skill-spec-writing.md`
 - `docs/specs/decree/script-label-setup.md`
-- `docs/specs/decree/github-cli.md`

@@ -1,8 +1,8 @@
 ---
 title: Label Setup Script
-version: 0.3.0
-last_updated: 2026-02-12
-status: approved
+version: 0.4.0
+last_updated: 2026-02-19
+status: draft
 ---
 
 # Label Setup Script
@@ -55,16 +55,15 @@ code `1`.
 
 #### Status Labels
 
-| Label                     | Description                         | Color    |
-| ------------------------- | ----------------------------------- | -------- |
-| `status:pending`          | Not yet started                     | `bfd4f2` |
-| `status:in-progress`      | Actively being worked               | `0e8a16` |
-| `status:blocked`          | Waiting on non-spec blocker         | `d93f0b` |
-| `status:needs-refinement` | Blocked on spec issue               | `fbca04` |
-| `status:unblocked`        | Previously blocked, ready to resume | `c2e0c6` |
-| `status:review`           | PR submitted, awaiting review       | `006b75` |
-| `status:needs-changes`    | Review rejected                     | `e99695` |
-| `status:approved`         | Ready to merge                      | `2ea44f` |
+| Label                     | Description                                  | Color    |
+| ------------------------- | -------------------------------------------- | -------- |
+| `status:pending`          | Not yet started, awaiting readiness check    | `bfd4f2` |
+| `status:ready`            | Dependencies resolved, eligible for dispatch | `a2eeef` |
+| `status:in-progress`      | Agent actively working                       | `0e8a16` |
+| `status:blocked`          | Waiting on external blocker                  | `d93f0b` |
+| `status:needs-refinement` | Requires human attention                     | `fbca04` |
+| `status:review`           | Revision under review                        | `006b75` |
+| `status:approved`         | Ready to merge                               | `2ea44f` |
 
 #### Priority Labels
 
@@ -76,10 +75,12 @@ code `1`.
 
 #### Complexity Labels
 
-| Label                | Description                                    | Color    |
-| -------------------- | ---------------------------------------------- | -------- |
-| `complexity:simple`  | Straightforward task — single-file, mechanical | `d4c5f9` |
-| `complexity:complex` | Multi-file or architecturally nuanced task     | `7057ff` |
+| Label                | Description                                   | Color    |
+| -------------------- | --------------------------------------------- | -------- |
+| `complexity:trivial` | Trivial changes, mechanical transformations   | `d4c5f9` |
+| `complexity:low`     | Single-file changes, simple logic             | `c2a8f0` |
+| `complexity:medium`  | Multi-file changes with moderate coordination | `9b7ee0` |
+| `complexity:high`    | Multi-file coordination, architectural nuance | `7057ff` |
 
 ### Script Behavior
 
@@ -136,8 +137,8 @@ The script prints one line per label processed, indicating the action taken:
    created  task:implement
    created  task:refinement
 up-to-date  status:pending
+   created  status:ready
    updated  status:in-progress
-   created  status:blocked
 ...
 ```
 
@@ -219,8 +220,7 @@ The script is idempotent. Running it multiple times:
 - `gh` CLI
 - `jq` (for parsing JSON output from `gh`)
 - `scripts/workflow/gh.sh` (see `docs/specs/decree/github-cli.md`)
-- Label definitions from the development protocol (`docs/specs/decree/workflow.md`, "Labels"
-  section)
+- Label taxonomy from the development protocol (`docs/specs/decree/workflow.md`, "Labels" section)
 
 ## References
 

@@ -831,11 +831,6 @@ On `y`: call `shutdown()`. On `n` / `Escape`: dismiss.
 - Ink — React for the terminal.
 - Zustand — state management (React binding via `useStore`).
 
-**Required state store extension:** The TUI displays error messages for failed agent runs. The
-`AgentRun` variants must carry an `error: string | null` field, populated by the `*Failed` state
-update functions from the event's `error` field. This field is not currently defined in the state
-store spec — it must be added before TUI implementation.
-
 ## References
 
 - [002-architecture.md: TUI Contract](./v2/002-architecture.md#tui-contract) — architectural

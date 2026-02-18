@@ -815,7 +815,7 @@ Spec writing and implementation for this step are deferred to the cutover track 
 
 ### Step 11a: Workflow spec
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 
@@ -854,7 +854,7 @@ consistent with the handler catalog. Role descriptions match agent spec changes.
 
 ### Step 11b: Workflow contracts
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 
@@ -889,7 +889,7 @@ references to `gh.sh` or direct GitHub operations in output templates.
 
 ### Step 11c: Label setup script
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 
@@ -930,7 +930,7 @@ summarizes all component changes.
 Spec writing and implementation for this step are deferred to the cutover track — see
 "Implementation phasing" above.
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 
