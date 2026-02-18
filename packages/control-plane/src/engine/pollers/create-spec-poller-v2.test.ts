@@ -17,11 +17,13 @@ interface SetupTestState {
 }
 
 interface SetupTestResult {
-  reader: { listSpecs: ReturnType<typeof vi.fn> };
+  reader: {
+    listSpecs: ReturnType<typeof vi.fn>;
+    getDefaultBranchSHA: ReturnType<typeof vi.fn>;
+  };
   state: SetupTestState;
   events: SpecChanged[];
   enqueue: ReturnType<typeof vi.fn>;
-  getDefaultBranchSHA: ReturnType<typeof vi.fn>;
   createPoller: () => ReturnType<typeof createSpecPollerV2>;
 }
 
@@ -30,6 +32,7 @@ function setupTest(
 ): SetupTestResult {
   const reader = {
     listSpecs: vi.fn(),
+    getDefaultBranchSHA: vi.fn(),
   };
 
   const state: SetupTestState = {
@@ -48,13 +51,12 @@ function setupTest(
   }
 
   reader.listSpecs.mockResolvedValue(options.providerSpecs ?? []);
+  reader.getDefaultBranchSHA.mockResolvedValue('commit-sha-abc');
 
   const events: SpecChanged[] = [];
   const enqueue = vi.fn((event: SpecChanged) => {
     events.push(event);
   });
-
-  const getDefaultBranchSHA = vi.fn().mockResolvedValue('commit-sha-abc');
 
   function createPoller(): ReturnType<typeof createSpecPollerV2> {
     return createSpecPollerV2({
@@ -62,11 +64,10 @@ function setupTest(
       getState: () => state,
       enqueue,
       interval: 60,
-      getDefaultBranchSHA,
     });
   }
 
-  return { reader, state, events, enqueue, getDefaultBranchSHA, createPoller };
+  return { reader, state, events, enqueue, createPoller };
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +189,7 @@ test('it emits no events and skips commit SHA fetch when provider matches store'
     frontmatterStatus: 'approved',
   });
 
-  const { events, getDefaultBranchSHA, createPoller } = setupTest({
+  const { reader, events, createPoller } = setupTest({
     providerSpecs: [spec],
     storedSpecs: [spec],
   });
@@ -197,7 +198,7 @@ test('it emits no events and skips commit SHA fetch when provider matches store'
   poller.stop();
 
   expect(events).toHaveLength(0);
-  expect(getDefaultBranchSHA).not.toHaveBeenCalled();
+  expect(reader.getDefaultBranchSHA).not.toHaveBeenCalled();
 });
 
 // ---------------------------------------------------------------------------
@@ -265,8 +266,8 @@ test('it proceeds normally on the next cycle after a reader failure', async () =
 
 test('it skips the poll cycle when getDefaultBranchSHA throws after changes detected', async () => {
   const spec = buildSpec({ filePath: 'docs/specs/engine.md', blobSHA: 'sha-1' });
-  const { getDefaultBranchSHA, events, createPoller } = setupTest({ providerSpecs: [spec] });
-  getDefaultBranchSHA.mockRejectedValue(new Error('ref fetch failed'));
+  const { reader, events, createPoller } = setupTest({ providerSpecs: [spec] });
+  reader.getDefaultBranchSHA.mockRejectedValue(new Error('ref fetch failed'));
 
   const poller = createPoller();
   await poller.poll();
@@ -281,9 +282,9 @@ test('it skips the poll cycle when getDefaultBranchSHA throws after changes dete
 
 test('it re-detects the same changes on the next cycle after a commit SHA failure', async () => {
   const spec = buildSpec({ filePath: 'docs/specs/engine.md', blobSHA: 'sha-1' });
-  const { getDefaultBranchSHA, events, createPoller } = setupTest({ providerSpecs: [spec] });
+  const { reader, events, createPoller } = setupTest({ providerSpecs: [spec] });
 
-  getDefaultBranchSHA
+  reader.getDefaultBranchSHA
     .mockRejectedValueOnce(new Error('ref fetch failed'))
     .mockResolvedValueOnce('commit-sha-retry');
 
@@ -390,8 +391,8 @@ test('it includes the commit SHA from getDefaultBranchSHA in all emitted events'
     buildSpec({ filePath: 'docs/specs/c.md', blobSHA: 'sha-c' }),
   ];
 
-  const { getDefaultBranchSHA, events, createPoller } = setupTest({ providerSpecs: specs });
-  getDefaultBranchSHA.mockResolvedValue('commit-sha-xyz');
+  const { reader, events, createPoller } = setupTest({ providerSpecs: specs });
+  reader.getDefaultBranchSHA.mockResolvedValue('commit-sha-xyz');
 
   const poller = createPoller();
   await poller.poll();

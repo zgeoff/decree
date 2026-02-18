@@ -22,6 +22,7 @@ export interface RevisionProviderReader {
 
 export interface SpecProviderReader {
   listSpecs: () => Promise<Spec[]>;
+  getDefaultBranchSHA: () => Promise<string>;
 }
 
 // --- Provider writer interfaces ---

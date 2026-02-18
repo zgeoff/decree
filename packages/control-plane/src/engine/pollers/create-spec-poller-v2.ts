@@ -26,7 +26,7 @@ export function createSpecPollerV2(config: SpecPollerV2Config): SpecPollerV2 {
 
     let commitSHA: string;
     try {
-      commitSHA = await config.getDefaultBranchSHA();
+      commitSHA = await config.reader.getDefaultBranchSHA();
     } catch {
       return;
     }
