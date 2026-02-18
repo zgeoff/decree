@@ -1,6 +1,7 @@
 import type { StoreApi } from 'zustand';
 import type { Policy } from '../command-executor/types.ts';
 import type {
+  RevisionFile,
   RevisionProviderReader,
   RevisionProviderWriter,
   SpecProviderReader,
@@ -25,7 +26,7 @@ export interface Engine {
   getState: () => EngineState;
   subscribe: (listener: (state: EngineState) => void) => Unsubscribe;
   getWorkItemBody: (id: string) => Promise<string>;
-  getRevisionFiles: (id: string) => Promise<import('../github-provider/types.ts').RevisionFile[]>;
+  getRevisionFiles: (id: string) => Promise<RevisionFile[]>;
   getAgentStream: (sessionID: string) => AsyncIterable<string> | null;
   refresh: () => void;
 }
