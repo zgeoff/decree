@@ -696,7 +696,7 @@ Spec writing and implementation for this step are deferred to the cutover track 
 
 ### Step 10a: Planner agent
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 
@@ -732,7 +732,7 @@ GitHub CLI usage. Input description references `PlannerStartParams`.
 
 ### Step 10b: Implementor agent
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 
@@ -768,7 +768,7 @@ GitHub CLI usage. No direct status transitions.
 
 ### Step 10c: Reviewer agent
 
-- [ ] Rework spec
+- [x] Rework spec
 
 **Read first:**
 
