@@ -198,7 +198,7 @@ function buildContentLines(contentView: ContentView): string[] {
 }
 
 function buildNoTaskLines(): string[] {
-  return ['No task selected'];
+  return ['No work item selected'];
 }
 
 function buildIssueDetailLines(
@@ -206,6 +206,14 @@ function buildIssueDetailLines(
   detail: CachedDetail | null,
 ): string[] {
   const lines: string[] = [`#${displayItem.workItem.id} ${displayItem.workItem.title}`];
+
+  if (displayItem.workItem.priority !== null) {
+    lines.push(`Priority: ${displayItem.workItem.priority}`);
+  }
+
+  if (displayItem.workItem.complexity !== null) {
+    lines.push(`Complexity: ${displayItem.workItem.complexity}`);
+  }
 
   if (detail === null || detail.loading) {
     lines.push('Loading...');
@@ -236,6 +244,7 @@ function buildRevisionSummaryLines(
   }
 
   const lines: string[] = [`PR ${revision.id}: ${revision.title}`];
+  lines.push(revision.url);
 
   if (detail !== null && !detail.loading && detail.revisionFiles !== null) {
     lines.push(`Changed files: ${detail.revisionFiles.length}`);
@@ -262,11 +271,15 @@ function buildCrashDetailLines(
   latestRun: AgentRun | null,
 ): string[] {
   if (latestRun === null) {
-    return ['Crash information unavailable', 'Press [d] to retry'];
+    return ['Crash information unavailable'];
   }
 
   const agentLabel = latestRun.role === 'reviewer' ? 'Reviewer' : 'Implementor';
   const lines: string[] = [`Agent: ${agentLabel}`];
+
+  if (latestRun.error !== null) {
+    lines.push(`Error: ${latestRun.error}`);
+  }
 
   lines.push(`Session: ${latestRun.sessionID}`);
 
@@ -278,7 +291,9 @@ function buildCrashDetailLines(
     lines.push(`Log: ${buildOSC8Link(`file://${latestRun.logFilePath}`, latestRun.logFilePath)}`);
   }
 
-  lines.push('Press [d] to retry');
+  if (latestRun.role === 'implementor') {
+    lines.push('Press [d] to retry');
+  }
   return lines;
 }
 

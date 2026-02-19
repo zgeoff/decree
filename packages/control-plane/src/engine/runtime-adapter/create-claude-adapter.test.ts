@@ -1,6 +1,8 @@
 import type { SDKMessage, SDKResultError, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
+import { vol } from 'memfs';
 import type { Mock, MockedFunction } from 'vitest';
 import { expect, test, vi } from 'vitest';
+import { createMockLogger } from '../../test-utils/create-mock-logger.ts';
 import type { PlannerResult, ReviewerResult } from '../state-store/types.ts';
 import {
   type BashValidatorHook,
@@ -56,7 +58,8 @@ import { extractPatch } from './extract-patch.ts';
 import { loadAgentDefinition } from './load-agent-definition.ts';
 
 const mockQuery: MockedFunction<typeof query> = vi.mocked(query);
-const mockExecFile: Mock = vi.mocked(execFile) as unknown as Mock;
+// execFile is callback-based but mocked as async via promisify identity mock — genuine type mismatch
+const mockExecFile: Mock = vi.mocked(execFile) as Mock;
 const mockLoadAgentDefinition: MockedFunction<typeof loadAgentDefinition> =
   vi.mocked(loadAgentDefinition);
 const mockBuildPlannerContext: MockedFunction<typeof buildPlannerContext> =
@@ -106,7 +109,7 @@ function buildSystemInitMessage(): SDKSystemMessage {
 interface SetupTestResult {
   config: ClaudeAdapterConfig;
   deps: RuntimeAdapterDeps;
-  bashValidatorHook: Mock<BashValidatorHook>;
+  bashValidatorHook: ReturnType<typeof vi.fn<BashValidatorHook>>;
 }
 
 function setupTest(overrides?: Partial<ClaudeAdapterConfig>): SetupTestResult {
@@ -114,11 +117,14 @@ function setupTest(overrides?: Partial<ClaudeAdapterConfig>): SetupTestResult {
   const bashValidatorHook = vi.fn<BashValidatorHook>();
   bashValidatorHook.mockResolvedValue(undefined);
 
+  const { logger } = createMockLogger();
+
   const config: ClaudeAdapterConfig = {
     repoRoot: '/repo',
     defaultBranch: 'main',
     contextPaths: [],
     bashValidatorHook,
+    logger,
     maxAgentDuration: 0,
     logging: {
       agentSessions: false,
@@ -137,6 +143,7 @@ function setupTest(overrides?: Partial<ClaudeAdapterConfig>): SetupTestResult {
       listRevisions: vi.fn(),
       getRevision: vi.fn(),
       getRevisionFiles: vi.fn().mockResolvedValue([]),
+      getReviewHistory: vi.fn().mockResolvedValue({ reviews: [], inlineComments: [] }),
     },
     getState: vi.fn().mockReturnValue({
       workItems: new Map(),
@@ -303,7 +310,7 @@ test('it cleans up worktree and branch after implementor session completes succe
   // Verify worktree removal and branch deletion were called
   expect(mockExecFile).toHaveBeenCalledWith(
     'git',
-    ['worktree', 'remove', expect.stringContaining('issue-42-1234')],
+    ['worktree', 'remove', '--force', expect.stringContaining('issue-42-1234')],
     expect.objectContaining({ cwd: '/repo' }),
   );
   expect(mockExecFile).toHaveBeenCalledWith(
@@ -325,7 +332,7 @@ test('it cleans up worktree and branch after implementor session fails', async (
 
   expect(mockExecFile).toHaveBeenCalledWith(
     'git',
-    ['worktree', 'remove', expect.stringContaining('issue-42-1234')],
+    ['worktree', 'remove', '--force', expect.stringContaining('issue-42-1234')],
     expect.objectContaining({ cwd: '/repo' }),
   );
   expect(mockExecFile).toHaveBeenCalledWith(
@@ -1065,7 +1072,7 @@ test('it cleans up worktree after implementor session is cancelled', async () =>
   // Verify cleanup was called
   expect(mockExecFile).toHaveBeenCalledWith(
     'git',
-    ['worktree', 'remove', expect.stringContaining('issue-42-1234')],
+    ['worktree', 'remove', '--force', expect.stringContaining('issue-42-1234')],
     expect.objectContaining({ cwd: '/repo' }),
   );
 });
@@ -1148,4 +1155,182 @@ test('it uses worktree path as cwd for implementor sessions', async () => {
       }),
     }),
   );
+});
+
+// --- Logging: deferred file creation and edge cases ---
+
+test('it writes cancelled outcome to the log footer when a session is aborted', async () => {
+  const { config, deps } = setupTest({
+    logging: { agentSessions: true, logsDir: '/logs' },
+  });
+
+  const hangCallback: { resolve: (() => void) | null } = { resolve: null };
+  const abortControllerCapture: { controller: AbortController | null } = { controller: null };
+
+  async function* hangingGenerator(): AsyncGenerator<SDKMessage, void> {
+    yield buildSystemInitMessage();
+    await new Promise<void>((r) => {
+      hangCallback.resolve = r;
+    });
+    throw new Error('Aborted');
+  }
+
+  mockQuery.mockImplementation((input) => {
+    abortControllerCapture.controller = input.options?.abortController ?? null;
+    return toQuery(hangingGenerator());
+  });
+
+  const adapter = createClaudeAdapter(config, deps);
+  const handle = await adapter.startAgent(buildPlannerParams());
+
+  // Wait for session to start processing and the init message to be logged
+  await new Promise<void>((r) => {
+    setTimeout(r, 10);
+  });
+
+  // Abort the session via the captured abort controller
+  abortControllerCapture.controller?.abort('cancelled');
+  hangCallback.resolve?.();
+
+  await expect(handle.result).rejects.toThrow();
+
+  const logFilePath = handle.logFilePath;
+  expect(logFilePath).not.toBeNull();
+
+  const logContent = vol.readFileSync(logFilePath as string, 'utf-8') as string;
+  expect(logContent).toContain('Outcome:  cancelled');
+});
+
+test('it assigns independent log file paths for concurrent sessions', async () => {
+  const { config, deps } = setupTest({
+    logging: { agentSessions: true, logsDir: '/logs' },
+  });
+
+  const plannerOutput: PlannerResult = {
+    role: 'planner',
+    create: [],
+    close: [],
+    update: [],
+  };
+
+  const reviewerOutput: ReviewerResult = {
+    role: 'reviewer',
+    review: { verdict: 'approve', summary: 'OK', comments: [] },
+  };
+
+  // Set up two separate mock query calls
+  const messages1: SDKMessage[] = [
+    buildSystemInitMessage(),
+    {
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 5000,
+      duration_api_ms: 4000,
+      is_error: false,
+      num_turns: 3,
+      result: 'Done',
+      stop_reason: 'end_turn',
+      total_cost_usd: 0.1,
+      usage: { input_tokens: 1000, output_tokens: 500 },
+      modelUsage: {},
+      permission_denials: [],
+      structured_output: plannerOutput,
+      uuid: '00000000-0000-0000-0000-000000000010',
+      session_id: 'session-1',
+    },
+  ];
+  const messages2: SDKMessage[] = [
+    buildSystemInitMessage(),
+    {
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 5000,
+      duration_api_ms: 4000,
+      is_error: false,
+      num_turns: 3,
+      result: 'Done',
+      stop_reason: 'end_turn',
+      total_cost_usd: 0.1,
+      usage: { input_tokens: 1000, output_tokens: 500 },
+      modelUsage: {},
+      permission_denials: [],
+      structured_output: reviewerOutput,
+      uuid: '00000000-0000-0000-0000-000000000011',
+      session_id: 'session-2',
+    },
+  ];
+
+  async function* gen1(): AsyncGenerator<SDKMessage, void> {
+    for (const msg of messages1) {
+      yield msg;
+    }
+  }
+
+  async function* gen2(): AsyncGenerator<SDKMessage, void> {
+    for (const msg of messages2) {
+      yield msg;
+    }
+  }
+
+  mockQuery.mockReturnValueOnce(toQuery(gen1())).mockReturnValueOnce(toQuery(gen2()));
+
+  const adapter = createClaudeAdapter(config, deps);
+  const handle1 = await adapter.startAgent(buildPlannerParams());
+  const handle2 = await adapter.startAgent(buildReviewerParams());
+
+  await handle1.result;
+  await handle2.result;
+
+  expect(handle1.logFilePath).not.toBeNull();
+  expect(handle2.logFilePath).not.toBeNull();
+  expect(handle1.logFilePath).not.toBe(handle2.logFilePath);
+});
+
+test('it logs unrecognized message types as unknown', async () => {
+  const { config, deps } = setupTest({
+    logging: { agentSessions: true, logsDir: '/logs' },
+  });
+
+  const plannerOutput: PlannerResult = {
+    role: 'planner',
+    create: [],
+    close: [],
+    update: [],
+  };
+
+  async function* customMessageGenerator(): AsyncGenerator<SDKMessage, void> {
+    yield buildSystemInitMessage();
+    // Yield an unrecognized message type
+    yield { type: 'custom_event' } as unknown as SDKMessage;
+    yield {
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 5000,
+      duration_api_ms: 4000,
+      is_error: false,
+      num_turns: 3,
+      result: 'Done',
+      stop_reason: 'end_turn',
+      total_cost_usd: 0.1,
+      usage: { input_tokens: 1000, output_tokens: 500 },
+      modelUsage: {},
+      permission_denials: [],
+      structured_output: plannerOutput,
+      uuid: '00000000-0000-0000-0000-000000000012',
+      session_id: 'test-session',
+    };
+  }
+
+  mockQuery.mockReturnValue(toQuery(customMessageGenerator()));
+
+  const adapter = createClaudeAdapter(config, deps);
+  const handle = await adapter.startAgent(buildPlannerParams());
+
+  await handle.result;
+
+  const logFilePath = handle.logFilePath;
+  expect(logFilePath).not.toBeNull();
+
+  const logContent = vol.readFileSync(logFilePath as string, 'utf-8') as string;
+  expect(logContent).toContain('UNKNOWN custom_event');
 });

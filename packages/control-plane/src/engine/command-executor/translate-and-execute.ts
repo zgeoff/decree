@@ -2,11 +2,11 @@ import invariant from 'tiny-invariant';
 import { match } from 'ts-pattern';
 import type {
   AgentRole,
+  ApplyImplementorResult,
+  ApplyReviewerResult,
   EngineCommand,
   EngineEvent,
-  ImplementorResult,
   PlannerResult,
-  ReviewerResult,
   Revision,
   RevisionChanged,
   WorkItem,
@@ -181,7 +181,7 @@ async function applyPlannerResult(
 }
 
 async function applyImplementorResult(
-  command: { workItemID: string; branchName: string; result: ImplementorResult },
+  command: ApplyImplementorResult,
   state: EngineState,
   deps: CommandExecutorDeps,
 ): Promise<EngineEvent[]> {
@@ -216,7 +216,7 @@ async function applyImplementorResult(
 }
 
 async function applyReviewerResult(
-  command: { workItemID: string; revisionID: string; result: ReviewerResult },
+  command: ApplyReviewerResult,
   state: EngineState,
   deps: CommandExecutorDeps,
 ): Promise<EngineEvent[]> {

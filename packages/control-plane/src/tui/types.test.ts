@@ -29,6 +29,7 @@ function buildImplementorRun(overrides: Partial<ImplementorRun> = {}): Implement
     workItemID: '123',
     branchName: 'task/123',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-19T00:00:00Z',
     ...overrides,
   };
@@ -42,6 +43,7 @@ function buildReviewerRun(overrides: Partial<ReviewerRun> = {}): ReviewerRun {
     workItemID: '123',
     revisionID: 'pr-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-19T00:00:00Z',
     ...overrides,
   };
@@ -303,6 +305,7 @@ test('it ignores planner runs when determining latest run', () => {
       status: 'running',
       specPaths: ['docs/specs/foo.md'],
       logFilePath: null,
+      error: null,
       startedAt: '2026-02-19T02:00:00Z',
     },
   ];

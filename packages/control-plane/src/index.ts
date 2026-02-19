@@ -1,39 +1,27 @@
 export type { GitHubClient } from './engine/github-client/types.ts';
 export type {
-  // Events
-  AgentCompletedEvent,
-  AgentFailedEvent,
-  AgentStartedEvent,
-  // Stream
-  AgentStream,
-  AgentType,
-  // Commands
-  CancelAgentCommand,
-  CancelPlannerCommand,
-  // Query Results
-  CICheckRun,
-  CIStatusChangedEvent,
-  CIStatusResult,
-  DispatchImplementorCommand,
-  DispatchReviewerCommand,
-  // Engine Interface
-  Engine,
+  AgentResult,
+  AgentReview,
+  AgentReviewComment,
+  AgentRole,
+  Complexity,
   EngineCommand,
-  // Configuration
-  EngineConfig,
   EngineEvent,
-  IssueDetailsResult,
-  IssueStatusChangedEvent,
-  PRDetailsResult,
-  PRLinkedEvent,
-  PRPollerConfig,
-  ShutdownCommand,
-  // SpecPoller Batch Result
-  SpecChange,
-  SpecChangedEvent,
-  SpecPollerBatchResult,
-  // SpecPoller Snapshot
-  SpecPollerFileEntry,
-  SpecPollerSnapshot,
-  StartupResult,
-} from './types.ts';
+  FailureReason,
+  ImplementorResult,
+  PipelineResult,
+  PipelineStatus,
+  PlannedWorkItem,
+  PlannedWorkItemUpdate,
+  PlannerResult,
+  Priority,
+  ReviewerResult,
+  ReviewHistory,
+  ReviewInlineComment,
+  ReviewSubmission,
+  Revision,
+  SpecFrontmatterStatus,
+  WorkItem,
+  WorkItemStatus,
+} from './engine/state-store/domain-type-stubs.ts';
+export type { AppConfig, Engine, EngineConfig } from './engine/types.ts';

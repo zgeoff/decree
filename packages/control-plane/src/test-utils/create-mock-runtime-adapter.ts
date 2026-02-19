@@ -6,6 +6,7 @@ export interface ControllableHandle {
   handle: AgentRunHandle;
   resolveResult: (result: AgentResult) => void;
   rejectResult: (error: Error) => void;
+  abortController: AbortController;
 }
 
 export interface MockRuntimeAdapterConfig {
@@ -51,13 +52,16 @@ function buildControllableHandle(): ControllableHandle {
     rejectResult = reject;
   });
 
+  const abortController = new AbortController();
+
   const handle: AgentRunHandle = {
     output: emptyAsyncIterable(),
     result: resultPromise,
     logFilePath: '/logs/agent.log',
+    abortSignal: abortController.signal,
   };
 
-  return { handle, resolveResult, rejectResult };
+  return { handle, resolveResult, rejectResult, abortController };
 }
 
 async function* emptyAsyncIterable(): AsyncIterable<string> {

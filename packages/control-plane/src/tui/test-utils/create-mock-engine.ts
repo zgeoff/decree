@@ -2,7 +2,7 @@ import { vi } from 'vitest';
 import type { StoreApi } from 'zustand';
 import { createEngineStore } from '../../engine/state-store/create-engine-store.ts';
 import type { EngineState } from '../../engine/state-store/types.ts';
-import type { Engine } from '../../engine/v2-engine/types.ts';
+import type { Engine } from '../../engine/types.ts';
 
 export interface MockEngineOverrides {
   start?: Engine['start'];

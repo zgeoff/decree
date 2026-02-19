@@ -79,6 +79,7 @@ export interface TUIActions {
   selectWorkItem: (workItemID: string) => void;
   pinWorkItem: (workItemID: string) => void;
   cycleFocus: () => void;
+  handleWorkItemRemoval: (removedID: string, sortedItems: DisplayWorkItem[]) => void;
 }
 
 // ---------------------------------------------------------------------------

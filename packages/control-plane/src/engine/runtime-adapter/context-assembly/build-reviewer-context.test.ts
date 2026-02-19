@@ -120,6 +120,7 @@ function setupTest(options?: SetupTestOptions): {
       listRevisions: vi.fn(),
       getRevision: vi.fn(),
       getRevisionFiles: vi.fn<(id: string) => Promise<RevisionFile[]>>().mockResolvedValue(files),
+      getReviewHistory: vi.fn().mockResolvedValue({ reviews: [], inlineComments: [] }),
     },
     getState,
     getReviewHistory: vi
@@ -427,6 +428,86 @@ test('it preserves chronological order of reviews', async () => {
 
   expect(firstIndex).toBeLessThan(secondIndex);
   expect(secondIndex).toBeLessThan(thirdIndex);
+});
+
+test('it throws when the work item is not found in state', async () => {
+  const params: ReviewerStartParams = {
+    role: 'reviewer',
+    workItemID: 'nonexistent',
+    revisionID: DEFAULT_REVISION_ID,
+  };
+
+  const state: EngineState = {
+    workItems: new Map(),
+    revisions: new Map(),
+    specs: new Map(),
+    agentRuns: new Map(),
+    errors: [],
+    lastPlannedSHAs: new Map(),
+  };
+
+  const getState = (): EngineState => state;
+
+  const deps: RuntimeAdapterDeps = {
+    workItemReader: {
+      listWorkItems: vi.fn(),
+      getWorkItem: vi.fn(),
+      getWorkItemBody: vi.fn(),
+    },
+    revisionReader: {
+      listRevisions: vi.fn(),
+      getRevision: vi.fn(),
+      getRevisionFiles: vi.fn(),
+      getReviewHistory: vi.fn().mockResolvedValue({ reviews: [], inlineComments: [] }),
+    },
+    getState,
+    getReviewHistory: vi.fn(),
+  };
+
+  await expect(buildReviewerContext({ params, getState, deps })).rejects.toThrow(
+    'Work item nonexistent not found in state',
+  );
+});
+
+test('it throws when the revision is not found in state', async () => {
+  const workItem = buildWorkItem();
+
+  const params: ReviewerStartParams = {
+    role: 'reviewer',
+    workItemID: DEFAULT_WORK_ITEM_ID,
+    revisionID: 'nonexistent',
+  };
+
+  const state: EngineState = {
+    workItems: new Map([[DEFAULT_WORK_ITEM_ID, workItem]]),
+    revisions: new Map(),
+    specs: new Map(),
+    agentRuns: new Map(),
+    errors: [],
+    lastPlannedSHAs: new Map(),
+  };
+
+  const getState = (): EngineState => state;
+
+  const deps: RuntimeAdapterDeps = {
+    workItemReader: {
+      listWorkItems: vi.fn(),
+      getWorkItem: vi.fn(),
+      getWorkItemBody: vi.fn(),
+    },
+    revisionReader: {
+      listRevisions: vi.fn(),
+      getRevision: vi.fn(),
+      getRevisionFiles: vi.fn(),
+      getReviewHistory: vi.fn().mockResolvedValue({ reviews: [], inlineComments: [] }),
+    },
+    getState,
+    getReviewHistory: vi.fn(),
+  };
+
+  await expect(buildReviewerContext({ params, getState, deps })).rejects.toThrow(
+    'Revision nonexistent not found in state',
+  );
 });
 
 test('it preserves chronological order of inline comments', async () => {

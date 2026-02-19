@@ -1,6 +1,8 @@
 import { render } from 'ink-testing-library';
 import { expect, test, vi } from 'vitest';
 import type { StoreApi } from 'zustand';
+import type { Logger } from '../engine/create-logger.ts';
+import { createLogger } from '../engine/create-logger.ts';
 import { applyStateUpdate } from '../engine/state-store/apply-state-update.ts';
 import type { EngineState, Priority, WorkItemStatus } from '../engine/state-store/types.ts';
 import { buildRevision } from '../test-utils/build-revision.ts';
@@ -9,61 +11,29 @@ import { App, computePaneWidths, resolveTaskURL } from './app.tsx';
 import { createMockEngine } from './test-utils/create-mock-engine.ts';
 import type { DisplayWorkItem } from './types.ts';
 
-interface DeferredStart {
-  resolve: () => void;
-  reject: (error: Error) => void;
-  waitForStartCalled: () => Promise<void>;
-  start: () => Promise<void>;
-}
+// biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op writer for test logger
+const testLogger: Logger = createLogger({ logLevel: 'error', writer: () => {} });
 
-function createDeferredStart(): DeferredStart {
-  let resolveStart: () => void = () => {
-    /* noop placeholder */
-  };
-  let rejectStart: (error: Error) => void = () => {
-    /* noop placeholder */
-  };
-  let resolveStartCalled: () => void = () => {
-    /* noop placeholder */
-  };
-  const startCalledPromise = new Promise<void>((resolve) => {
-    resolveStartCalled = resolve;
+async function setupTest(): Promise<
+  ReturnType<typeof render> & {
+    engine: ReturnType<typeof createMockEngine>['engine'];
+    engineStore: StoreApi<EngineState>;
+  }
+> {
+  const { engine, store: engineStore } = createMockEngine();
+  const instance = render(<App engine={engine} repoOwner="owner" repoName="repo" />);
+  await vi.waitFor(() => {
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('ACTION');
   });
-
-  const start = vi.fn(
-    () =>
-      new Promise<void>((resolve, reject) => {
-        resolveStart = resolve;
-        rejectStart = reject;
-        resolveStartCalled();
-      }),
-  );
-
-  return {
-    resolve: () => resolveStart(),
-    reject: (error: Error) => rejectStart(error),
-    waitForStartCalled: () => startCalledPromise,
-    start,
-  };
-}
-
-function setupTest(): ReturnType<typeof render> & {
-  engine: ReturnType<typeof createMockEngine>['engine'];
-  engineStore: StoreApi<EngineState>;
-  resolveStart: () => void;
-  rejectStart: (error: Error) => void;
-  waitForStartCalled: () => Promise<void>;
-} {
-  const deferred = createDeferredStart();
-  const { engine, store: engineStore } = createMockEngine({ start: deferred.start });
-  const instance = render(<App engine={engine} repository="owner/repo" />);
+  // useInput registers its listener via useEffect, which fires after the
+  // initial render paint. Wait one macrotask so effects complete before
+  // tests write to stdin.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   return {
     ...instance,
     engine,
     engineStore,
-    resolveStart: deferred.resolve,
-    rejectStart: deferred.reject,
-    waitForStartCalled: deferred.waitForStartCalled,
   };
 }
 
@@ -77,47 +47,33 @@ function addWorkItem(
     linkedRevision?: string | null;
   },
 ): void {
-  applyStateUpdate(engineStore, {
-    type: 'workItemChanged',
-    workItemID: id,
-    workItem: buildWorkItem({
-      id,
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'workItemChanged',
+      workItemID: id,
+      workItem: buildWorkItem({
+        id,
+        title: overrides?.title ?? `Issue ${id}`,
+        status: overrides?.status ?? 'ready',
+        priority: overrides?.priority ?? null,
+        linkedRevision: overrides?.linkedRevision ?? null,
+      }),
       title: overrides?.title ?? `Issue ${id}`,
-      status: overrides?.status ?? 'ready',
+      oldStatus: null,
+      newStatus: overrides?.status ?? 'ready',
       priority: overrides?.priority ?? null,
-      linkedRevision: overrides?.linkedRevision ?? null,
-    }),
-    title: overrides?.title ?? `Issue ${id}`,
-    oldStatus: null,
-    newStatus: overrides?.status ?? 'ready',
-    priority: overrides?.priority ?? null,
-  });
-}
-
-async function setupStartedTest(): Promise<ReturnType<typeof setupTest>> {
-  const result = setupTest();
-  await result.waitForStartCalled();
-  result.resolveStart();
-  await vi.waitFor(() => {
-    const frame = result.lastFrame() ?? '';
-    expect(frame).toContain('ACTION');
-    expect(frame).toContain('AGENTS');
-  });
-  return result;
+    },
+    testLogger,
+  );
 }
 
 // ---------------------------------------------------------------------------
-// Startup
+// Layout
 // ---------------------------------------------------------------------------
 
-test('it shows a loading indicator while the engine is starting', () => {
-  const { lastFrame } = setupTest();
-
-  expect(lastFrame()).toContain('Starting engine...');
-});
-
-test('it renders the two-pane layout after startup completes', async () => {
-  const { lastFrame } = await setupStartedTest();
+test('it renders the two-pane layout with section headers', async () => {
+  const { lastFrame } = await setupTest();
 
   const frame = lastFrame() ?? '';
   expect(frame).toContain('ACTION');
@@ -125,23 +81,12 @@ test('it renders the two-pane layout after startup completes', async () => {
   expect(frame).toContain('planner');
 });
 
-test('it shows an error message when startup fails', async () => {
-  const { lastFrame, rejectStart, waitForStartCalled } = setupTest();
-
-  await waitForStartCalled();
-  rejectStart(new Error('connection refused'));
-
-  await vi.waitFor(() => {
-    expect(lastFrame()).toContain('Startup failed: connection refused');
-  });
-});
-
 // ---------------------------------------------------------------------------
 // Header Bar — Planner Status
 // ---------------------------------------------------------------------------
 
 test('it displays the idle planner indicator when planner is not running', async () => {
-  const { lastFrame } = await setupStartedTest();
+  const { lastFrame } = await setupTest();
 
   const frame = lastFrame() ?? '';
   expect(frame).toContain('planner');
@@ -151,18 +96,26 @@ test('it displays the idle planner indicator when planner is not running', async
 });
 
 test('it displays a spinner for the planner when it is running', async () => {
-  const { lastFrame, engineStore } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupTest();
 
-  applyStateUpdate(engineStore, {
-    type: 'plannerRequested',
-    specPaths: ['spec.md'],
-    sessionID: 'planner-sess-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'plannerStarted',
-    sessionID: 'planner-sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'plannerRequested',
+      specPaths: ['spec.md'],
+      sessionID: 'planner-sess-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'plannerStarted',
+      sessionID: 'planner-sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   // biome-ignore lint/security/noSecrets: emoji character, not a secret
   const idleEmoji = '\uD83D\uDCA4';
@@ -179,7 +132,7 @@ test('it displays a spinner for the planner when it is running', async () => {
 // ---------------------------------------------------------------------------
 
 test('it displays task list keybinding hints when the task list is focused', async () => {
-  const { lastFrame } = await setupStartedTest();
+  const { lastFrame } = await setupTest();
 
   const frame = lastFrame() ?? '';
   expect(frame).toContain('[o]pen');
@@ -190,7 +143,7 @@ test('it displays task list keybinding hints when the task list is focused', asy
 });
 
 test('it displays detail pane keybinding hints when the detail pane is focused', async () => {
-  const { lastFrame, stdin } = await setupStartedTest();
+  const { lastFrame, stdin } = await setupTest();
 
   stdin.write('\t');
 
@@ -205,7 +158,7 @@ test('it displays detail pane keybinding hints when the detail pane is focused',
 });
 
 test('it dims the dispatch hint when the selected task is not dispatchable', async () => {
-  const { lastFrame, engineStore } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '1', { title: 'Blocked task', status: 'blocked' });
 
@@ -221,7 +174,7 @@ test('it dims the dispatch hint when the selected task is not dispatchable', asy
 // ---------------------------------------------------------------------------
 
 test('it renders ACTION and AGENTS section headers with counts', async () => {
-  const { lastFrame, engineStore } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '1', { title: 'Task One', status: 'ready', priority: 'high' });
 
@@ -233,7 +186,7 @@ test('it renders ACTION and AGENTS section headers with counts', async () => {
 });
 
 test('it renders both section headers with zero items when the list is empty', async () => {
-  const { lastFrame } = await setupStartedTest();
+  const { lastFrame } = await setupTest();
 
   const frame = lastFrame() ?? '';
   expect(frame).toContain('ACTION (0)');
@@ -241,7 +194,7 @@ test('it renders both section headers with zero items when the list is empty', a
 });
 
 test('it places action statuses in the ACTION section', async () => {
-  const { lastFrame, engineStore } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '1', { title: 'Ready task', status: 'ready' });
   addWorkItem(engineStore, '2', { title: 'Blocked task', status: 'blocked' });
@@ -253,20 +206,28 @@ test('it places action statuses in the ACTION section', async () => {
 });
 
 test('it places agent statuses in the AGENTS section', async () => {
-  const { lastFrame, engineStore } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '1', { title: 'Implementing task', status: 'in-progress' });
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'branch-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'branch-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -279,7 +240,7 @@ test('it places agent statuses in the AGENTS section', async () => {
 // ---------------------------------------------------------------------------
 
 test('it renders task rows with issue number, status, and title', async () => {
-  const { lastFrame, engineStore } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '42', { title: 'My feature', status: 'ready', priority: 'high' });
 
@@ -293,20 +254,28 @@ test('it renders task rows with issue number, status, and title', async () => {
 });
 
 test('it shows WIP with agent count for implementing tasks', async () => {
-  const { lastFrame, engineStore } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '1', { title: 'Impl task', status: 'in-progress' });
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'branch-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'branch-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -315,7 +284,7 @@ test('it shows WIP with agent count for implementing tasks', async () => {
 });
 
 test('it shows PR column with dash when no PRs are linked', async () => {
-  const { lastFrame, engineStore } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '1', { title: 'No PR task', status: 'ready' });
 
@@ -326,21 +295,25 @@ test('it shows PR column with dash when no PRs are linked', async () => {
 });
 
 test('it shows PR number when a single PR is linked', async () => {
-  const { lastFrame, engineStore } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '1', { title: 'Has PR task', status: 'ready', linkedRevision: '482' });
-  applyStateUpdate(engineStore, {
-    type: 'revisionChanged',
-    revisionID: '482',
-    workItemID: '1',
-    revision: buildRevision({
-      id: '482',
-      url: 'https://github.com/owner/repo/pull/482',
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'revisionChanged',
+      revisionID: '482',
       workItemID: '1',
-    }),
-    oldPipelineStatus: null,
-    newPipelineStatus: null,
-  });
+      revision: buildRevision({
+        id: '482',
+        url: 'https://github.com/owner/repo/pull/482',
+        workItemID: '1',
+      }),
+      oldPipelineStatus: null,
+      newPipelineStatus: 'pending',
+    },
+    testLogger,
+  );
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -353,7 +326,7 @@ test('it shows PR number when a single PR is linked', async () => {
 // ---------------------------------------------------------------------------
 
 test('it moves selection down when j is pressed', async () => {
-  const { lastFrame, stdin, engineStore } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '1', { title: 'First', status: 'ready', priority: 'high' });
   addWorkItem(engineStore, '2', { title: 'Second', status: 'ready', priority: 'medium' });
@@ -375,7 +348,7 @@ test('it moves selection down when j is pressed', async () => {
 });
 
 test('it does not wrap past the last AGENTS item when pressing down', async () => {
-  const { lastFrame, stdin, engineStore } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '1', { title: 'Only task', status: 'ready' });
 
@@ -394,24 +367,32 @@ test('it does not wrap past the last AGENTS item when pressing down', async () =
 });
 
 test('it crosses sections seamlessly when navigating down from ACTION to AGENTS', async () => {
-  const { lastFrame, stdin, engineStore } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupTest();
 
   // ACTION item
   addWorkItem(engineStore, '1', { title: 'Action task', status: 'ready', priority: 'high' });
 
   // AGENTS item
   addWorkItem(engineStore, '2', { title: 'Agent task', status: 'in-progress' });
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '2',
-    sessionID: 'sess-1',
-    branchName: 'branch-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '2',
+      sessionID: 'sess-1',
+      branchName: 'branch-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -437,7 +418,7 @@ test('it crosses sections seamlessly when navigating down from ACTION to AGENTS'
 // ---------------------------------------------------------------------------
 
 test('it pins a task to the detail pane when Enter is pressed', async () => {
-  const { lastFrame, stdin, engineStore } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '5', { title: 'Pinnable task', status: 'ready' });
 
@@ -458,7 +439,7 @@ test('it pins a task to the detail pane when Enter is pressed', async () => {
 });
 
 test('it does nothing when Enter is pressed with no selection', async () => {
-  const { lastFrame, stdin } = await setupStartedTest();
+  const { lastFrame, stdin } = await setupTest();
 
   stdin.write('\r');
 
@@ -474,7 +455,7 @@ test('it does nothing when Enter is pressed with no selection', async () => {
 // ---------------------------------------------------------------------------
 
 test('it shows a dispatch prompt when d is pressed on a dispatchable task', async () => {
-  const { lastFrame, stdin, engineStore } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '5', { title: 'Ready task', status: 'ready' });
 
@@ -493,7 +474,7 @@ test('it shows a dispatch prompt when d is pressed on a dispatchable task', asyn
 });
 
 test('it does nothing when d is pressed on a blocked task', async () => {
-  const { lastFrame, stdin, engineStore } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '5', { title: 'Blocked task', status: 'blocked' });
 
@@ -511,28 +492,41 @@ test('it does nothing when d is pressed on a blocked task', async () => {
 });
 
 test('it shows a retry prompt when d is pressed on a failed task', async () => {
-  const { lastFrame, stdin, engineStore } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '7', { title: 'Crashed task', status: 'in-progress' });
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '7',
-    sessionID: 'sess-1',
-    branchName: 'branch-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorFailed',
-    workItemID: '7',
-    sessionID: 'sess-1',
-    branchName: 'branch-1',
-    error: 'crash',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '7',
+      sessionID: 'sess-1',
+      branchName: 'branch-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorFailed',
+      workItemID: '7',
+      sessionID: 'sess-1',
+      branchName: 'branch-1',
+      reason: 'error',
+      error: 'crash',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   await vi.waitFor(() => {
     expect(lastFrame()).toContain('#7');
@@ -547,8 +541,59 @@ test('it shows a retry prompt when d is pressed on a failed task', async () => {
   });
 });
 
+test('it does nothing when d is pressed on a failed reviewer task', async () => {
+  const { lastFrame, stdin, engineStore } = await setupTest();
+
+  addWorkItem(engineStore, '7', { title: 'Failed review task', status: 'review' });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'reviewerRequested',
+      workItemID: '7',
+      revisionID: 'rev-1',
+      sessionID: 'sess-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'reviewerStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'reviewerFailed',
+      workItemID: '7',
+      revisionID: 'rev-1',
+      sessionID: 'sess-1',
+      reason: 'error',
+      error: 'review crash',
+      logFilePath: null,
+    },
+    testLogger,
+  );
+
+  await vi.waitFor(() => {
+    expect(lastFrame()).toContain('#7');
+  });
+
+  stdin.write('j');
+  await new Promise((r) => setTimeout(r, 50));
+  stdin.write('d');
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  expect(lastFrame()).not.toContain('Retry');
+  expect(lastFrame()).not.toContain('Dispatch');
+});
+
 test('it dispatches when the dispatch prompt is confirmed', async () => {
-  const { lastFrame, stdin, engineStore, engine } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore, engine } = await setupTest();
 
   addWorkItem(engineStore, '5', { title: 'Ready task', status: 'ready' });
 
@@ -579,7 +624,7 @@ test('it dispatches when the dispatch prompt is confirmed', async () => {
 // ---------------------------------------------------------------------------
 
 test('it toggles focus from task list to detail pane on Tab', async () => {
-  const { lastFrame, stdin } = await setupStartedTest();
+  const { lastFrame, stdin } = await setupTest();
 
   stdin.write('\t');
 
@@ -591,7 +636,7 @@ test('it toggles focus from task list to detail pane on Tab', async () => {
 });
 
 test('it toggles focus back to task list on second Tab', async () => {
-  const { lastFrame, stdin } = await setupStartedTest();
+  const { lastFrame, stdin } = await setupTest();
 
   stdin.write('\t');
   await new Promise((r) => setTimeout(r, 50));
@@ -609,7 +654,7 @@ test('it toggles focus back to task list on second Tab', async () => {
 // ---------------------------------------------------------------------------
 
 test('it shows a quit prompt without agent count when no agents are running', async () => {
-  const { lastFrame, stdin } = await setupStartedTest();
+  const { lastFrame, stdin } = await setupTest();
 
   stdin.write('q');
 
@@ -621,20 +666,28 @@ test('it shows a quit prompt without agent count when no agents are running', as
 });
 
 test('it shows a quit prompt with agent count when agents are running', async () => {
-  const { lastFrame, stdin, engineStore } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '1', { title: 'Test', status: 'in-progress' });
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'branch-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'branch-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   stdin.write('q');
 
@@ -646,7 +699,7 @@ test('it shows a quit prompt with agent count when agents are running', async ()
 });
 
 test('it dismisses the quit prompt when the user presses n', async () => {
-  const { lastFrame, stdin } = await setupStartedTest();
+  const { lastFrame, stdin } = await setupTest();
 
   stdin.write('q');
 
@@ -662,7 +715,7 @@ test('it dismisses the quit prompt when the user presses n', async () => {
 });
 
 test('it dismisses the quit prompt when the user presses Escape', async () => {
-  const { lastFrame, stdin } = await setupStartedTest();
+  const { lastFrame, stdin } = await setupTest();
 
   stdin.write('q');
 
@@ -678,7 +731,7 @@ test('it dismisses the quit prompt when the user presses Escape', async () => {
 });
 
 test('it sends the shutdown command when the user confirms quit', async () => {
-  const { lastFrame, stdin } = await setupStartedTest();
+  const { lastFrame, stdin } = await setupTest();
 
   stdin.write('q');
 
@@ -698,7 +751,7 @@ test('it sends the shutdown command when the user confirms quit', async () => {
 // ---------------------------------------------------------------------------
 
 test('it ignores all keys except y, n, Escape while a prompt is active', async () => {
-  const { lastFrame, stdin } = await setupStartedTest();
+  const { lastFrame, stdin } = await setupTest();
 
   stdin.write('q');
 
@@ -725,20 +778,28 @@ test('it ignores all keys except y, n, Escape while a prompt is active', async (
 // ---------------------------------------------------------------------------
 
 test('it shows the shutdown status with agent count while shutting down', async () => {
-  const { lastFrame, stdin, engineStore } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupTest();
 
   addWorkItem(engineStore, '1', { title: 'Test', status: 'in-progress' });
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'branch-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'branch-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   stdin.write('q');
 

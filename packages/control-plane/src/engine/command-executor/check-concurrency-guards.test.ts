@@ -15,6 +15,7 @@ function buildPlannerRun(overrides: Partial<PlannerRun> & { sessionID: string })
     status: 'running',
     specPaths: ['docs/specs/test.md'],
     logFilePath: null,
+    error: null,
     startedAt: '2026-01-01T00:00:00Z',
     ...overrides,
   };
@@ -29,6 +30,7 @@ function buildImplementorRun(
     workItemID: 'wi-1',
     branchName: 'decree/wi-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-01-01T00:00:00Z',
     ...overrides,
   };
@@ -41,6 +43,7 @@ function buildReviewerRun(overrides: Partial<ReviewerRun> & { sessionID: string 
     workItemID: 'wi-1',
     revisionID: 'rev-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-01-01T00:00:00Z',
     ...overrides,
   };

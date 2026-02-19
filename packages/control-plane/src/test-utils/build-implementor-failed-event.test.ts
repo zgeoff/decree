@@ -9,6 +9,7 @@ test('it returns an implementor failed event with default values', () => {
     workItemID: 'wi-1',
     sessionID: 'session-impl-1',
     branchName: 'feature/wi-1',
+    reason: 'error',
     error: 'Implementor crashed',
     logFilePath: '/logs/implementor.log',
   });

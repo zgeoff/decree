@@ -1,10 +1,31 @@
 import type { StoreApi } from 'zustand';
 import { createStore } from 'zustand/vanilla';
 import type { RevisionFile } from '../engine/github-provider/types.ts';
-import type { EngineState, UserRequestedImplementorRun } from '../engine/state-store/types.ts';
-import type { CachedDetail, TUIActions, TUILocalState } from './types.ts';
+import type {
+  EngineState,
+  ImplementorRun,
+  ReviewerRun,
+  UserRequestedImplementorRun,
+} from '../engine/state-store/types.ts';
+import type {
+  CachedDetail,
+  DisplayStatus,
+  DisplayWorkItem,
+  TUIActions,
+  TUILocalState,
+} from './types.ts';
+import { deriveDisplayStatus } from './types.ts';
 
 const STREAM_BUFFER_LIMIT = 10_000;
+
+const BODY_FETCH_STATUSES: ReadonlySet<DisplayStatus> = new Set([
+  'dispatch',
+  'pending',
+  'needs-refinement',
+  'blocked',
+]);
+
+const REVISION_FILES_FETCH_STATUSES: ReadonlySet<DisplayStatus> = new Set(['approved']);
 
 // ---------------------------------------------------------------------------
 // Engine interface (v2 public surface consumed by the TUI store)
@@ -82,6 +103,34 @@ export function createTUIStore(config: CreateTUIStoreConfig): StoreApi<TUILocalS
       const current = get().focusedPane;
       set({ focusedPane: current === 'workItemList' ? 'detailPane' : 'workItemList' });
     },
+
+    handleWorkItemRemoval(removedID: string, sortedItems: DisplayWorkItem[]): void {
+      const state = get();
+      const updates: Partial<TUILocalState> = {};
+
+      if (state.selectedWorkItem === removedID) {
+        updates.selectedWorkItem = findNextWorkItem(removedID, sortedItems);
+      }
+
+      if (state.pinnedWorkItem === removedID) {
+        updates.pinnedWorkItem = null;
+        const detailCache = new Map(state.detailCache);
+        detailCache.delete(removedID);
+        updates.detailCache = detailCache;
+      }
+
+      // Clear stream buffers for sessions associated with the removed work item
+      const removedSessionIDs = findSessionIDsForWorkItem(removedID, engine);
+      if (removedSessionIDs.length > 0) {
+        const streamBuffers = new Map(state.streamBuffers);
+        for (const sessionID of removedSessionIDs) {
+          streamBuffers.delete(sessionID);
+        }
+        updates.streamBuffers = streamBuffers;
+      }
+
+      set(updates);
+    },
   }));
 
   return store;
@@ -98,6 +147,16 @@ export function createTUIStore(config: CreateTUIStoreConfig): StoreApi<TUILocalS
       return;
     }
 
+    // Derive display status to determine what to fetch
+    const displayStatus = deriveDisplayStatusForWorkItem(workItemID, engine);
+    const shouldFetchBody = displayStatus !== null && BODY_FETCH_STATUSES.has(displayStatus);
+    const shouldFetchRevisionFiles =
+      displayStatus !== null && REVISION_FILES_FETCH_STATUSES.has(displayStatus);
+
+    if (!(shouldFetchBody || shouldFetchRevisionFiles)) {
+      return;
+    }
+
     // Set loading state
     const detailCacheLoading = new Map(state.detailCache);
     const loadingEntry: CachedDetail = { body: null, revisionFiles: null, loading: true };
@@ -106,8 +165,8 @@ export function createTUIStore(config: CreateTUIStoreConfig): StoreApi<TUILocalS
 
     try {
       const [body, revisionFiles] = await Promise.all([
-        fetchBody(workItemID),
-        fetchRevisionFiles(workItemID),
+        shouldFetchBody ? fetchBody(workItemID) : Promise.resolve(null),
+        shouldFetchRevisionFiles ? fetchRevisionFiles(workItemID) : Promise.resolve(null),
       ]);
 
       const current = store.getState();
@@ -145,6 +204,63 @@ export function createTUIStore(config: CreateTUIStoreConfig): StoreApi<TUILocalS
     } catch {
       return null;
     }
+  }
+
+  function findNextWorkItem(removedID: string, sortedItems: DisplayWorkItem[]): string | null {
+    const remaining = sortedItems.filter((item) => item.workItem.id !== removedID);
+    if (remaining.length === 0) {
+      return null;
+    }
+
+    const removedIndex = sortedItems.findIndex((item) => item.workItem.id === removedID);
+
+    // Next item in sort order, or previous if at the end
+    if (removedIndex < remaining.length) {
+      const next = remaining[removedIndex];
+      if (next) {
+        return next.workItem.id;
+      }
+    }
+
+    const last = remaining.at(-1);
+    if (last) {
+      return last.workItem.id;
+    }
+
+    return null;
+  }
+
+  function findSessionIDsForWorkItem(workItemID: string, eng: TUIEngine): string[] {
+    const engineState = eng.store.getState();
+    const sessionIDs: string[] = [];
+
+    for (const run of engineState.agentRuns.values()) {
+      if (run.role !== 'planner' && run.workItemID === workItemID) {
+        sessionIDs.push(run.sessionID);
+      }
+    }
+
+    return sessionIDs;
+  }
+
+  function deriveDisplayStatusForWorkItem(
+    workItemID: string,
+    eng: TUIEngine,
+  ): DisplayStatus | null {
+    const engineState = eng.store.getState();
+    const workItem = engineState.workItems.get(workItemID);
+    if (!workItem) {
+      return null;
+    }
+
+    const runs: Array<ImplementorRun | ReviewerRun> = [];
+    for (const run of engineState.agentRuns.values()) {
+      if (run.role !== 'planner' && run.workItemID === workItemID) {
+        runs.push(run);
+      }
+    }
+
+    return deriveDisplayStatus(workItem, runs);
   }
 }
 

@@ -236,6 +236,10 @@ current-state entities are in the store.
 > processed during the drain phase. Cancelling runs (step 2) before stopping pollers (step 4)
 > ensures agent processes are terminated before the engine becomes unresponsive.
 
+> **Terminal events** are the `*Completed` and `*Failed` event variants for each agent role — the
+> events that transition agent runs out of active states (`requested`, `running`). `*Started` events
+> and `commandFailed` are not terminal.
+
 ### Configuration
 
 ```ts

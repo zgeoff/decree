@@ -22,7 +22,7 @@ test('it returns a revision changed event with default values', () => {
       reviewID: null,
     },
     oldPipelineStatus: null,
-    newPipelineStatus: null,
+    newPipelineStatus: 'pending',
   });
 });
 

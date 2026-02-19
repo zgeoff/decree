@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { appendFile, mkdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, unlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type {
@@ -7,11 +8,11 @@ import type {
   SDKAssistantMessage,
   SDKMessage,
   SDKResultMessage,
-  SyncHookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import invariant from 'tiny-invariant';
 import { z } from 'zod';
+import type { Logger } from '../create-logger.ts';
 import type { AgentResult } from '../state-store/domain-type-stubs.ts';
 import { buildImplementorContext } from './context-assembly/build-implementor-context.ts';
 import { buildPlannerContext } from './context-assembly/build-planner-context.ts';
@@ -22,17 +23,14 @@ import { ImplementorOutputSchema, PlannerOutputSchema, ReviewerOutputSchema } fr
 import type {
   AgentRunHandle,
   AgentStartParams,
+  BashValidatorHook,
   RuntimeAdapter,
   RuntimeAdapterConfig,
   RuntimeAdapterDeps,
+  ToolUseEvent,
 } from './types.ts';
 
 // --- Types ---
-
-/**
- * Hook response type narrowed from the SDK's SyncHookJSONOutput.
- */
-type HookResponse = SyncHookJSONOutput;
 
 type SDKModelLiteral = 'sonnet' | 'opus' | 'haiku' | 'inherit';
 
@@ -48,25 +46,17 @@ interface SDKAgentDefinition {
 }
 
 /**
- * Narrowed SDK hook input for tool-use events.
+ * Narrowed SDK hook input for tool-use events — internal type with same shape as ToolUseEvent.
  */
-interface ToolUseHookInput {
-  tool_name: string;
-  tool_input: Record<string, unknown>;
-}
+type ToolUseHookInput = ToolUseEvent;
 
 interface ExecResult {
   stdout: string;
   stderr: string;
 }
 
-/**
- * Narrowed hook callback type — avoids leaking SDK types outside the adapter module.
- */
-export type BashValidatorHook = (event: {
-  tool_name: string;
-  tool_input: Record<string, unknown>;
-}) => Promise<HookResponse | undefined>;
+// BashValidatorHook is re-exported from types.ts
+export type { BashValidatorHook } from './types.ts';
 
 /**
  * Configuration for the Claude adapter, extending the base runtime adapter config.
@@ -76,6 +66,7 @@ export interface ClaudeAdapterConfig extends RuntimeAdapterConfig {
   defaultBranch: string;
   contextPaths: string[];
   bashValidatorHook: BashValidatorHook;
+  logger: Logger;
 }
 
 interface ActiveSession {
@@ -151,13 +142,13 @@ async function startAgent(
 
     const hookCallback: HookCallback = async (input: unknown) => {
       if (!isToolUseHookInput(input)) {
-        return { continue: true };
+        return { decision: 'approve' };
       }
       const result = await config.bashValidatorHook({
         tool_name: input.tool_name,
         tool_input: input.tool_input,
       });
-      return result ?? { continue: true };
+      return result ?? { decision: 'approve' };
     };
 
     const sdkDefinition: SDKAgentDefinition = {
@@ -248,7 +239,7 @@ async function startAgent(
     if (config.maxAgentDuration > 0) {
       const timeoutMs = config.maxAgentDuration * MS_PER_SECOND;
       timeoutHandle = setTimeout(() => {
-        abortController.abort();
+        abortController.abort('timeout');
       }, timeoutMs);
     }
 
@@ -268,6 +259,7 @@ async function startAgent(
       output: outputIterable(),
       result: resultPromise,
       logFilePath: logContext.logFilePath,
+      abortSignal: abortController.signal,
     };
   } catch (error) {
     if (params.role === 'implementor' && branchName !== null) {
@@ -284,7 +276,7 @@ function cancelAgent(sessions: Map<string, ActiveSession>, sessionID: string): v
   if (session === undefined) {
     return;
   }
-  session.abortController.abort();
+  session.abortController.abort('cancelled');
 }
 
 // --- Session processing ---
@@ -307,7 +299,7 @@ async function processSession(opts: ProcessSessionParams): Promise<AgentResult> 
 
     for await (const message of opts.q) {
       // Log message if logging enabled
-      await logMessage(opts.logContext, message);
+      await logMessage(opts.logContext, message, opts.config.logger);
 
       if (message.type === 'assistant') {
         extractTextFromAssistant(message, opts.pushOutput);
@@ -324,20 +316,21 @@ async function processSession(opts: ProcessSessionParams): Promise<AgentResult> 
       throw new Error('Agent session ended without a result message');
     }
 
-    // Write session footer
-    await logFooter(opts.logContext, resultMessage);
-
-    // Check for SDK-level failure
+    // Check for SDK-level failure before writing footer
     if (resultMessage.subtype !== 'success') {
+      await logFooter(opts.logContext, 'failed');
       throw new Error(`Agent session failed: ${resultMessage.subtype}`);
     }
+
+    // Write session footer
+    await logFooter(opts.logContext, 'completed');
 
     // Validate structured output
     return await assembleResult(opts.params, opts.config, resultMessage);
   } catch (error) {
     opts.endOutput();
-    // Write error footer
-    await logErrorFooter(opts.logContext);
+    const outcome = resolveFailureOutcome(opts.sessions, opts.sessionID);
+    await logFooter(opts.logContext, outcome);
     throw error;
   } finally {
     if (opts.timeoutHandle !== null) {
@@ -355,10 +348,14 @@ async function processSession(opts: ProcessSessionParams): Promise<AgentResult> 
 
 // --- Result assembly ---
 
+interface SDKSuccessResult {
+  structured_output?: unknown;
+}
+
 async function assembleResult(
   params: AgentStartParams,
   config: ClaudeAdapterConfig,
-  successResult: { structured_output?: unknown },
+  successResult: SDKSuccessResult,
 ): Promise<AgentResult> {
   const structuredOutput = successResult.structured_output;
 
@@ -416,11 +413,11 @@ async function assembleContext(
         const result = await execGit(config.repoRoot, ['show', blobSHA]);
         return result.stdout;
       },
-      createDiff: (_oldContent: string, _newContent: string, filePath: string): string => {
-        // Simple line-by-line diff — build-planner-context tests mock this,
-        // so real implementation detail doesn't matter here
-        return `--- a/${filePath}\n+++ b/${filePath}\n`;
-      },
+      createDiff: async (
+        oldContent: string,
+        newContent: string,
+        filePath: string,
+      ): Promise<string> => createUnifiedDiff(config.repoRoot, oldContent, newContent, filePath),
     });
   }
 
@@ -524,7 +521,7 @@ async function safeCleanupWorktree(config: ClaudeAdapterConfig, branchName: stri
   const worktreePath = resolve(config.repoRoot, WORKTREES_DIR, branchName);
 
   try {
-    await execGit(config.repoRoot, ['worktree', 'remove', worktreePath]);
+    await execGit(config.repoRoot, ['worktree', 'remove', '--force', worktreePath]);
   } catch {
     // Best-effort cleanup
   }
@@ -536,29 +533,101 @@ async function safeCleanupWorktree(config: ClaudeAdapterConfig, branchName: stri
   }
 }
 
+// --- Diff ---
+
+async function createUnifiedDiff(
+  repoRoot: string,
+  oldContent: string,
+  newContent: string,
+  filePath: string,
+): Promise<string> {
+  const tmpDir = tmpdir();
+  const stamp = Date.now();
+  const oldTmp = join(tmpDir, `decree-diff-old-${stamp}`);
+  const newTmp = join(tmpDir, `decree-diff-new-${stamp}`);
+
+  try {
+    await writeFile(oldTmp, oldContent, 'utf-8');
+    await writeFile(newTmp, newContent, 'utf-8');
+
+    const result = await execGit(repoRoot, ['diff', '--no-index', oldTmp, newTmp]).catch(
+      (error: ExecError) => {
+        // git diff --no-index exits 1 when files differ — that is expected
+        if (error.code === 1 && error.stdout) {
+          return { stdout: error.stdout, stderr: '' };
+        }
+        throw error;
+      },
+    );
+
+    // Replace temp file paths with semantic a/b paths
+    const output = result.stdout
+      .replace(new RegExp(escapeRegExp(oldTmp), 'g'), `a/${filePath}`)
+      .replace(new RegExp(escapeRegExp(newTmp), 'g'), `b/${filePath}`);
+    return output;
+  } finally {
+    // Best-effort cleanup of temp files
+    await unlink(oldTmp).catch(() => undefined);
+    await unlink(newTmp).catch(() => undefined);
+  }
+}
+
+interface ExecError {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // --- Logging ---
+
+type SessionOutcome = 'completed' | 'failed' | 'cancelled';
 
 interface LogContext {
   enabled: boolean;
   logFilePath: string | null;
   headerWritten: boolean;
+  footerWritten: boolean;
+  params: AgentStartParams;
+  sessionID: string;
+  startedAt: string;
 }
 
 function buildLogContext(
   config: ClaudeAdapterConfig,
   params: AgentStartParams,
-  _sessionID: string,
+  sessionID: string,
 ): LogContext {
+  const startedAt = new Date().toISOString();
+
   if (!config.logging.agentSessions) {
-    return { enabled: false, logFilePath: null, headerWritten: false };
+    return {
+      enabled: false,
+      logFilePath: null,
+      headerWritten: false,
+      footerWritten: false,
+      params,
+      sessionID,
+      startedAt,
+    };
   }
 
   const timestamp = Date.now();
   const context = params.role === 'planner' ? '' : `-${getWorkItemID(params)}`;
   const filename = `${timestamp}-${params.role}${context}.log`;
   const logFilePath = join(config.logging.logsDir, filename);
-
-  return { enabled: true, logFilePath, headerWritten: false };
+  return {
+    enabled: true,
+    logFilePath,
+    headerWritten: false,
+    footerWritten: false,
+    params,
+    sessionID,
+    startedAt,
+  };
 }
 
 function getWorkItemID(params: AgentStartParams): string {
@@ -571,21 +640,34 @@ function getWorkItemID(params: AgentStartParams): string {
   return '';
 }
 
-async function logMessage(logContext: LogContext, message: SDKMessage): Promise<void> {
+async function logMessage(
+  logContext: LogContext,
+  message: SDKMessage,
+  logger: Logger,
+): Promise<void> {
   if (!logContext.enabled || logContext.logFilePath === null) {
     return;
   }
 
-  try {
+  if (message.type === 'system' && message.subtype === 'init') {
     if (!logContext.headerWritten) {
-      await mkdir(join(logContext.logFilePath, '..'), { recursive: true });
-      await writeFile(logContext.logFilePath, '', 'utf-8');
-      logContext.headerWritten = true;
+      try {
+        await mkdir(join(logContext.logFilePath, '..'), { recursive: true });
+        const header = buildSessionHeader(logContext);
+        await writeFile(logContext.logFilePath, header, 'utf-8');
+        logContext.headerWritten = true;
+      } catch (error: unknown) {
+        logger.error('log file creation failed, disabling session logging', {
+          logFilePath: logContext.logFilePath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        logContext.enabled = false;
+        logContext.logFilePath = null;
+        return;
+      }
     }
-
-    const timestamp = formatTimestamp(new Date());
-
-    if (message.type === 'system' && message.subtype === 'init') {
+    try {
+      const timestamp = formatTimestamp(new Date());
       const lines = [
         `[${timestamp}] SYSTEM init`,
         `  Model: ${message.model}`,
@@ -594,8 +676,23 @@ async function logMessage(logContext: LogContext, message: SDKMessage): Promise<
         '',
       ];
       await appendFile(logContext.logFilePath, lines.join('\n'), 'utf-8');
-      return;
+    } catch (error: unknown) {
+      logger.error('mid-session log write failed, disabling logging', {
+        logFilePath: logContext.logFilePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      logContext.enabled = false;
     }
+    return;
+  }
+
+  // Guard: if header hasn't been written yet, skip non-init messages
+  if (!logContext.headerWritten) {
+    return;
+  }
+
+  try {
+    const timestamp = formatTimestamp(new Date());
 
     if (message.type === 'assistant') {
       if (message.message?.content) {
@@ -642,19 +739,27 @@ async function logMessage(logContext: LogContext, message: SDKMessage): Promise<
       `[${timestamp}] UNKNOWN ${message.type}\n  ${JSON.stringify(message)}\n\n`,
       'utf-8',
     );
-  } catch {
-    // Log writing failures are non-fatal
+  } catch (error: unknown) {
+    logger.error('mid-session log write failed, disabling logging', {
+      logFilePath: logContext.logFilePath,
+      error: error instanceof Error ? error.message : String(error),
+    });
     logContext.enabled = false;
   }
 }
 
-async function logFooter(logContext: LogContext, resultMessage: SDKResultMessage): Promise<void> {
-  if (!logContext.enabled || logContext.logFilePath === null) {
+async function logFooter(logContext: LogContext, outcome: SessionOutcome): Promise<void> {
+  if (
+    !logContext.enabled ||
+    logContext.logFilePath === null ||
+    logContext.footerWritten ||
+    !logContext.headerWritten
+  ) {
     return;
   }
 
   try {
-    const outcome = resultMessage.subtype === 'success' ? 'completed' : 'failed';
+    logContext.footerWritten = true;
     const lines = [
       '=== Session End ===',
       `Outcome:  ${outcome}`,
@@ -667,22 +772,36 @@ async function logFooter(logContext: LogContext, resultMessage: SDKResultMessage
   }
 }
 
-async function logErrorFooter(logContext: LogContext): Promise<void> {
-  if (!logContext.enabled || logContext.logFilePath === null) {
-    return;
+function resolveFailureOutcome(
+  sessions: Map<string, ActiveSession>,
+  sessionID: string,
+): SessionOutcome {
+  const session = sessions.get(sessionID);
+  if (session?.abortController.signal.aborted) {
+    return 'cancelled';
   }
+  return 'failed';
+}
 
-  try {
-    const lines = [
-      '=== Session End ===',
-      'Outcome:  failed',
-      `Finished: ${new Date().toISOString()}`,
-      '',
-    ];
-    await appendFile(logContext.logFilePath, lines.join('\n'), 'utf-8');
-  } catch {
-    // Non-fatal
+function buildSessionHeader(logContext: LogContext): string {
+  const lines = [
+    '=== Agent Session ===',
+    `Type:       ${logContext.params.role}`,
+    `Session ID: ${logContext.sessionID}`,
+    buildContextField(logContext.params),
+    `Started:    ${logContext.startedAt}`,
+    '',
+    '=== Messages ===',
+    '',
+  ];
+  return lines.join('\n');
+}
+
+function buildContextField(params: AgentStartParams): string {
+  if (params.role === 'planner') {
+    return `Spec Paths: ${params.specPaths.join(', ')}`;
   }
+  return `Issue:      #${params.workItemID}`;
 }
 
 // --- Model validation ---

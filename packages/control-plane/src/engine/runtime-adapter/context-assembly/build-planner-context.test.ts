@@ -58,7 +58,7 @@ function setupTest(overrides?: {
   });
 
   const createDiff = vi.fn(
-    (_oldContent: string, _newContent: string, filePath: string): string =>
+    async (_oldContent: string, _newContent: string, filePath: string): Promise<string> =>
       `--- a/${filePath}\n+++ b/${filePath}\n@@ mock diff @@`,
   );
 

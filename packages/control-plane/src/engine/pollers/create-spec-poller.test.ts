@@ -1,902 +1,542 @@
 import { expect, test, vi } from 'vitest';
-import { createMockGitHubClient } from '../../test-utils/create-mock-github-client.ts';
-import type { GitHubClient } from '../github-client/types.ts';
+import { buildSpec } from '../../test-utils/build-spec.ts';
+import type { Spec, SpecChanged } from '../state-store/types.ts';
 import { createSpecPoller } from './create-spec-poller.ts';
-import type { LogError, SpecPollerSnapshot } from './types.ts';
 
 // ---------------------------------------------------------------------------
-// Mock GitHub client factory (builds on shared createMockGitHubClient)
+// Helpers
 // ---------------------------------------------------------------------------
 
-interface TreeEntry {
-  path: string;
-  sha: string;
-  type: 'blob' | 'tree';
+interface SetupTestState {
+  workItems: Map<never, never>;
+  revisions: Map<never, never>;
+  specs: Map<string, Spec>;
+  agentRuns: Map<never, never>;
+  errors: never[];
+  lastPlannedSHAs: Map<never, never>;
 }
 
-interface MockGetTreeParams {
-  tree_sha: string;
-  recursive?: string;
+interface SetupTestResult {
+  reader: {
+    listSpecs: ReturnType<typeof vi.fn>;
+    getDefaultBranchSHA: ReturnType<typeof vi.fn>;
+  };
+  state: SetupTestState;
+  events: SpecChanged[];
+  enqueue: ReturnType<typeof vi.fn>;
+  createPoller: () => ReturnType<typeof createSpecPoller>;
 }
 
-interface MockGetTreeResult {
-  data: { sha: string; tree: TreeEntry[] };
-}
+function setupTest(
+  options: { providerSpecs?: Spec[]; storedSpecs?: Spec[] } = {},
+): SetupTestResult {
+  const reader = {
+    listSpecs: vi.fn(),
+    getDefaultBranchSHA: vi.fn(),
+  };
 
-interface MockGetContentParams {
-  path: string;
-  ref?: string;
-}
+  const state: SetupTestState = {
+    workItems: new Map<never, never>(),
+    revisions: new Map<never, never>(),
+    specs: new Map<string, Spec>(),
+    agentRuns: new Map<never, never>(),
+    errors: [] as never[],
+    lastPlannedSHAs: new Map<never, never>(),
+  };
 
-interface MockGetContentResult {
-  data: { content?: string };
-}
-
-interface MockGetRefParams {
-  ref: string;
-}
-
-interface MockGetRefResult {
-  data: { object: { sha: string } };
-}
-
-interface MockHandlers {
-  getTree: (params: MockGetTreeParams) => MockGetTreeResult;
-  getContent: (params: MockGetContentParams) => MockGetContentResult;
-  getRef: (params: MockGetRefParams) => MockGetRefResult;
-}
-
-function buildMockClient(handlers: Partial<MockHandlers> = {}): GitHubClient {
-  const client = createMockGitHubClient();
-
-  vi.mocked(client.git.getTree).mockImplementation(async (params) => {
-    if (handlers.getTree && params) {
-      return handlers.getTree(params);
+  if (options.storedSpecs) {
+    for (const spec of options.storedSpecs) {
+      state.specs.set(spec.filePath, spec);
     }
-    return { data: { sha: '', tree: [] } };
-  });
-
-  vi.mocked(client.git.getRef).mockImplementation(async (params) => {
-    if (handlers.getRef && params) {
-      return handlers.getRef(params);
-    }
-    return { data: { object: { sha: 'head-commit-sha' } } };
-  });
-
-  vi.mocked(client.repos.getContent).mockImplementation(async (params) => {
-    if (handlers.getContent && params) {
-      return handlers.getContent(params);
-    }
-    return { data: {} };
-  });
-
-  return client;
-}
-
-// ---------------------------------------------------------------------------
-// Spec content helpers
-// ---------------------------------------------------------------------------
-
-function buildSpecContent(status: string): string {
-  return `---\ntitle: Test Spec\nversion: 0.1.0\nstatus: ${status}\n---\n\n# Test Spec\n\nContent here.\n`;
-}
-
-function toBase64(content: string): string {
-  return Buffer.from(content).toString('base64');
-}
-
-// ---------------------------------------------------------------------------
-// Default setup helper
-// ---------------------------------------------------------------------------
-
-interface SetupOptions {
-  handlers?: Partial<MockHandlers>;
-  specsDir?: string;
-  defaultBranch?: string;
-  logError?: LogError;
-  initialSnapshot?: SpecPollerSnapshot;
-}
-
-function setupTest(options: SetupOptions = {}): {
-  octokit: GitHubClient;
-  poller: ReturnType<typeof createSpecPoller>;
-} {
-  const octokit = buildMockClient(options.handlers);
-  const logError = options.logError ?? vi.fn();
-  const poller = createSpecPoller({
-    octokit,
-    owner: 'test-owner',
-    repo: 'test-repo',
-    specsDir: options.specsDir ?? 'docs/specs/',
-    defaultBranch: options.defaultBranch ?? 'main',
-    logError,
-    ...(options.initialSnapshot ? { initialSnapshot: options.initialSnapshot } : {}),
-  });
-  return { octokit, poller };
-}
-
-// ---------------------------------------------------------------------------
-// Tree handler builder
-// ---------------------------------------------------------------------------
-
-function buildTreeHandlers(
-  specsDirTreeSha: string,
-  specFiles: TreeEntry[],
-): { getTree: (params: MockGetTreeParams) => MockGetTreeResult } {
-  return {
-    getTree: (params: { tree_sha: string; recursive?: string }): MockGetTreeResult => {
-      // Root recursive tree (branch name) -- includes specs dir entry
-      if (params.tree_sha === 'main') {
-        return {
-          data: {
-            sha: 'root-tree-sha',
-            tree: [
-              { path: 'docs', sha: 'docs-tree-sha', type: 'tree' as const },
-              { path: 'docs/specs', sha: specsDirTreeSha, type: 'tree' as const },
-            ],
-          },
-        };
-      }
-      // Specs subtree (recursive fetch for change detection)
-      if (params.tree_sha === specsDirTreeSha) {
-        return {
-          data: {
-            sha: specsDirTreeSha,
-            tree: specFiles,
-          },
-        };
-      }
-      return { data: { sha: '', tree: [] } };
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// SpecPoller — single API call for tree SHA
-// ---------------------------------------------------------------------------
-
-test('it fetches the specs directory tree SHA with a single recursive API call', async () => {
-  const specFiles = [{ path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const }];
-
-  const handlers = {
-    ...buildTreeHandlers('specs-tree-sha-1', specFiles),
-    getContent: () => ({
-      data: { content: toBase64(buildSpecContent('approved')) },
-    }),
-    getRef: () => ({ data: { object: { sha: 'commit-sha' } } }),
-  };
-
-  const { octokit, poller } = setupTest({ handlers });
-  await poller.poll();
-
-  const firstCall = vi.mocked(octokit.git.getTree).mock.calls[0];
-  expect(firstCall?.[0]).toStrictEqual(
-    expect.objectContaining({ tree_sha: 'main', recursive: 'true' }),
-  );
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — tree SHA unchanged (no further API calls)
-// ---------------------------------------------------------------------------
-
-test('it returns an empty result and skips content calls when the tree SHA is unchanged', async () => {
-  const specFiles = [{ path: 'decree/engine.md', sha: 'blob-sha-1', type: 'blob' as const }];
-
-  const handlers = {
-    ...buildTreeHandlers('specs-tree-sha-1', specFiles),
-    getContent: () => ({
-      data: { content: toBase64(buildSpecContent('approved')) },
-    }),
-    getRef: () => ({ data: { object: { sha: 'commit-abc' } } }),
-  };
-
-  const { octokit, poller } = setupTest({ handlers });
-
-  // First poll -- populates snapshot
-  await poller.poll();
-
-  vi.mocked(octokit.git.getTree).mockClear();
-  vi.mocked(octokit.repos.getContent).mockClear();
-  vi.mocked(octokit.git.getRef).mockClear();
-
-  // Second poll -- same tree SHA, should short-circuit after single getTree call
-  const result = await poller.poll();
-
-  expect(result.changes).toHaveLength(0);
-  expect(result.commitSHA).toBe('');
-
-  // Only the root recursive tree call to check tree SHA -- no subtree or content calls
-  expect(octokit.git.getTree).toHaveBeenCalledTimes(1);
-  expect(octokit.repos.getContent).not.toHaveBeenCalled();
-  expect(octokit.git.getRef).not.toHaveBeenCalled();
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — detects new files
-// ---------------------------------------------------------------------------
-
-test('it detects new spec files and returns their frontmatter status', async () => {
-  const specFiles = [
-    { path: 'decree/engine.md', sha: 'blob-sha-1', type: 'blob' as const },
-    { path: 'decree/tui.md', sha: 'blob-sha-2', type: 'blob' as const },
-  ];
-
-  const contentMap: Record<string, string> = {
-    'docs/specs/decree/engine.md': buildSpecContent('approved'),
-    'docs/specs/decree/tui.md': buildSpecContent('draft'),
-  };
-
-  const handlers = {
-    ...buildTreeHandlers('specs-tree-sha-1', specFiles),
-    getContent: (params: { path: string }) => ({
-      data: { content: toBase64(contentMap[params.path] ?? '') },
-    }),
-    getRef: () => ({ data: { object: { sha: 'commit-abc123' } } }),
-  };
-
-  const { poller } = setupTest({ handlers });
-  const result = await poller.poll();
-
-  expect(result.changes).toHaveLength(2);
-  expect(result.changes).toContainEqual({
-    filePath: 'docs/specs/decree/engine.md',
-    frontmatterStatus: 'approved',
-    changeType: 'added',
-  });
-  expect(result.changes).toContainEqual({
-    filePath: 'docs/specs/decree/tui.md',
-    frontmatterStatus: 'draft',
-    changeType: 'added',
-  });
-  expect(result.commitSHA).toBe('commit-abc123');
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — detects modified files
-// ---------------------------------------------------------------------------
-
-test('it detects modified files when the blob SHA changes between polls', async () => {
-  let specsDirTreeSha = 'specs-tree-sha-1';
-  let specFiles = [{ path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const }];
-  let engineContent = buildSpecContent('draft');
-
-  const handlers = {
-    getTree: (params: { tree_sha: string; recursive?: string }) => {
-      if (params.tree_sha === 'main') {
-        return {
-          data: {
-            sha: 'root-sha',
-            tree: [
-              { path: 'docs', sha: 'docs-sha', type: 'tree' as const },
-              { path: 'docs/specs', sha: specsDirTreeSha, type: 'tree' as const },
-            ],
-          },
-        };
-      }
-      return { data: { sha: specsDirTreeSha, tree: specFiles } };
-    },
-    getContent: () => ({
-      data: { content: toBase64(engineContent) },
-    }),
-    getRef: () => ({ data: { object: { sha: 'head-sha' } } }),
-  };
-
-  const { poller } = setupTest({ handlers });
-
-  // First poll: detects new file with draft status
-  const result1 = await poller.poll();
-  expect(result1.changes).toHaveLength(1);
-  expect(result1.changes[0]?.frontmatterStatus).toBe('draft');
-  expect(result1.changes[0]?.changeType).toBe('added');
-
-  // Simulate file modification: new blob SHA, new tree SHA, new content
-  specsDirTreeSha = 'specs-tree-sha-2';
-  specFiles = [{ path: 'engine.md', sha: 'blob-sha-2', type: 'blob' as const }];
-  engineContent = buildSpecContent('approved');
-
-  // Second poll: detects the modification
-  const result2 = await poller.poll();
-  expect(result2.changes).toHaveLength(1);
-  expect(result2.changes[0]?.frontmatterStatus).toBe('approved');
-  expect(result2.changes[0]?.changeType).toBe('modified');
-  expect(result2.commitSHA).toBe('head-sha');
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — detects removed files
-// ---------------------------------------------------------------------------
-
-test('it removes deleted files from the snapshot without including them in the result', async () => {
-  let specsDirTreeSha = 'specs-tree-sha-1';
-  let specFiles: TreeEntry[] = [
-    { path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const },
-    { path: 'tui.md', sha: 'blob-sha-2', type: 'blob' as const },
-  ];
-
-  const contentMap: Record<string, string> = {
-    'docs/specs/engine.md': buildSpecContent('approved'),
-    'docs/specs/tui.md': buildSpecContent('draft'),
-  };
-
-  const handlers = {
-    getTree: (params: { tree_sha: string; recursive?: string }) => {
-      if (params.tree_sha === 'main') {
-        return {
-          data: {
-            sha: 'root-sha',
-            tree: [
-              { path: 'docs', sha: 'docs-sha', type: 'tree' as const },
-              { path: 'docs/specs', sha: specsDirTreeSha, type: 'tree' as const },
-            ],
-          },
-        };
-      }
-      return { data: { sha: specsDirTreeSha, tree: specFiles } };
-    },
-    getContent: (params: { path: string }) => ({
-      data: { content: toBase64(contentMap[params.path] ?? '') },
-    }),
-    getRef: () => ({ data: { object: { sha: 'head-sha' } } }),
-  };
-
-  const { poller } = setupTest({ handlers });
-
-  // First poll: detect both files
-  const result1 = await poller.poll();
-  expect(result1.changes).toHaveLength(2);
-
-  // Remove tui.md from tree
-  specsDirTreeSha = 'specs-tree-sha-2';
-  specFiles = [{ path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const }];
-
-  // Second poll: tree changed but engine.md blob SHA is same, tui.md removed
-  const result2 = await poller.poll();
-  expect(result2.changes).toHaveLength(0);
-
-  // Verify: adding tui.md back as new should detect it again
-  specsDirTreeSha = 'specs-tree-sha-3';
-  specFiles = [
-    { path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const },
-    { path: 'tui.md', sha: 'blob-sha-3', type: 'blob' as const },
-  ];
-
-  const result3 = await poller.poll();
-  expect(result3.changes).toHaveLength(1);
-  expect(result3.changes[0]?.filePath).toBe('docs/specs/tui.md');
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — GitHub API error returns empty result
-// ---------------------------------------------------------------------------
-
-test('it returns an empty result on GitHub API error without crashing', async () => {
-  const logError = vi.fn();
-  const client = createMockGitHubClient();
-  vi.mocked(client.git.getTree).mockRejectedValue(new Error('GitHub API rate limit exceeded'));
-
-  const poller = createSpecPoller({
-    octokit: client,
-    owner: 'test-owner',
-    repo: 'test-repo',
-    specsDir: 'docs/specs/',
-    defaultBranch: 'main',
-    logError,
-  });
-
-  const result = await poller.poll();
-  expect(result.changes).toHaveLength(0);
-  expect(result.commitSHA).toBe('');
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — specs directory not found
-// ---------------------------------------------------------------------------
-
-test('it returns an empty result when the specs directory does not exist in the tree', async () => {
-  const handlers = {
-    getTree: () => ({
-      data: {
-        sha: 'root-sha',
-        tree: [{ path: 'src', sha: 'src-sha', type: 'tree' as const }],
-      },
-    }),
-  };
-
-  const { poller } = setupTest({ handlers });
-  const result = await poller.poll();
-
-  expect(result.changes).toHaveLength(0);
-  expect(result.commitSHA).toBe('');
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — HEAD commit SHA fetched only for changed cycles
-// ---------------------------------------------------------------------------
-
-test('it fetches the HEAD commit SHA only when changes are detected', async () => {
-  const specFiles = [{ path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const }];
-
-  // File has no parseable frontmatter -- will be skipped
-  const handlers = {
-    ...buildTreeHandlers('specs-tree-sha-1', specFiles),
-    getContent: () => ({
-      data: { content: toBase64('# No frontmatter\n\nJust content.') },
-    }),
-    getRef: () => ({ data: { object: { sha: 'should-not-be-fetched' } } }),
-  };
-
-  const { octokit, poller } = setupTest({ handlers });
-  const result = await poller.poll();
-
-  expect(result.changes).toHaveLength(0);
-  expect(result.commitSHA).toBe('');
-  expect(octokit.git.getRef).not.toHaveBeenCalled();
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — file content fetch failure skips file
-// ---------------------------------------------------------------------------
-
-test('it skips files whose content fetch fails and continues with others', async () => {
-  const specFiles = [
-    { path: 'good.md', sha: 'blob-sha-1', type: 'blob' as const },
-    { path: 'bad.md', sha: 'blob-sha-2', type: 'blob' as const },
-  ];
-
-  const handlers = {
-    ...buildTreeHandlers('specs-tree-sha-1', specFiles),
-    getContent: (params: { path: string }) => {
-      if (params.path === 'docs/specs/bad.md') {
-        throw new Error('Not found');
-      }
-      return {
-        data: { content: toBase64(buildSpecContent('approved')) },
-      };
-    },
-    getRef: () => ({ data: { object: { sha: 'commit-sha' } } }),
-  };
-
-  const { poller } = setupTest({ handlers });
-  const result = await poller.poll();
-
-  expect(result.changes).toHaveLength(1);
-  expect(result.changes[0]?.filePath).toBe('docs/specs/good.md');
-  expect(result.commitSHA).toBe('commit-sha');
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — unchanged blob SHA skips content fetch
-// ---------------------------------------------------------------------------
-
-test('it does not fetch content for files with unchanged blob SHA', async () => {
-  let specsDirTreeSha = 'specs-tree-sha-1';
-  let specFiles = [{ path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const }];
-
-  const handlers = {
-    getTree: (params: { tree_sha: string; recursive?: string }) => {
-      if (params.tree_sha === 'main') {
-        return {
-          data: {
-            sha: 'root-sha',
-            tree: [
-              { path: 'docs', sha: 'docs-sha', type: 'tree' as const },
-              { path: 'docs/specs', sha: specsDirTreeSha, type: 'tree' as const },
-            ],
-          },
-        };
-      }
-      return { data: { sha: specsDirTreeSha, tree: specFiles } };
-    },
-    getContent: () => ({
-      data: { content: toBase64(buildSpecContent('approved')) },
-    }),
-    getRef: () => ({ data: { object: { sha: 'head-sha' } } }),
-  };
-
-  const { octokit, poller } = setupTest({ handlers });
-
-  // First poll: detects new file
-  await poller.poll();
-
-  // Change tree SHA but keep same blob SHA for engine.md, add a new file
-  specsDirTreeSha = 'specs-tree-sha-2';
-  specFiles = [
-    { path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const },
-    { path: 'tui.md', sha: 'blob-sha-new', type: 'blob' as const },
-  ];
-
-  vi.mocked(octokit.repos.getContent).mockClear();
-
-  // Second poll: engine.md unchanged (same blob SHA), only tui.md is fetched
-  const result = await poller.poll();
-
-  expect(result.changes).toHaveLength(1);
-  expect(result.changes[0]?.filePath).toBe('docs/specs/tui.md');
-
-  // getContent should only be called for the new file, not unchanged engine.md
-  expect(octokit.repos.getContent).toHaveBeenCalledTimes(1);
-  expect(octokit.repos.getContent).toHaveBeenCalledWith(
-    expect.objectContaining({ path: 'docs/specs/tui.md' }),
-  );
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — first poll with empty snapshot
-// ---------------------------------------------------------------------------
-
-test('it treats the first poll cycle as all files being new', async () => {
-  const specFiles = [
-    { path: 'a.md', sha: 'sha-a', type: 'blob' as const },
-    { path: 'b.md', sha: 'sha-b', type: 'blob' as const },
-    { path: 'c.md', sha: 'sha-c', type: 'blob' as const },
-  ];
-
-  const handlers = {
-    ...buildTreeHandlers('specs-tree-sha-1', specFiles),
-    getContent: () => ({
-      data: { content: toBase64(buildSpecContent('approved')) },
-    }),
-    getRef: () => ({ data: { object: { sha: 'initial-commit' } } }),
-  };
-
-  const { poller } = setupTest({ handlers });
-  const result = await poller.poll();
-
-  expect(result.changes).toHaveLength(3);
-  expect(result.commitSHA).toBe('initial-commit');
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — tree entries of type 'tree' (subdirectories) are ignored
-// ---------------------------------------------------------------------------
-
-test('it ignores tree entries that are not blobs', async () => {
-  const specFiles: TreeEntry[] = [
-    { path: 'decree', sha: 'subdir-sha', type: 'tree' },
-    { path: 'decree/engine.md', sha: 'blob-sha-1', type: 'blob' },
-  ];
-
-  const handlers = {
-    ...buildTreeHandlers('specs-tree-sha-1', specFiles),
-    getContent: () => ({
-      data: { content: toBase64(buildSpecContent('approved')) },
-    }),
-    getRef: () => ({ data: { object: { sha: 'commit-sha' } } }),
-  };
-
-  const { poller } = setupTest({ handlers });
-  const result = await poller.poll();
-
-  expect(result.changes).toHaveLength(1);
-  expect(result.changes[0]?.filePath).toBe('docs/specs/decree/engine.md');
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — getSnapshot() returns empty snapshot initially
-// ---------------------------------------------------------------------------
-
-test('it returns an empty snapshot when no seed is provided and no polls have run', () => {
-  const { poller } = setupTest();
-  const snap = poller.getSnapshot();
-
-  expect(snap).toStrictEqual({
-    specsDirTreeSHA: null,
-    files: {},
-  });
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — getSnapshot() returns seeded snapshot
-// ---------------------------------------------------------------------------
-
-test('it returns the seeded snapshot when an initial snapshot is provided', () => {
-  const initialSnapshot: SpecPollerSnapshot = {
-    specsDirTreeSHA: 'seeded-tree-sha',
-    files: {
-      'docs/specs/engine.md': { blobSHA: 'blob-1', frontmatterStatus: 'approved' },
-      'docs/specs/tui.md': { blobSHA: 'blob-2', frontmatterStatus: 'draft' },
-    },
-  };
-
-  const { poller } = setupTest({ initialSnapshot });
-  const snap = poller.getSnapshot();
-
-  expect(snap).toStrictEqual(initialSnapshot);
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — seeded tree SHA matches current yields empty batch
-// ---------------------------------------------------------------------------
-
-test('it returns an empty batch on first poll when the seeded tree SHA matches the current one', async () => {
-  const specFiles = [{ path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const }];
-
-  const handlers = {
-    ...buildTreeHandlers('seeded-tree-sha', specFiles),
-    getContent: () => ({
-      data: { content: toBase64(buildSpecContent('approved')) },
-    }),
-    getRef: () => ({ data: { object: { sha: 'commit-sha' } } }),
-  };
-
-  const initialSnapshot: SpecPollerSnapshot = {
-    specsDirTreeSHA: 'seeded-tree-sha',
-    files: {
-      'docs/specs/engine.md': { blobSHA: 'blob-sha-1', frontmatterStatus: 'approved' },
-    },
-  };
-
-  const { octokit, poller } = setupTest({ handlers, initialSnapshot });
-  const result = await poller.poll();
-
-  expect(result.changes).toHaveLength(0);
-  expect(result.commitSHA).toBe('');
-  // Only the root tree call to check tree SHA -- no subtree or content calls needed
-  expect(octokit.git.getTree).toHaveBeenCalledTimes(1);
-  expect(octokit.repos.getContent).not.toHaveBeenCalled();
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — seeded tree SHA differs, only changed files reported
-// ---------------------------------------------------------------------------
-
-test('it reports only files with changed blob SHAs when the seeded tree SHA differs', async () => {
-  const specFiles = [
-    { path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const },
-    { path: 'tui.md', sha: 'blob-sha-new', type: 'blob' as const },
-  ];
-
-  const contentMap: Record<string, string> = {
-    'docs/specs/engine.md': buildSpecContent('approved'),
-    'docs/specs/tui.md': buildSpecContent('draft'),
-  };
-
-  const handlers = {
-    ...buildTreeHandlers('current-tree-sha', specFiles),
-    getContent: (params: { path: string }) => ({
-      data: { content: toBase64(contentMap[params.path] ?? '') },
-    }),
-    getRef: () => ({ data: { object: { sha: 'head-sha' } } }),
-  };
-
-  const initialSnapshot: SpecPollerSnapshot = {
-    specsDirTreeSHA: 'old-tree-sha',
-    files: {
-      'docs/specs/engine.md': { blobSHA: 'blob-sha-1', frontmatterStatus: 'approved' },
-      'docs/specs/tui.md': { blobSHA: 'blob-sha-old', frontmatterStatus: 'draft' },
-    },
-  };
-
-  const { octokit, poller } = setupTest({ handlers, initialSnapshot });
-  const result = await poller.poll();
-
-  // Only tui.md changed (blob SHA differs), engine.md unchanged
-  expect(result.changes).toHaveLength(1);
-  expect(result.changes[0]).toStrictEqual({
-    filePath: 'docs/specs/tui.md',
-    frontmatterStatus: 'draft',
-    changeType: 'modified',
-  });
-  expect(result.commitSHA).toBe('head-sha');
-
-  // Content should only be fetched for the changed file
-  expect(octokit.repos.getContent).toHaveBeenCalledTimes(1);
-  expect(octokit.repos.getContent).toHaveBeenCalledWith(
-    expect.objectContaining({ path: 'docs/specs/tui.md' }),
-  );
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — getSnapshot() reflects state after a poll cycle
-// ---------------------------------------------------------------------------
-
-test('it returns an updated snapshot after a poll cycle completes', async () => {
-  const specFiles = [
-    { path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const },
-    { path: 'tui.md', sha: 'blob-sha-2', type: 'blob' as const },
-  ];
-
-  const contentMap: Record<string, string> = {
-    'docs/specs/engine.md': buildSpecContent('approved'),
-    'docs/specs/tui.md': buildSpecContent('draft'),
-  };
-
-  const handlers = {
-    ...buildTreeHandlers('specs-tree-sha-1', specFiles),
-    getContent: (params: { path: string }) => ({
-      data: { content: toBase64(contentMap[params.path] ?? '') },
-    }),
-    getRef: () => ({ data: { object: { sha: 'commit-sha' } } }),
-  };
-
-  const { poller } = setupTest({ handlers });
-  await poller.poll();
-
-  const snap = poller.getSnapshot();
-  expect(snap).toStrictEqual({
-    specsDirTreeSHA: 'specs-tree-sha-1',
-    files: {
-      'docs/specs/engine.md': { blobSHA: 'blob-sha-1', frontmatterStatus: 'approved' },
-      'docs/specs/tui.md': { blobSHA: 'blob-sha-2', frontmatterStatus: 'draft' },
-    },
-  });
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — getSnapshot() returns a fresh copy
-// ---------------------------------------------------------------------------
-
-test('it returns a fresh copy of the snapshot that does not affect internal state when mutated', async () => {
-  const specFiles = [{ path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const }];
-
-  const handlers = {
-    ...buildTreeHandlers('specs-tree-sha-1', specFiles),
-    getContent: () => ({
-      data: { content: toBase64(buildSpecContent('approved')) },
-    }),
-    getRef: () => ({ data: { object: { sha: 'commit-sha' } } }),
-  };
-
-  const { poller } = setupTest({ handlers });
-  await poller.poll();
-
-  // Get snapshot and mutate it
-  const snap1 = poller.getSnapshot();
-  snap1.specsDirTreeSHA = 'mutated';
-  snap1.files['docs/specs/engine.md'] = { blobSHA: 'mutated', frontmatterStatus: 'mutated' };
-  snap1.files['docs/specs/new-file.md'] = { blobSHA: 'injected', frontmatterStatus: 'injected' };
-
-  // Get a second snapshot -- should be unaffected by mutations
-  const snap2 = poller.getSnapshot();
-  expect(snap2).toStrictEqual({
-    specsDirTreeSHA: 'specs-tree-sha-1',
-    files: {
-      'docs/specs/engine.md': { blobSHA: 'blob-sha-1', frontmatterStatus: 'approved' },
-    },
-  });
-});
-
-// ---------------------------------------------------------------------------
-// SpecPoller — changeType for new files
-// ---------------------------------------------------------------------------
-
-test('it marks files as added when they appear for the first time', async () => {
-  const specFiles = [
-    { path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const },
-    { path: 'tui.md', sha: 'blob-sha-2', type: 'blob' as const },
-  ];
-
-  const contentMap: Record<string, string> = {
-    'docs/specs/engine.md': buildSpecContent('approved'),
-    'docs/specs/tui.md': buildSpecContent('draft'),
-  };
-
-  const handlers = {
-    ...buildTreeHandlers('specs-tree-sha-1', specFiles),
-    getContent: (params: { path: string }) => ({
-      data: { content: toBase64(contentMap[params.path] ?? '') },
-    }),
-    getRef: () => ({ data: { object: { sha: 'commit-sha' } } }),
-  };
-
-  const { poller } = setupTest({ handlers });
-  const result = await poller.poll();
-
-  expect(result.changes).toHaveLength(2);
-  for (const change of result.changes) {
-    expect(change.changeType).toBe('added');
   }
-});
 
-// ---------------------------------------------------------------------------
-// SpecPoller — changeType for modified files
-// ---------------------------------------------------------------------------
+  reader.listSpecs.mockResolvedValue(options.providerSpecs ?? []);
+  reader.getDefaultBranchSHA.mockResolvedValue('commit-sha-abc');
 
-test('it marks files as modified when their blob SHA changes between polls', async () => {
-  let specsDirTreeSha = 'specs-tree-sha-1';
-  let specFiles = [
-    { path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const },
-    { path: 'tui.md', sha: 'blob-sha-2', type: 'blob' as const },
-  ];
+  const events: SpecChanged[] = [];
+  const enqueue = vi.fn((event: SpecChanged) => {
+    events.push(event);
+  });
 
-  const handlers = {
-    getTree: (params: { tree_sha: string; recursive?: string }) => {
-      if (params.tree_sha === 'main') {
-        return {
-          data: {
-            sha: 'root-sha',
-            tree: [
-              { path: 'docs', sha: 'docs-sha', type: 'tree' as const },
-              { path: 'docs/specs', sha: specsDirTreeSha, type: 'tree' as const },
-            ],
-          },
-        };
-      }
-      return { data: { sha: specsDirTreeSha, tree: specFiles } };
-    },
-    getContent: () => ({
-      data: { content: toBase64(buildSpecContent('approved')) },
-    }),
-    getRef: () => ({ data: { object: { sha: 'head-sha' } } }),
-  };
-
-  const { poller } = setupTest({ handlers });
-
-  // First poll: both files are new
-  await poller.poll();
-
-  // Modify both files
-  specsDirTreeSha = 'specs-tree-sha-2';
-  specFiles = [
-    { path: 'engine.md', sha: 'blob-sha-1-modified', type: 'blob' as const },
-    { path: 'tui.md', sha: 'blob-sha-2-modified', type: 'blob' as const },
-  ];
-
-  // Second poll: both files are modified
-  const result = await poller.poll();
-
-  expect(result.changes).toHaveLength(2);
-  for (const change of result.changes) {
-    expect(change.changeType).toBe('modified');
+  function createPoller(): ReturnType<typeof createSpecPoller> {
+    return createSpecPoller({
+      reader,
+      getState: () => state,
+      enqueue,
+      interval: 60,
+    });
   }
-});
+
+  return { reader, state, events, enqueue, createPoller };
+}
 
 // ---------------------------------------------------------------------------
-// SpecPoller — mixed batch with added and modified files
+// First poll — store empty, all specs are additions
 // ---------------------------------------------------------------------------
 
-test('it correctly distinguishes added and modified files in a mixed batch', async () => {
-  let specsDirTreeSha = 'specs-tree-sha-1';
-  let specFiles = [{ path: 'engine.md', sha: 'blob-sha-1', type: 'blob' as const }];
-
-  const handlers = {
-    getTree: (params: { tree_sha: string; recursive?: string }) => {
-      if (params.tree_sha === 'main') {
-        return {
-          data: {
-            sha: 'root-sha',
-            tree: [
-              { path: 'docs', sha: 'docs-sha', type: 'tree' as const },
-              { path: 'docs/specs', sha: specsDirTreeSha, type: 'tree' as const },
-            ],
-          },
-        };
-      }
-      return { data: { sha: specsDirTreeSha, tree: specFiles } };
-    },
-    getContent: () => ({
-      data: { content: toBase64(buildSpecContent('approved')) },
+test('it emits added events for all specs when the store is empty', async () => {
+  const specs = [
+    buildSpec({
+      filePath: 'docs/specs/engine.md',
+      blobSHA: 'sha-1',
+      frontmatterStatus: 'approved',
     }),
-    getRef: () => ({ data: { object: { sha: 'head-sha' } } }),
-  };
-
-  const { poller } = setupTest({ handlers });
-
-  // First poll: engine.md is new
-  await poller.poll();
-
-  // Second poll: engine.md modified + tui.md added
-  specsDirTreeSha = 'specs-tree-sha-2';
-  specFiles = [
-    { path: 'engine.md', sha: 'blob-sha-1-modified', type: 'blob' as const },
-    { path: 'tui.md', sha: 'blob-sha-2', type: 'blob' as const },
+    buildSpec({ filePath: 'docs/specs/tui.md', blobSHA: 'sha-2', frontmatterStatus: 'draft' }),
   ];
 
-  const result = await poller.poll();
+  const { events, createPoller } = setupTest({ providerSpecs: specs });
+  const poller = createPoller();
+  await poller.poll();
+  poller.stop();
 
-  expect(result.changes).toHaveLength(2);
-
-  const engineChange = result.changes.find((c) => c.filePath === 'docs/specs/engine.md');
-  const tuiChange = result.changes.find((c) => c.filePath === 'docs/specs/tui.md');
-
-  expect(engineChange).toStrictEqual({
+  expect(events).toHaveLength(2);
+  expect(events[0]).toStrictEqual({
+    type: 'specChanged',
     filePath: 'docs/specs/engine.md',
-    frontmatterStatus: 'approved',
-    changeType: 'modified',
-  });
-  expect(tuiChange).toStrictEqual({
-    filePath: 'docs/specs/tui.md',
+    blobSHA: 'sha-1',
     frontmatterStatus: 'approved',
     changeType: 'added',
+    commitSHA: 'commit-sha-abc',
   });
+  expect(events[1]).toStrictEqual({
+    type: 'specChanged',
+    filePath: 'docs/specs/tui.md',
+    blobSHA: 'sha-2',
+    frontmatterStatus: 'draft',
+    changeType: 'added',
+    commitSHA: 'commit-sha-abc',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Modified spec — blobSHA changed
+// ---------------------------------------------------------------------------
+
+test('it emits a modified event when a spec blob SHA changes', async () => {
+  const storedSpec = buildSpec({
+    filePath: 'docs/specs/engine.md',
+    blobSHA: 'old-sha',
+    frontmatterStatus: 'approved',
+  });
+  const providerSpec = buildSpec({
+    filePath: 'docs/specs/engine.md',
+    blobSHA: 'new-sha',
+    frontmatterStatus: 'approved',
+  });
+
+  const { events, createPoller } = setupTest({
+    providerSpecs: [providerSpec],
+    storedSpecs: [storedSpec],
+  });
+  const poller = createPoller();
+  await poller.poll();
+  poller.stop();
+
+  expect(events).toHaveLength(1);
+  expect(events[0]).toStrictEqual({
+    type: 'specChanged',
+    filePath: 'docs/specs/engine.md',
+    blobSHA: 'new-sha',
+    frontmatterStatus: 'approved',
+    changeType: 'modified',
+    commitSHA: 'commit-sha-abc',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Modified spec — frontmatterStatus changed
+// ---------------------------------------------------------------------------
+
+test('it emits a modified event when a spec frontmatter status changes', async () => {
+  const storedSpec = buildSpec({
+    filePath: 'docs/specs/engine.md',
+    blobSHA: 'sha-1',
+    frontmatterStatus: 'draft',
+  });
+  const providerSpec = buildSpec({
+    filePath: 'docs/specs/engine.md',
+    blobSHA: 'sha-1',
+    frontmatterStatus: 'approved',
+  });
+
+  const { events, createPoller } = setupTest({
+    providerSpecs: [providerSpec],
+    storedSpecs: [storedSpec],
+  });
+  const poller = createPoller();
+  await poller.poll();
+  poller.stop();
+
+  expect(events).toHaveLength(1);
+  expect(events[0]).toStrictEqual({
+    type: 'specChanged',
+    filePath: 'docs/specs/engine.md',
+    blobSHA: 'sha-1',
+    frontmatterStatus: 'approved',
+    changeType: 'modified',
+    commitSHA: 'commit-sha-abc',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// No changes — provider matches store exactly
+// ---------------------------------------------------------------------------
+
+test('it emits no events and skips commit SHA fetch when provider matches store', async () => {
+  const spec = buildSpec({
+    filePath: 'docs/specs/engine.md',
+    blobSHA: 'sha-1',
+    frontmatterStatus: 'approved',
+  });
+
+  const { reader, events, createPoller } = setupTest({
+    providerSpecs: [spec],
+    storedSpecs: [spec],
+  });
+  const poller = createPoller();
+  await poller.poll();
+  poller.stop();
+
+  expect(events).toHaveLength(0);
+  expect(reader.getDefaultBranchSHA).not.toHaveBeenCalled();
+});
+
+// ---------------------------------------------------------------------------
+// Removed spec — present in store, absent from provider
+// ---------------------------------------------------------------------------
+
+test('it does not emit events for specs present in store but absent from provider', async () => {
+  const storedSpec = buildSpec({ filePath: 'docs/specs/removed.md', blobSHA: 'sha-old' });
+  const providerSpec = buildSpec({ filePath: 'docs/specs/engine.md', blobSHA: 'sha-1' });
+
+  const { events, createPoller } = setupTest({
+    providerSpecs: [providerSpec],
+    storedSpecs: [storedSpec, providerSpec],
+  });
+  const poller = createPoller();
+  await poller.poll();
+  poller.stop();
+
+  expect(events).toHaveLength(0);
+});
+
+// ---------------------------------------------------------------------------
+// Reader throws — poll cycle is skipped
+// ---------------------------------------------------------------------------
+
+test('it skips the poll cycle without emitting events when the reader throws', async () => {
+  const { reader, events, createPoller } = setupTest();
+  reader.listSpecs.mockRejectedValue(new Error('GitHub API rate limit exceeded'));
+
+  const poller = createPoller();
+  await poller.poll();
+  poller.stop();
+
+  expect(events).toHaveLength(0);
+});
+
+// ---------------------------------------------------------------------------
+// Reader throws then recovers — next cycle proceeds normally
+// ---------------------------------------------------------------------------
+
+test('it proceeds normally on the next cycle after a reader failure', async () => {
+  const spec = buildSpec({ filePath: 'docs/specs/engine.md', blobSHA: 'sha-1' });
+  const { reader, events, createPoller } = setupTest();
+
+  const poller = createPoller();
+
+  reader.listSpecs.mockRejectedValueOnce(new Error('transient failure'));
+  await poller.poll();
+  expect(events).toHaveLength(0);
+
+  reader.listSpecs.mockResolvedValue([spec]);
+  await poller.poll();
+  poller.stop();
+
+  expect(events).toHaveLength(1);
+  expect(events[0]).toMatchObject({
+    changeType: 'added',
+    filePath: 'docs/specs/engine.md',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getDefaultBranchSHA throws — poll cycle skipped
+// ---------------------------------------------------------------------------
+
+test('it skips the poll cycle when getDefaultBranchSHA throws after changes detected', async () => {
+  const spec = buildSpec({ filePath: 'docs/specs/engine.md', blobSHA: 'sha-1' });
+  const { reader, events, createPoller } = setupTest({ providerSpecs: [spec] });
+  reader.getDefaultBranchSHA.mockRejectedValue(new Error('ref fetch failed'));
+
+  const poller = createPoller();
+  await poller.poll();
+  poller.stop();
+
+  expect(events).toHaveLength(0);
+});
+
+// ---------------------------------------------------------------------------
+// getDefaultBranchSHA throws then recovers — re-detects same changes
+// ---------------------------------------------------------------------------
+
+test('it re-detects the same changes on the next cycle after a commit SHA failure', async () => {
+  const spec = buildSpec({ filePath: 'docs/specs/engine.md', blobSHA: 'sha-1' });
+  const { reader, events, createPoller } = setupTest({ providerSpecs: [spec] });
+
+  reader.getDefaultBranchSHA
+    .mockRejectedValueOnce(new Error('ref fetch failed'))
+    .mockResolvedValueOnce('commit-sha-retry');
+
+  const poller = createPoller();
+
+  await poller.poll();
+  expect(events).toHaveLength(0);
+
+  await poller.poll();
+  poller.stop();
+
+  expect(events).toHaveLength(1);
+  expect(events[0]).toMatchObject({
+    filePath: 'docs/specs/engine.md',
+    changeType: 'added',
+    commitSHA: 'commit-sha-retry',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mixed batch — added and modified specs in a single cycle
+// ---------------------------------------------------------------------------
+
+test('it correctly distinguishes added and modified specs in a single cycle', async () => {
+  const storedSpec = buildSpec({
+    filePath: 'docs/specs/engine.md',
+    blobSHA: 'old-sha',
+    frontmatterStatus: 'draft',
+  });
+  const modifiedSpec = buildSpec({
+    filePath: 'docs/specs/engine.md',
+    blobSHA: 'new-sha',
+    frontmatterStatus: 'approved',
+  });
+  const addedSpec = buildSpec({
+    filePath: 'docs/specs/tui.md',
+    blobSHA: 'sha-2',
+    frontmatterStatus: 'draft',
+  });
+
+  const { events, createPoller } = setupTest({
+    providerSpecs: [modifiedSpec, addedSpec],
+    storedSpecs: [storedSpec],
+  });
+  const poller = createPoller();
+  await poller.poll();
+  poller.stop();
+
+  expect(events).toHaveLength(2);
+
+  const engineEvent = events.find((e) => e.filePath === 'docs/specs/engine.md');
+  expect(engineEvent).toMatchObject({
+    changeType: 'modified',
+    blobSHA: 'new-sha',
+    frontmatterStatus: 'approved',
+  });
+
+  const tuiEvent = events.find((e) => e.filePath === 'docs/specs/tui.md');
+  expect(tuiEvent).toMatchObject({
+    changeType: 'added',
+    blobSHA: 'sha-2',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multiple specs unchanged, one added
+// ---------------------------------------------------------------------------
+
+test('it only emits events for specs that differ from the store', async () => {
+  const unchanged = buildSpec({
+    filePath: 'docs/specs/engine.md',
+    blobSHA: 'sha-1',
+    frontmatterStatus: 'approved',
+  });
+  const added = buildSpec({
+    filePath: 'docs/specs/tui.md',
+    blobSHA: 'sha-2',
+    frontmatterStatus: 'draft',
+  });
+
+  const { events, createPoller } = setupTest({
+    providerSpecs: [unchanged, added],
+    storedSpecs: [unchanged],
+  });
+  const poller = createPoller();
+  await poller.poll();
+  poller.stop();
+
+  expect(events).toHaveLength(1);
+  expect(events[0]).toMatchObject({
+    filePath: 'docs/specs/tui.md',
+    changeType: 'added',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Commit SHA is included in all events of a cycle
+// ---------------------------------------------------------------------------
+
+test('it includes the commit SHA from getDefaultBranchSHA in all emitted events', async () => {
+  const specs = [
+    buildSpec({ filePath: 'docs/specs/a.md', blobSHA: 'sha-a' }),
+    buildSpec({ filePath: 'docs/specs/b.md', blobSHA: 'sha-b' }),
+    buildSpec({ filePath: 'docs/specs/c.md', blobSHA: 'sha-c' }),
+  ];
+
+  const { reader, events, createPoller } = setupTest({ providerSpecs: specs });
+  reader.getDefaultBranchSHA.mockResolvedValue('commit-sha-xyz');
+
+  const poller = createPoller();
+  await poller.poll();
+  poller.stop();
+
+  expect(events).toHaveLength(3);
+  for (const event of events) {
+    expect(event.commitSHA).toBe('commit-sha-xyz');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// stop() — basic functionality
+// ---------------------------------------------------------------------------
+
+test('it exposes poll and stop methods on the returned interface', () => {
+  const { createPoller } = setupTest();
+  const poller = createPoller();
+
+  expect(typeof poller.poll).toBe('function');
+  expect(typeof poller.stop).toBe('function');
+
+  poller.stop();
+});
+
+// ---------------------------------------------------------------------------
+// poll returns void
+// ---------------------------------------------------------------------------
+
+test('it returns void from poll', async () => {
+  const { createPoller } = setupTest();
+  const poller = createPoller();
+  const result = await poller.poll();
+  poller.stop();
+
+  expect(result).toBeUndefined();
+});
+
+// ---------------------------------------------------------------------------
+// stop is safe to call before any poll
+// ---------------------------------------------------------------------------
+
+test('it is safe to call stop before any poll has been invoked', () => {
+  const { createPoller } = setupTest();
+  const poller = createPoller();
+
+  poller.stop();
+});
+
+// ---------------------------------------------------------------------------
+// Empty provider and empty store
+// ---------------------------------------------------------------------------
+
+test('it emits no events when both the provider and store are empty', async () => {
+  const { events, createPoller } = setupTest();
+  const poller = createPoller();
+  await poller.poll();
+  poller.stop();
+
+  expect(events).toHaveLength(0);
+});
+
+// ---------------------------------------------------------------------------
+// Interval polling — no timer before first poll
+// ---------------------------------------------------------------------------
+
+test('it does not start the interval timer before the first poll is invoked', async () => {
+  vi.useFakeTimers();
+
+  const spec = buildSpec({ filePath: 'docs/specs/engine.md', blobSHA: 'sha-1' });
+  const { reader, createPoller } = setupTest({ providerSpecs: [spec] });
+  const poller = createPoller();
+
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(reader.listSpecs).not.toHaveBeenCalled();
+
+  poller.stop();
+  vi.useRealTimers();
+});
+
+// ---------------------------------------------------------------------------
+// Interval polling — starts after first direct poll
+// ---------------------------------------------------------------------------
+
+test('it starts interval-based polling only after the first direct poll completes', async () => {
+  vi.useFakeTimers();
+
+  const spec = buildSpec({ filePath: 'docs/specs/engine.md', blobSHA: 'sha-1' });
+  const { reader, events, createPoller } = setupTest({ providerSpecs: [spec] });
+  const poller = createPoller();
+
+  await poller.poll();
+  expect(reader.listSpecs).toHaveBeenCalledTimes(1);
+  expect(events).toHaveLength(1);
+
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(reader.listSpecs).toHaveBeenCalledTimes(2);
+
+  poller.stop();
+  vi.useRealTimers();
+});
+
+// ---------------------------------------------------------------------------
+// Interval polling — stop prevents subsequent interval polls
+// ---------------------------------------------------------------------------
+
+test('it prevents subsequent interval polls when stop is called after the first poll', async () => {
+  vi.useFakeTimers();
+
+  const spec = buildSpec({ filePath: 'docs/specs/engine.md', blobSHA: 'sha-1' });
+  const { reader, createPoller } = setupTest({ providerSpecs: [spec] });
+  const poller = createPoller();
+
+  await poller.poll();
+  expect(reader.listSpecs).toHaveBeenCalledTimes(1);
+
+  poller.stop();
+
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(reader.listSpecs).toHaveBeenCalledTimes(1);
+
+  vi.useRealTimers();
+});
+
+// ---------------------------------------------------------------------------
+// Interval polling — fires multiple automatic polls
+// ---------------------------------------------------------------------------
+
+test('it fires multiple automatic polls via the interval timer', async () => {
+  vi.useFakeTimers();
+
+  const spec = buildSpec({ filePath: 'docs/specs/engine.md', blobSHA: 'sha-1' });
+  const { reader, createPoller } = setupTest({ providerSpecs: [spec] });
+  const poller = createPoller();
+
+  await poller.poll();
+  expect(reader.listSpecs).toHaveBeenCalledTimes(1);
+
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(reader.listSpecs).toHaveBeenCalledTimes(2);
+
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(reader.listSpecs).toHaveBeenCalledTimes(3);
+
+  poller.stop();
+  vi.useRealTimers();
 });

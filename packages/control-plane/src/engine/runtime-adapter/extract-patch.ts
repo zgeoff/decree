@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+// promisify(execFile) overload resolution requires cast — genuine TS limitation
 const execFileAsync: (
   file: string,
   args: string[],

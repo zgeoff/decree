@@ -13,7 +13,7 @@ export interface PlannerContextDeps {
   repoRoot: string;
   workItemReader: Pick<WorkProviderReader, 'getWorkItemBody'>;
   gitShowBlob: (blobSHA: string) => Promise<string>;
-  createDiff: (oldContent: string, newContent: string, filePath: string) => string;
+  createDiff: (oldContent: string, newContent: string, filePath: string) => Promise<string>;
 }
 
 // --- Primary export ---
@@ -69,7 +69,7 @@ async function buildSpecSection(
   }
 
   const oldContent = await deps.gitShowBlob(lastPlannedBlobSHA);
-  const diff = deps.createDiff(oldContent, content, filePath);
+  const diff = await deps.createDiff(oldContent, content, filePath);
   return `### ${filePath} (modified)\n${content}\n\n#### Diff\n${diff}`;
 }
 

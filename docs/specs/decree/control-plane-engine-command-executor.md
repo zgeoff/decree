@@ -39,6 +39,8 @@ interface CommandExecutorDeps {
   policy: Policy;
   getState: () => EngineState;
   enqueue: (event: EngineEvent) => void;
+  onHandleRegistered?: (sessionID: string, handle: AgentRunHandle) => void;
+  onHandleRemoved?: (sessionID: string) => void;
 }
 
 interface CommandExecutor {
@@ -51,6 +53,13 @@ interface CommandExecutor {
 `getState` and `enqueue` are used by `startAgentAsync` — the async monitor needs to enqueue agent
 lifecycle events after the synchronous `execute` call has returned. The `state` parameter on
 `execute` is the snapshot passed by the processing loop for guard and policy checks.
+
+`onHandleRegistered` and `onHandleRemoved` are optional callbacks that bridge the executor's
+internal agent session tracking to the engine's external handle map. When `startAgentAsync` receives
+an `AgentRunHandle` from the runtime adapter, it calls `onHandleRegistered(sessionID, handle)`. When
+the agent run reaches a terminal state, it calls `onHandleRemoved(sessionID)`. The engine uses these
+callbacks to maintain the private `Map<string, AgentRunHandle>` described in
+[control-plane-engine.md: Agent Run Handle Map](./control-plane-engine.md#agent-run-handle-map).
 
 > **Rationale:** The processing loop passes a single state snapshot to all handlers and the executor
 > within one event cycle. The executor does not re-read state between command executions — this

@@ -2,6 +2,8 @@ import { Box } from 'ink';
 import { render } from 'ink-testing-library';
 import { expect, test, vi } from 'vitest';
 import type { StoreApi } from 'zustand';
+import type { Logger } from '../../engine/create-logger.ts';
+import { createLogger } from '../../engine/create-logger.ts';
 import { applyStateUpdate } from '../../engine/state-store/apply-state-update.ts';
 import type { EngineState } from '../../engine/state-store/types.ts';
 import { buildRevision } from '../../test-utils/build-revision.ts';
@@ -10,6 +12,9 @@ import { createTUIStore } from '../store.ts';
 import { createMockEngine } from '../test-utils/create-mock-engine.ts';
 import type { TUIActions, TUILocalState } from '../types.ts';
 import { DetailPane } from './detail-pane.tsx';
+
+// biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op writer for test logger
+const testLogger: Logger = createLogger({ logLevel: 'error', writer: () => {} });
 
 interface SetupTestOptions {
   paneWidth?: number;
@@ -50,15 +55,19 @@ function addWorkItem(
     title: overrides.title ?? `Work item ${overrides.id}`,
     status: (overrides.status as 'ready') ?? 'ready',
   });
-  applyStateUpdate(engineStore, {
-    type: 'workItemChanged',
-    workItemID: overrides.id,
-    workItem,
-    title: workItem.title,
-    oldStatus: null,
-    newStatus: workItem.status,
-    priority: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'workItemChanged',
+      workItemID: overrides.id,
+      workItem,
+      title: workItem.title,
+      oldStatus: null,
+      newStatus: workItem.status,
+      priority: null,
+    },
+    testLogger,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +77,7 @@ function addWorkItem(
 test('it shows a placeholder when no work item is pinned', () => {
   const { lastFrame } = setupTest();
 
-  expect(lastFrame()).toContain('No task selected');
+  expect(lastFrame()).toContain('No work item selected');
 });
 
 // ---------------------------------------------------------------------------
@@ -185,6 +194,63 @@ test('it shows a loading indicator when the detail cache entry is in loading sta
   });
 });
 
+test('it shows priority and complexity labels when set on the work item', async () => {
+  const { engineStore, tuiStore, lastFrame } = setupTest();
+
+  const workItem = buildWorkItem({
+    id: '1',
+    title: 'Labeled task',
+    status: 'ready',
+    priority: 'high',
+    complexity: 'medium',
+  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'workItemChanged',
+      workItemID: '1',
+      workItem,
+      title: workItem.title,
+      oldStatus: null,
+      newStatus: 'ready',
+      priority: 'high',
+    },
+    testLogger,
+  );
+
+  tuiStore.setState({
+    detailCache: new Map([['1', { body: 'Some body text', revisionFiles: null, loading: false }]]),
+  });
+  pinWorkItem(tuiStore, '1');
+
+  await vi.waitFor(() => {
+    const frame = lastFrame();
+    expect(frame).toContain('#1 Labeled task');
+    expect(frame).toContain('Priority: high');
+    expect(frame).toContain('Complexity: medium');
+    expect(frame).toContain('Some body text');
+  });
+});
+
+test('it omits priority and complexity labels when not set', async () => {
+  const { engineStore, tuiStore, lastFrame } = setupTest();
+
+  addWorkItem(engineStore, { id: '1', title: 'No labels', status: 'ready' });
+
+  tuiStore.setState({
+    detailCache: new Map([['1', { body: 'Body content', revisionFiles: null, loading: false }]]),
+  });
+  pinWorkItem(tuiStore, '1');
+
+  await vi.waitFor(() => {
+    const frame = lastFrame();
+    expect(frame).toContain('#1 No labels');
+    expect(frame).not.toContain('Priority:');
+    expect(frame).not.toContain('Complexity:');
+    expect(frame).toContain('Body content');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Agent stream view (implementing, reviewing)
 // ---------------------------------------------------------------------------
@@ -194,17 +260,25 @@ test('it streams live implementor output when an agent is implementing', async (
 
   addWorkItem(engineStore, { id: '1', title: 'Implement feature', status: 'in-progress' });
 
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   tuiStore.setState({
     streamBuffers: new Map([
@@ -227,17 +301,25 @@ test('it streams live reviewer output when a reviewer is running', async () => {
 
   addWorkItem(engineStore, { id: '1', title: 'Review PR', status: 'review' });
 
-  applyStateUpdate(engineStore, {
-    type: 'reviewerRequested',
-    workItemID: '1',
-    revisionID: 'rev-1',
-    sessionID: 'sess-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'reviewerStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'reviewerRequested',
+      workItemID: '1',
+      revisionID: 'rev-1',
+      sessionID: 'sess-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'reviewerStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   tuiStore.setState({
     streamBuffers: new Map([['sess-1', ['Reviewing changes...', 'Code looks good.']]]),
@@ -257,17 +339,25 @@ test('it auto-scrolls to the latest output when new chunks arrive', async () => 
 
   addWorkItem(engineStore, { id: '1', title: 'Implement feature', status: 'in-progress' });
 
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   tuiStore.setState({
     streamBuffers: new Map([['sess-1', ['Line 1']]]),
@@ -292,17 +382,25 @@ test('it only displays the last lines when the stream buffer exceeds the cap', a
 
   addWorkItem(engineStore, { id: '1', title: 'Big stream', status: 'in-progress' });
 
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   const lines: string[] = [];
   for (let i = 1; i <= 10_000; i += 1) {
@@ -335,15 +433,19 @@ test('it displays a revision summary for an approved work item with cached revis
     status: 'approved',
     linkedRevision: 'rev-10',
   });
-  applyStateUpdate(engineStore, {
-    type: 'workItemChanged',
-    workItemID: '1',
-    workItem,
-    title: workItem.title,
-    oldStatus: null,
-    newStatus: 'approved',
-    priority: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'workItemChanged',
+      workItemID: '1',
+      workItem,
+      title: workItem.title,
+      oldStatus: null,
+      newStatus: 'approved',
+      priority: null,
+    },
+    testLogger,
+  );
 
   const revision = buildRevision({
     id: 'rev-10',
@@ -351,14 +453,18 @@ test('it displays a revision summary for an approved work item with cached revis
     workItemID: '1',
     pipeline: { status: 'success', url: null, reason: null },
   });
-  applyStateUpdate(engineStore, {
-    type: 'revisionChanged',
-    revisionID: 'rev-10',
-    workItemID: '1',
-    revision,
-    oldPipelineStatus: null,
-    newPipelineStatus: 'success',
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'revisionChanged',
+      revisionID: 'rev-10',
+      workItemID: '1',
+      revision,
+      oldPipelineStatus: null,
+      newPipelineStatus: 'success',
+    },
+    testLogger,
+  );
 
   tuiStore.setState({
     detailCache: new Map([
@@ -380,6 +486,7 @@ test('it displays a revision summary for an approved work item with cached revis
   await vi.waitFor(() => {
     const frame = lastFrame();
     expect(frame).toContain('PR rev-10: feat: approved PR');
+    expect(frame).toContain('https://example.com/pr/rev-10');
     expect(frame).toContain('Changed files: 2');
     expect(frame).toContain('CI: success');
   });
@@ -394,25 +501,33 @@ test('it shows loading for a revision summary when detail is not yet cached', as
     status: 'approved',
     linkedRevision: 'rev-10',
   });
-  applyStateUpdate(engineStore, {
-    type: 'workItemChanged',
-    workItemID: '1',
-    workItem,
-    title: workItem.title,
-    oldStatus: null,
-    newStatus: 'approved',
-    priority: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'workItemChanged',
+      workItemID: '1',
+      workItem,
+      title: workItem.title,
+      oldStatus: null,
+      newStatus: 'approved',
+      priority: null,
+    },
+    testLogger,
+  );
 
   const revision = buildRevision({ id: 'rev-10', title: 'feat: approved PR', workItemID: '1' });
-  applyStateUpdate(engineStore, {
-    type: 'revisionChanged',
-    revisionID: 'rev-10',
-    workItemID: '1',
-    revision,
-    oldPipelineStatus: null,
-    newPipelineStatus: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'revisionChanged',
+      revisionID: 'rev-10',
+      workItemID: '1',
+      revision,
+      oldPipelineStatus: null,
+      newPipelineStatus: 'pending',
+    },
+    testLogger,
+  );
 
   pinWorkItem(tuiStore, '1');
 
@@ -432,25 +547,33 @@ test('it displays revision file statuses in the summary', async () => {
     status: 'approved',
     linkedRevision: 'rev-10',
   });
-  applyStateUpdate(engineStore, {
-    type: 'workItemChanged',
-    workItemID: '1',
-    workItem,
-    title: workItem.title,
-    oldStatus: null,
-    newStatus: 'approved',
-    priority: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'workItemChanged',
+      workItemID: '1',
+      workItem,
+      title: workItem.title,
+      oldStatus: null,
+      newStatus: 'approved',
+      priority: null,
+    },
+    testLogger,
+  );
 
   const revision = buildRevision({ id: 'rev-10', title: 'feat: multi-file', workItemID: '1' });
-  applyStateUpdate(engineStore, {
-    type: 'revisionChanged',
-    revisionID: 'rev-10',
-    workItemID: '1',
-    revision,
-    oldPipelineStatus: null,
-    newPipelineStatus: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'revisionChanged',
+      revisionID: 'rev-10',
+      workItemID: '1',
+      revision,
+      oldPipelineStatus: null,
+      newPipelineStatus: 'pending',
+    },
+    testLogger,
+  );
 
   tuiStore.setState({
     detailCache: new Map([
@@ -488,15 +611,19 @@ test('it displays CI failure details with the failure reason', async () => {
     status: 'approved',
     linkedRevision: 'rev-10',
   });
-  applyStateUpdate(engineStore, {
-    type: 'workItemChanged',
-    workItemID: '1',
-    workItem,
-    title: workItem.title,
-    oldStatus: null,
-    newStatus: 'approved',
-    priority: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'workItemChanged',
+      workItemID: '1',
+      workItem,
+      title: workItem.title,
+      oldStatus: null,
+      newStatus: 'approved',
+      priority: null,
+    },
+    testLogger,
+  );
 
   const revision = buildRevision({
     id: 'rev-10',
@@ -504,14 +631,18 @@ test('it displays CI failure details with the failure reason', async () => {
     workItemID: '1',
     pipeline: { status: 'failure', url: null, reason: 'lint check failed' },
   });
-  applyStateUpdate(engineStore, {
-    type: 'revisionChanged',
-    revisionID: 'rev-10',
-    workItemID: '1',
-    revision,
-    oldPipelineStatus: null,
-    newPipelineStatus: 'failure',
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'revisionChanged',
+      revisionID: 'rev-10',
+      workItemID: '1',
+      revision,
+      oldPipelineStatus: null,
+      newPipelineStatus: 'failure',
+    },
+    testLogger,
+  );
 
   tuiStore.setState({
     detailCache: new Map([
@@ -556,25 +687,38 @@ test('it shows crash details for an implementor failure', async () => {
 
   addWorkItem(engineStore, { id: '1', title: 'Failed task', status: 'in-progress' });
 
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-abc-123',
-    branchName: 'issue-1-1700000000',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-abc-123',
-    logFilePath: null,
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorFailed',
-    workItemID: '1',
-    sessionID: 'sess-abc-123',
-    branchName: 'issue-1-1700000000',
-    error: 'process crashed',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-abc-123',
+      branchName: 'issue-1-1700000000',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-abc-123',
+      logFilePath: null,
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorFailed',
+      workItemID: '1',
+      sessionID: 'sess-abc-123',
+      branchName: 'issue-1-1700000000',
+      reason: 'error',
+      error: 'process crashed',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   pinWorkItem(tuiStore, '1');
 
@@ -592,25 +736,38 @@ test('it shows crash details for a reviewer failure', async () => {
 
   addWorkItem(engineStore, { id: '1', title: 'Failed review', status: 'review' });
 
-  applyStateUpdate(engineStore, {
-    type: 'reviewerRequested',
-    workItemID: '1',
-    revisionID: 'rev-1',
-    sessionID: 'sess-rev-456',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'reviewerStarted',
-    sessionID: 'sess-rev-456',
-    logFilePath: null,
-  });
-  applyStateUpdate(engineStore, {
-    type: 'reviewerFailed',
-    workItemID: '1',
-    revisionID: 'rev-1',
-    sessionID: 'sess-rev-456',
-    error: 'review timeout',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'reviewerRequested',
+      workItemID: '1',
+      revisionID: 'rev-1',
+      sessionID: 'sess-rev-456',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'reviewerStarted',
+      sessionID: 'sess-rev-456',
+      logFilePath: null,
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'reviewerFailed',
+      workItemID: '1',
+      revisionID: 'rev-1',
+      sessionID: 'sess-rev-456',
+      reason: 'error',
+      error: 'review timeout',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   pinWorkItem(tuiStore, '1');
 
@@ -618,6 +775,54 @@ test('it shows crash details for a reviewer failure', async () => {
     const frame = lastFrame();
     expect(frame).toContain('Agent: Reviewer');
     expect(frame).toContain('Session: sess-rev-456');
+    expect(frame).not.toContain('Press [d] to retry');
+  });
+});
+
+test('it shows the error message in the crash detail view', async () => {
+  const { engineStore, tuiStore, lastFrame } = setupTest();
+
+  addWorkItem(engineStore, { id: '1', title: 'Failed task', status: 'in-progress' });
+
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-err-1',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-err-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorFailed',
+      workItemID: '1',
+      sessionID: 'sess-err-1',
+      branchName: 'issue-1',
+      reason: 'error',
+      error: 'segmentation fault',
+      logFilePath: null,
+    },
+    testLogger,
+  );
+
+  pinWorkItem(tuiStore, '1');
+
+  await vi.waitFor(() => {
+    const frame = lastFrame();
+    expect(frame).toContain('Agent: Implementor');
+    expect(frame).toContain('Error: segmentation fault');
   });
 });
 
@@ -626,25 +831,38 @@ test('it shows the log file path as an OSC 8 terminal hyperlink', async () => {
 
   addWorkItem(engineStore, { id: '1', title: 'Failed task', status: 'in-progress' });
 
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-abc-123',
-    branchName: 'issue-1-1700000000',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-abc-123',
-    logFilePath: null,
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorFailed',
-    workItemID: '1',
-    sessionID: 'sess-abc-123',
-    branchName: 'issue-1-1700000000',
-    error: 'process crashed',
-    logFilePath: '/logs/agent.log',
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-abc-123',
+      branchName: 'issue-1-1700000000',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-abc-123',
+      logFilePath: null,
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorFailed',
+      workItemID: '1',
+      sessionID: 'sess-abc-123',
+      branchName: 'issue-1-1700000000',
+      reason: 'error',
+      error: 'process crashed',
+      logFilePath: '/logs/agent.log',
+    },
+    testLogger,
+  );
 
   pinWorkItem(tuiStore, '1');
 
@@ -659,25 +877,38 @@ test('it does not show a log file line when log file path is not present', async
 
   addWorkItem(engineStore, { id: '1', title: 'Failed task', status: 'in-progress' });
 
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-abc-123',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-abc-123',
-    logFilePath: null,
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorFailed',
-    workItemID: '1',
-    sessionID: 'sess-abc-123',
-    branchName: 'issue-1',
-    error: 'process crashed',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-abc-123',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-abc-123',
+      logFilePath: null,
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorFailed',
+      workItemID: '1',
+      sessionID: 'sess-abc-123',
+      branchName: 'issue-1',
+      reason: 'error',
+      error: 'process crashed',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   pinWorkItem(tuiStore, '1');
 
@@ -711,25 +942,38 @@ test('it shows a fallback message when a failed work item has no agent run data'
   // Keeping the test structure but adjusting to test a related behavior.
   addWorkItem(engineStore, { id: '1', title: 'Failed task', status: 'in-progress' });
 
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-abc-123',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-abc-123',
-    logFilePath: null,
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorFailed',
-    workItemID: '1',
-    sessionID: 'sess-abc-123',
-    branchName: 'issue-1',
-    error: 'process crashed',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-abc-123',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-abc-123',
+      logFilePath: null,
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorFailed',
+      workItemID: '1',
+      sessionID: 'sess-abc-123',
+      branchName: 'issue-1',
+      reason: 'error',
+      error: 'process crashed',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   pinWorkItem(tuiStore, '1');
 
@@ -749,17 +993,25 @@ test('it switches from stream view to revision summary when status changes', asy
 
   addWorkItem(engineStore, { id: '1', title: 'Task', status: 'in-progress' });
 
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   tuiStore.setState({
     streamBuffers: new Map([['sess-1', ['Building...']]]),
@@ -771,14 +1023,18 @@ test('it switches from stream view to revision summary when status changes', asy
   });
 
   // Complete the implementor run
-  applyStateUpdate(engineStore, {
-    type: 'implementorCompleted',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-    result: { role: 'implementor', outcome: 'completed', patch: null, summary: 'done' },
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorCompleted',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+      result: { role: 'implementor', outcome: 'completed', patch: null, summary: 'done' },
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   // Change status to approved with a linked revision
   const workItem = buildWorkItem({
@@ -787,15 +1043,19 @@ test('it switches from stream view to revision summary when status changes', asy
     status: 'approved',
     linkedRevision: 'rev-10',
   });
-  applyStateUpdate(engineStore, {
-    type: 'workItemChanged',
-    workItemID: '1',
-    workItem,
-    title: workItem.title,
-    oldStatus: 'in-progress',
-    newStatus: 'approved',
-    priority: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'workItemChanged',
+      workItemID: '1',
+      workItem,
+      title: workItem.title,
+      oldStatus: 'in-progress',
+      newStatus: 'approved',
+      priority: null,
+    },
+    testLogger,
+  );
 
   const revision = buildRevision({
     id: 'rev-10',
@@ -803,14 +1063,18 @@ test('it switches from stream view to revision summary when status changes', asy
     workItemID: '1',
     pipeline: { status: 'success', url: null, reason: null },
   });
-  applyStateUpdate(engineStore, {
-    type: 'revisionChanged',
-    revisionID: 'rev-10',
-    workItemID: '1',
-    revision,
-    oldPipelineStatus: null,
-    newPipelineStatus: 'success',
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'revisionChanged',
+      revisionID: 'rev-10',
+      workItemID: '1',
+      revision,
+      oldPipelineStatus: null,
+      newPipelineStatus: 'success',
+    },
+    testLogger,
+  );
 
   tuiStore.setState({
     detailCache: new Map([
@@ -867,27 +1131,39 @@ test('it resumes auto-scroll from the tail when status changes to a stream view'
 
   // Status changes to implementing — auto-scroll should resume from tail
   const updatedWorkItem = buildWorkItem({ id: '1', title: 'Task', status: 'in-progress' });
-  applyStateUpdate(engineStore, {
-    type: 'workItemChanged',
-    workItemID: '1',
-    workItem: updatedWorkItem,
-    title: updatedWorkItem.title,
-    oldStatus: 'ready',
-    newStatus: 'in-progress',
-    priority: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'workItemChanged',
+      workItemID: '1',
+      workItem: updatedWorkItem,
+      title: updatedWorkItem.title,
+      oldStatus: 'ready',
+      newStatus: 'in-progress',
+      priority: null,
+    },
+    testLogger,
+  );
 
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   // 5 chunks + 1 header = 6 total lines, paneHeight=3 -> tail should show last 3
   tuiStore.setState({
@@ -948,15 +1224,19 @@ test('it resets scroll position to top when the pinned work item status changes 
 
   // Change status — scroll should reset
   const updatedWorkItem = buildWorkItem({ id: '1', title: 'Task', status: 'blocked' });
-  applyStateUpdate(engineStore, {
-    type: 'workItemChanged',
-    workItemID: '1',
-    workItem: updatedWorkItem,
-    title: updatedWorkItem.title,
-    oldStatus: 'ready',
-    newStatus: 'blocked',
-    priority: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'workItemChanged',
+      workItemID: '1',
+      workItem: updatedWorkItem,
+      title: updatedWorkItem.title,
+      oldStatus: 'ready',
+      newStatus: 'blocked',
+      priority: null,
+    },
+    testLogger,
+  );
 
   await vi.waitFor(() => {
     expect(lastFrame()).toContain('#1 Task');
@@ -1102,17 +1382,25 @@ test('it applies scroll windowing to streaming output', async () => {
 
   addWorkItem(engineStore, { id: '1', title: 'Streaming', status: 'in-progress' });
 
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   // 5 chunks + 1 header = 6 total lines, paneHeight=3
   tuiStore.setState({
@@ -1133,33 +1421,47 @@ test('it applies scroll windowing to the crash detail view', async () => {
 
   addWorkItem(engineStore, { id: '1', title: 'Failed task', status: 'in-progress' });
 
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-abc-123',
-    branchName: 'issue-1-1700000000',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-abc-123',
-    logFilePath: null,
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorFailed',
-    workItemID: '1',
-    sessionID: 'sess-abc-123',
-    branchName: 'issue-1-1700000000',
-    error: 'process crashed',
-    logFilePath: '/logs/agent.log',
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-abc-123',
+      branchName: 'issue-1-1700000000',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-abc-123',
+      logFilePath: null,
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorFailed',
+      workItemID: '1',
+      sessionID: 'sess-abc-123',
+      branchName: 'issue-1-1700000000',
+      reason: 'error',
+      error: 'process crashed',
+      logFilePath: '/logs/agent.log',
+    },
+    testLogger,
+  );
 
   pinWorkItem(tuiStore, '1');
 
   await vi.waitFor(() => {
     const frame = lastFrame();
     // With 3 visible rows, only first 3 of crash lines visible:
-    // "Agent: Implementor", "Session: sess-abc-123", "Branch: issue-1-1700000000"
+    // "Agent: Implementor", "Error: process crashed", "Session: sess-abc-123"
     expect(frame).toContain('Agent: Implementor');
+    expect(frame).toContain('Error: process crashed');
     // Later lines should NOT be visible without scrolling
     expect(frame).not.toContain('Press [d]');
   });
@@ -1174,15 +1476,19 @@ test('it applies scroll windowing to the revision summary', async () => {
     status: 'approved',
     linkedRevision: 'rev-10',
   });
-  applyStateUpdate(engineStore, {
-    type: 'workItemChanged',
-    workItemID: '1',
-    workItem,
-    title: workItem.title,
-    oldStatus: null,
-    newStatus: 'approved',
-    priority: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'workItemChanged',
+      workItemID: '1',
+      workItem,
+      title: workItem.title,
+      oldStatus: null,
+      newStatus: 'approved',
+      priority: null,
+    },
+    testLogger,
+  );
 
   const revision = buildRevision({
     id: 'rev-10',
@@ -1190,14 +1496,18 @@ test('it applies scroll windowing to the revision summary', async () => {
     workItemID: '1',
     pipeline: { status: 'success', url: null, reason: null },
   });
-  applyStateUpdate(engineStore, {
-    type: 'revisionChanged',
-    revisionID: 'rev-10',
-    workItemID: '1',
-    revision,
-    oldPipelineStatus: null,
-    newPipelineStatus: 'success',
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'revisionChanged',
+      revisionID: 'rev-10',
+      workItemID: '1',
+      revision,
+      oldPipelineStatus: null,
+      newPipelineStatus: 'success',
+    },
+    testLogger,
+  );
 
   tuiStore.setState({
     detailCache: new Map([
@@ -1218,7 +1528,7 @@ test('it applies scroll windowing to the revision summary', async () => {
 
   await vi.waitFor(() => {
     const frame = lastFrame();
-    // 5 lines: PR title, Changed files, 2 file entries, CI status
+    // 6 lines: PR title, URL, Changed files, 2 file entries, CI status
     // Only first 3 should be visible
     expect(frame).toContain('PR rev-10: feat: add login');
     expect(frame).toContain('Changed files: 2');
@@ -1295,17 +1605,25 @@ test('it resumes auto-scroll when the user scrolls back to the bottom of the str
 
   addWorkItem(engineStore, { id: '1', title: 'Streaming', status: 'in-progress' });
 
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   // 4 chunks + 1 header = 5 total lines
   tuiStore.setState({
@@ -1458,6 +1776,6 @@ test('it shows the no-task placeholder when the pinned work item is unpinned', a
   tuiStore.setState({ pinnedWorkItem: null });
 
   await vi.waitFor(() => {
-    expect(lastFrame()).toContain('No task selected');
+    expect(lastFrame()).toContain('No work item selected');
   });
 });

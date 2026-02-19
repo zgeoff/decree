@@ -73,6 +73,7 @@ test('it counts failed work items in the action section', () => {
     workItemID: 'wi-1',
     branchName: 'branch-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 

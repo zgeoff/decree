@@ -1,3191 +1,1175 @@
-import { execFileSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { vol } from 'memfs';
 import invariant from 'tiny-invariant';
+import type { Mock } from 'vitest';
 import { expect, test, vi } from 'vitest';
-import { buildPullsListItem } from '../test-utils/build-pulls-list-item.ts';
-import { buildValidConfig } from '../test-utils/build-valid-config.ts';
-import { createMockGitHubClient } from '../test-utils/create-mock-github-client.ts';
+import { buildWorkItemChangedUpsert } from '../test-utils/build-work-item-changed-upsert.ts';
+import type { Handler } from './handlers/types.ts';
 import type {
-  AgentCompletedEvent,
-  AgentFailedEvent,
-  CIStatusChangedEvent,
+  AgentRole,
+  EngineCommand,
   EngineEvent,
-  IssueStatusChangedEvent,
-  PRLinkedEvent,
-} from '../types.ts';
-import type { AgentQuery, QueryFactory, QueryFactoryParams } from './agent-manager/types.ts';
+  WorkItemChanged,
+} from './state-store/domain-type-stubs.ts';
+import type { EngineState } from './state-store/types.ts';
+import type { Engine, EngineConfig } from './types.ts';
+
+// --- Mock modules ---
+
+// Mock all component factories so we inject test doubles rather than real implementations
+vi.mock('./state-store/create-engine-store.ts', () => ({
+  createEngineStore: vi.fn(),
+}));
+
+vi.mock('./event-queue/create-event-queue.ts', () => ({
+  createEventQueue: vi.fn(),
+}));
+
+vi.mock('./state-store/apply-state-update.ts', () => ({
+  applyStateUpdate: vi.fn(),
+}));
+
+vi.mock('./handlers/create-handlers.ts', () => ({
+  createHandlers: vi.fn(),
+}));
+
+vi.mock('./command-executor/create-command-executor.ts', () => ({
+  createCommandExecutor: vi.fn(),
+}));
+
+vi.mock('./pollers/create-work-item-poller.ts', () => ({
+  createWorkItemPoller: vi.fn(),
+}));
+
+vi.mock('./pollers/create-revision-poller.ts', () => ({
+  createRevisionPoller: vi.fn(),
+}));
+
+vi.mock('./pollers/create-spec-poller.ts', () => ({
+  createSpecPoller: vi.fn(),
+}));
+
+vi.mock('./review-history-fetcher/build-review-history-fetcher.ts', () => ({
+  buildReviewHistoryFetcher: vi.fn().mockReturnValue(vi.fn()),
+}));
+
+vi.mock('./default-policy.ts', () => ({
+  defaultPolicy: vi.fn().mockReturnValue({ allowed: true, reason: null }),
+}));
+
+// Import the mocked factories so we can configure them per test
+import { createCommandExecutor } from './command-executor/create-command-executor.ts';
 import { createEngine } from './create-engine.ts';
-import type { GitHubClient } from './github-client/types.ts';
-import type { PlannerCacheEntry } from './planner-cache/types.ts';
-import type { WorktreeManager } from './worktree-manager/types.ts';
+import { defaultPolicy } from './default-policy.ts';
+import { createEventQueue } from './event-queue/create-event-queue.ts';
+import { createHandlers } from './handlers/create-handlers.ts';
+import { createRevisionPoller } from './pollers/create-revision-poller.ts';
+import { createSpecPoller } from './pollers/create-spec-poller.ts';
+import { createWorkItemPoller } from './pollers/create-work-item-poller.ts';
+import { applyStateUpdate } from './state-store/apply-state-update.ts';
+import { createEngineStore } from './state-store/create-engine-store.ts';
 
-const FRESH_BRANCH_PATTERN = /^issue-42-\d+$/;
+// --- Test helpers ---
 
-vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>();
+interface MockComponents {
+  store: MockStore;
+  queue: MockQueue;
+  executor: MockExecutor;
+  handlers: Handler[];
+  workItemPoller: MockPoller;
+  revisionPoller: MockPoller;
+  specPoller: MockPoller;
+  runtimeAdapters: Record<AgentRole, MockRuntimeAdapter>;
+}
+
+interface MockStore {
+  getState: Mock;
+  getInitialState: Mock;
+  setState: Mock;
+  subscribe: Mock;
+  destroy: Mock;
+}
+
+interface MockQueue {
+  enqueue: Mock;
+  dequeue: Mock;
+  isEmpty: Mock;
+  size: Mock;
+  setRejecting: Mock;
+}
+
+interface MockExecutor {
+  execute: Mock;
+}
+
+interface MockPoller {
+  poll: Mock;
+  stop: Mock;
+}
+
+interface MockRuntimeAdapter {
+  startAgent: Mock;
+  cancelAgent: Mock;
+}
+
+function buildEmptyState(): EngineState {
   return {
-    ...actual,
-    execFileSync: vi.fn().mockReturnValue('/resolved/repo/root\n'),
+    workItems: new Map(),
+    revisions: new Map(),
+    specs: new Map(),
+    agentRuns: new Map(),
+    errors: [],
+    lastPlannedSHAs: new Map(),
   };
-});
-
-// ---------------------------------------------------------------------------
-// Test utilities
-// ---------------------------------------------------------------------------
-
-type MockQuery = AgentQuery &
-  AsyncIterator<unknown> & {
-    pushMessage: (msg: unknown) => void;
-    end: () => void;
-  };
-
-function createMockQuery(): MockQuery {
-  const pendingReads: Array<{ resolve: (result: IteratorResult<unknown>) => void }> = [];
-  const bufferedMessages: unknown[] = [];
-  let ended = false;
-
-  const mockQuery: MockQuery = {
-    pushMessage(msg: unknown): void {
-      if (pendingReads.length > 0) {
-        const pending = pendingReads.shift();
-        invariant(pending, 'pendingReads must have an entry when length > 0');
-        pending.resolve({ value: msg, done: false });
-        return;
-      }
-      bufferedMessages.push(msg);
-    },
-
-    end(): void {
-      ended = true;
-      for (const pending of pendingReads) {
-        pending.resolve({ value: undefined, done: true });
-      }
-      pendingReads.length = 0;
-    },
-
-    interrupt: vi.fn().mockResolvedValue(undefined),
-
-    async next(): Promise<IteratorResult<unknown>> {
-      if (bufferedMessages.length > 0) {
-        const msg = bufferedMessages.shift();
-        invariant(msg !== undefined, 'bufferedMessages must have an entry when length > 0');
-        return { value: msg, done: false };
-      }
-      if (ended) {
-        return { value: undefined, done: true };
-      }
-      return new Promise((resolve) => {
-        pendingReads.push({ resolve });
-      });
-    },
-
-    async return(): Promise<IteratorResult<unknown>> {
-      ended = true;
-      for (const pending of pendingReads) {
-        pending.resolve({ value: undefined, done: true });
-      }
-      pendingReads.length = 0;
-      return { value: undefined, done: true as const };
-    },
-
-    async throw(): Promise<IteratorResult<unknown>> {
-      ended = true;
-      for (const pending of pendingReads) {
-        pending.resolve({ value: undefined, done: true });
-      }
-      pendingReads.length = 0;
-      return { value: undefined, done: true as const };
-    },
-
-    [Symbol.asyncIterator](): MockQuery {
-      return mockQuery;
-    },
-  };
-
-  return mockQuery;
 }
 
-interface BuildMockIssueDataOptions {
-  title?: string;
-  priority?: string;
-  complexity?: string;
-}
-
-function buildMockIssueData(
-  number: number,
-  status: string,
-  options?: BuildMockIssueDataOptions,
-): {
-  number: number;
-  title: string;
-  body: string;
-  labels: Array<{ name: string }>;
-  created_at: string;
-} {
-  const title = options?.title ?? `Issue #${number}`;
-  const priority = options?.priority ?? 'priority:medium';
-  const labels = [{ name: 'task:implement' }, { name: `status:${status}` }, { name: priority }];
-  if (options?.complexity) {
-    labels.push({ name: options.complexity });
-  }
+function buildMockProvider(): EngineConfig['provider'] {
   return {
-    number,
-    title,
-    body: `Task body for #${number}`,
-    labels,
-    created_at: '2026-01-01T00:00:00Z',
+    workItemReader: {
+      listWorkItems: vi.fn().mockResolvedValue([]),
+      getWorkItem: vi.fn().mockResolvedValue(null),
+      getWorkItemBody: vi.fn().mockResolvedValue('work item body'),
+    },
+    workItemWriter: {
+      transitionStatus: vi.fn().mockResolvedValue(undefined),
+      createWorkItem: vi.fn().mockResolvedValue({ id: 'wi-new' }),
+      updateWorkItem: vi.fn().mockResolvedValue(undefined),
+    },
+    revisionReader: {
+      listRevisions: vi.fn().mockResolvedValue([]),
+      getRevision: vi.fn().mockResolvedValue(null),
+      getRevisionFiles: vi
+        .fn()
+        .mockResolvedValue([{ path: 'src/foo.ts', status: 'modified', patch: null }]),
+      getReviewHistory: vi.fn().mockResolvedValue({ reviews: [], inlineComments: [] }),
+    },
+    revisionWriter: {
+      createFromPatch: vi.fn().mockResolvedValue({ id: 'rev-new' }),
+      updateBody: vi.fn().mockResolvedValue(undefined),
+      postReview: vi.fn().mockResolvedValue('review-1'),
+      updateReview: vi.fn().mockResolvedValue(undefined),
+      postComment: vi.fn().mockResolvedValue(undefined),
+    },
+    specReader: {
+      listSpecs: vi.fn().mockResolvedValue([]),
+      getDefaultBranchSHA: vi.fn().mockResolvedValue('sha-main'),
+    },
   };
 }
 
-function setupMockGitHubClient(
-  octokit: GitHubClient,
-  issues: ReturnType<typeof buildMockIssueData>[] = [],
-): void {
-  // Differentiate between recovery query (status:in-progress) and regular poll
-  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
-    if (params.labels.includes('status:in-progress')) {
-      return { data: [] }; // No in-progress issues by default (startup recovery)
-    }
-    return { data: issues };
-  });
-  vi.mocked(octokit.issues.get).mockImplementation(async (params: { issue_number: number }) => {
-    const issue = issues.find((i) => i.number === params.issue_number);
-    return { data: issue ?? buildMockIssueData(params.issue_number, 'pending') };
-  });
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
-
-  // SpecPoller: no tree changes by default
-  vi.mocked(octokit.git.getTree).mockResolvedValue({
-    data: { sha: 'tree-sha-1', tree: [] },
-  });
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'commit-sha-1' } },
-  });
-
-  // Queries: PRs — generate a linked PR for each issue so getPRForIssue can resolve branchName
-  const mockPRListItems = issues.map((issue, index) =>
-    buildPullsListItem({
-      number: 100 + index,
-      body: `Closes #${issue.number}`,
-      draft: false,
+function buildMockRuntimeAdapter(): MockRuntimeAdapter {
+  return {
+    startAgent: vi.fn().mockResolvedValue({
+      output: emptyAsyncIterable(),
+      result: new Promise(() => {
+        // never resolves — tests control lifecycle manually
+      }),
+      logFilePath: null,
     }),
-  );
-  const mockPRDetails = issues.map((issue, index) => ({
-    number: 100 + index,
-    title: `PR for #${issue.number}`,
-    changed_files: 3,
-    html_url: `https://github.com/owner/repo/pull/${100 + index}`,
-    user: null,
-    head: { sha: `sha-${issue.number}`, ref: `issue-${issue.number}-branch` },
-    body: null,
-    draft: false,
-  }));
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: mockPRListItems });
-  vi.mocked(octokit.pulls.get).mockImplementation(async (params: { pull_number: number }) => {
-    const defaultPR = {
-      number: 100,
-      title: 'PR',
-      changed_files: 0,
-      html_url: '',
-      user: null,
-      head: { sha: 'sha', ref: 'branch' },
-      body: null,
-      draft: false,
-    };
-    return { data: mockPRDetails.find((p) => p.number === params.pull_number) ?? defaultPR };
-  });
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
-    data: { state: 'pending', total_count: 0 },
-  });
-  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
-    data: { total_count: 0, check_runs: [] },
-  });
-  vi.mocked(octokit.repos.getContent).mockResolvedValue({
-    data: { content: '' },
-  });
-  vi.mocked(octokit.pulls.listFiles).mockResolvedValue({
-    data: [],
-  });
-  vi.mocked(octokit.pulls.listReviews).mockResolvedValue({
-    data: [],
-  });
-  vi.mocked(octokit.pulls.listReviewComments).mockResolvedValue({
-    data: [],
-  });
-}
-
-function createMockWorktreeManager(): WorktreeManager {
-  return {
-    createOrReuse: vi.fn().mockResolvedValue({
-      worktreePath: '/tmp/test-repo/.worktrees/issue-42',
-      branch: 'issue-42',
-      created: true,
-    }),
-    createForBranch: vi
-      .fn()
-      .mockImplementation((params: { branchName: string; branchBase?: string }) =>
-        Promise.resolve({
-          worktreePath: `/tmp/test-repo/.worktrees/${params.branchName}`,
-          branch: params.branchName,
-          created: params.branchBase !== undefined,
-        }),
-      ),
-    remove: vi.fn().mockResolvedValue(undefined),
-    removeByPath: vi.fn().mockResolvedValue(undefined),
+    cancelAgent: vi.fn(),
   };
 }
 
-interface SetupOptions {
-  issues?: ReturnType<typeof buildMockIssueData>[];
-  shutdownTimeout?: number;
+async function* emptyAsyncIterable(): AsyncIterable<string> {
+  // intentionally empty
 }
 
-function setupTest(options?: SetupOptions): {
-  engine: ReturnType<typeof createEngine>;
-  events: EngineEvent[];
-  octokit: ReturnType<typeof createMockGitHubClient>;
-  queryFactory: QueryFactory;
-  mockQueries: MockQuery[];
-  capturedQueryParams: QueryFactoryParams[];
-  config: ReturnType<typeof buildValidConfig>;
-  worktreeManager: WorktreeManager;
-} {
-  const issues = options?.issues ?? [];
+interface SetupTestResult {
+  engine: Engine;
+  config: EngineConfig;
+  mocks: MockComponents;
+}
 
-  const octokit = createMockGitHubClient();
-  const mockQueries: MockQuery[] = [];
-  const capturedQueryParams: QueryFactoryParams[] = [];
-  const worktreeManager = createMockWorktreeManager();
+function setupTest(configOverrides?: Partial<EngineConfig>): SetupTestResult {
+  const mockStore = buildMockStore();
+  const mockQueue = buildMockQueue();
+  const mockExecutor: MockExecutor = { execute: vi.fn().mockResolvedValue([]) };
+  const mockHandlers: Handler[] = [];
+  const mockWorkItemPoller = buildMockPoller();
+  const mockRevisionPoller = buildMockPoller();
+  const mockSpecPoller = buildMockPoller();
+  const mockRuntimeAdapters: Record<AgentRole, MockRuntimeAdapter> = {
+    planner: buildMockRuntimeAdapter(),
+    implementor: buildMockRuntimeAdapter(),
+    reviewer: buildMockRuntimeAdapter(),
+  };
 
-  const queryFactory: QueryFactory = vi.fn(async (params: QueryFactoryParams) => {
-    capturedQueryParams.push(params);
-    const q = createMockQuery();
-    q.pushMessage({
-      type: 'system',
-      subtype: 'init',
-      session_id: `session-${mockQueries.length + 1}`,
-    });
-    mockQueries.push(q);
-    return q;
-  });
+  vi.mocked(createEngineStore).mockReturnValue(mockStore);
+  vi.mocked(createEventQueue).mockReturnValue(mockQueue);
+  vi.mocked(createCommandExecutor).mockReturnValue(mockExecutor);
+  vi.mocked(createHandlers).mockReturnValue(mockHandlers);
+  vi.mocked(createWorkItemPoller).mockReturnValue(mockWorkItemPoller);
+  vi.mocked(createRevisionPoller).mockReturnValue(mockRevisionPoller);
+  vi.mocked(createSpecPoller).mockReturnValue(mockSpecPoller);
 
-  const config = buildValidConfig(
-    options?.shutdownTimeout !== undefined
-      ? { shutdownTimeout: options.shutdownTimeout }
-      : undefined,
-  );
+  const provider = buildMockProvider();
 
-  setupMockGitHubClient(octokit, issues);
+  const config: EngineConfig = {
+    provider,
+    createRuntimeAdapters: vi.fn().mockReturnValue(mockRuntimeAdapters),
+    ...configOverrides,
+  };
 
-  const engine = createEngine(config, {
-    octokit,
-    queryFactory,
-    repoRoot: '/tmp/test-repo',
-    worktreeManager,
-    execCommand: async (): Promise<void> => {
-      // Mock yarn install — always succeeds in tests
-    },
-  });
-
-  const events: EngineEvent[] = [];
-  engine.on((event) => {
-    events.push(event);
-  });
+  const engine = createEngine(config);
 
   return {
     engine,
-    events,
-    octokit,
-    queryFactory,
-    mockQueries,
-    capturedQueryParams,
     config,
-    worktreeManager,
+    mocks: {
+      store: mockStore,
+      queue: mockQueue,
+      executor: mockExecutor,
+      handlers: mockHandlers,
+      workItemPoller: mockWorkItemPoller,
+      revisionPoller: mockRevisionPoller,
+      specPoller: mockSpecPoller,
+      runtimeAdapters: mockRuntimeAdapters,
+    },
   };
 }
 
-// ---------------------------------------------------------------------------
-// Startup
-// ---------------------------------------------------------------------------
-
-test('it resolves with issue count and recoveries after startup', async () => {
-  const issues = [buildMockIssueData(1, 'pending'), buildMockIssueData(2, 'review')];
-  const { engine } = setupTest({ issues });
-
-  const result = await engine.start();
-
-  expect(result.issueCount).toBe(2);
-  expect(result.recoveriesPerformed).toBe(0);
-});
-
-test('it performs startup recovery for in-progress issues', async () => {
-  const octokit = createMockGitHubClient();
-  const queryFactory: QueryFactory = async (_params: QueryFactoryParams) => {
-    const q = createMockQuery();
-    q.pushMessage({ type: 'system', subtype: 'init', session_id: 'session-1' });
-    q.pushMessage({ type: 'result', subtype: 'success' });
-    q.end();
-    return q;
-  };
-  const config = buildValidConfig();
-
-  // Startup recovery query returns in-progress issues
-  const recoveryIssues = [buildMockIssueData(5, 'in-progress')];
-
-  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
-    if (params.labels.includes('status:in-progress')) {
-      return { data: recoveryIssues };
-    }
-    // Regular poll returns the issue as pending (after recovery reset)
-    return { data: [buildMockIssueData(5, 'pending')] };
-  });
-
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.git.getTree).mockResolvedValue({
-    data: { sha: 'tree-sha-1', tree: [] },
-  });
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'commit-sha-1' } },
-  });
-
-  const engine = createEngine(config, {
-    octokit,
-    queryFactory,
-    repoRoot: '/tmp/test-repo',
-  });
-
-  const events: EngineEvent[] = [];
-  engine.on((event) => {
-    events.push(event);
-  });
-
-  const result = await engine.start();
-
-  expect(result.recoveriesPerformed).toBe(1);
-  expect(
-    events.some(
-      (e): e is IssueStatusChangedEvent => e.type === 'issueStatusChanged' && e.isRecovery === true,
-    ),
-  ).toBe(true);
-});
-
-test('it runs the first issue poller cycle during startup', async () => {
-  const issues = [buildMockIssueData(1, 'pending')];
-  const { engine, events } = setupTest({ issues });
-
-  await engine.start();
-
-  const statusEvents = events.filter(
-    (e): e is IssueStatusChangedEvent => e.type === 'issueStatusChanged',
-  );
-  expect(statusEvents.length).toBeGreaterThan(0);
-
-  const firstEvent = statusEvents[0];
-  invariant(firstEvent, 'statusEvents must have at least one entry');
-  expect(firstEvent.issueNumber).toBe(1);
-  expect(firstEvent.oldStatus).toBeNull();
-  expect(firstEvent.newStatus).toBe('pending');
-});
-
-test('it runs the first spec poller cycle during startup', async () => {
-  const { engine, octokit } = setupTest();
-
-  await engine.start();
-
-  expect(octokit.git.getTree).toHaveBeenCalled();
-});
-
-// ---------------------------------------------------------------------------
-// Event forwarding
-// ---------------------------------------------------------------------------
-
-test('it forwards events from all components through the event emitter', async () => {
-  const issues = [buildMockIssueData(1, 'pending')];
-  const { engine, events } = setupTest({ issues });
-
-  await engine.start();
-
-  expect(events.some((e) => e.type === 'issueStatusChanged')).toBe(true);
-});
-
-test('it returns an unsubscribe function from the event emitter', async () => {
-  const { engine } = setupTest();
-
-  const laterEvents: EngineEvent[] = [];
-  const unsub = engine.on((event) => {
-    laterEvents.push(event);
-  });
-
-  unsub();
-
-  await engine.start();
-
-  expect(laterEvents.length).toBe(0);
-});
-
-// ---------------------------------------------------------------------------
-// Command routing: dispatchImplementor
-// ---------------------------------------------------------------------------
-
-test('it is a no-op when dispatching an implementor for an issue not in the snapshot', async () => {
-  const { engine, mockQueries } = setupTest();
-
-  await engine.start();
-  const queriesBefore = mockQueries.length;
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 999 });
-
-  await vi.waitFor(() => {
-    expect(mockQueries.length).toBe(queriesBefore);
-  });
-});
-
-test('it is a no-op when dispatching an implementor for an issue not in user-dispatch status', async () => {
-  const issues = [buildMockIssueData(42, 'review')];
-  const { engine, mockQueries } = setupTest({ issues });
-
-  await engine.start();
-
-  const queriesAfterStart = mockQueries.length;
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    // No new queries beyond what startup created
-    expect(mockQueries.length).toBe(queriesAfterStart);
-  });
-});
-
-test('it dispatches an implementor for an in-progress issue with no running agent', async () => {
-  const issues = [buildMockIssueData(42, 'in-progress')];
-  const { engine, events, mockQueries } = setupTest({ issues });
-
-  await engine.start();
-
-  const queriesBeforeDispatch = mockQueries.length;
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    expect(mockQueries.length).toBeGreaterThan(queriesBeforeDispatch);
-  });
-
-  const agentStarted = events.filter(
-    (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-  );
-  expect(agentStarted.length).toBeGreaterThan(0);
-});
-
-test('it skips dispatching an implementor for an in-progress issue with a running agent', async () => {
-  const issues = [buildMockIssueData(42, 'in-progress')];
-  const { engine, events } = setupTest({ issues });
-
-  await engine.start();
-
-  // First dispatch: starts the agent (in-progress with no agent running)
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentStarted.length).toBe(1);
-  });
-
-  // Second dispatch: agent is now running, should be silently skipped (info log, no event)
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  // Wait briefly then verify only one agentStarted event exists — the second dispatch was skipped
-  await vi.waitFor(() => {
-    const agentStartedAfter = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentStartedAfter.length).toBe(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Command routing: dispatchImplementor — complexity-based model override
-// ---------------------------------------------------------------------------
-
-test('it passes a sonnet model override when dispatching an implementor for a simple-complexity issue', async () => {
-  const issues = [buildMockIssueData(42, 'pending', { complexity: 'complexity:simple' })];
-  const { engine, capturedQueryParams } = setupTest({ issues });
-
-  await engine.start();
-
-  const paramsBeforeDispatch = capturedQueryParams.length;
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const implementorParams = capturedQueryParams.slice(paramsBeforeDispatch);
-    expect(implementorParams.length).toBeGreaterThanOrEqual(1);
-    expect(implementorParams[0]).toMatchObject({ modelOverride: 'sonnet' });
-  });
-});
-
-test('it passes an opus model override when dispatching an implementor for a complex-complexity issue', async () => {
-  const issues = [buildMockIssueData(42, 'pending', { complexity: 'complexity:complex' })];
-  const { engine, capturedQueryParams } = setupTest({ issues });
-
-  await engine.start();
-
-  const paramsBeforeDispatch = capturedQueryParams.length;
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const implementorParams = capturedQueryParams.slice(paramsBeforeDispatch);
-    expect(implementorParams.length).toBeGreaterThanOrEqual(1);
-    expect(implementorParams[0]).toMatchObject({ modelOverride: 'opus' });
-  });
-});
-
-test('it does not pass a model override when dispatching an implementor for an issue without a complexity label', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, capturedQueryParams } = setupTest({ issues });
-
-  await engine.start();
-
-  const paramsBeforeDispatch = capturedQueryParams.length;
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const implementorParams = capturedQueryParams.slice(paramsBeforeDispatch);
-    expect(implementorParams.length).toBeGreaterThanOrEqual(1);
-    expect(implementorParams[0]).not.toHaveProperty('modelOverride');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Command routing: dispatchReviewer
-// ---------------------------------------------------------------------------
-
-test('it does not auto-dispatch a reviewer when the issue is in review status at startup', async () => {
-  const issues = [buildMockIssueData(42, 'review')];
-  const { engine, events } = setupTest({ issues });
-
-  await engine.start();
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter((e) => e.type === 'agentStarted');
-    expect(agentStarted.length).toBe(0);
-  });
-});
-
-test('it auto-dispatches a reviewer when an issue transitions to review externally', async () => {
-  vi.useFakeTimers();
-
-  const octokit = createMockGitHubClient();
-  const mockQueries: MockQuery[] = [];
-  const worktreeManager = createMockWorktreeManager();
-
-  let pollCount = 0;
-  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
-    if (params.labels.includes('status:in-progress')) {
-      return { data: [] };
-    }
-    pollCount += 1;
-    if (pollCount === 1) {
-      return { data: [buildMockIssueData(42, 'in-progress')] };
-    }
-    // Second poll: external transition to review
-    return { data: [buildMockIssueData(42, 'review')] };
-  });
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.git.getTree).mockResolvedValue({
-    data: { sha: 'tree-sha-1', tree: [] },
-  });
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'commit-sha-1' } },
-  });
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
-  });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'PR for #42',
-      changed_files: 3,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'sha-42', ref: 'issue-42-branch' },
-      body: null,
-      draft: false,
-    },
-  });
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
-    data: { state: 'pending', total_count: 0 },
-  });
-  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
-    data: { total_count: 0, check_runs: [] },
-  });
-  vi.mocked(octokit.repos.getContent).mockResolvedValue({ data: { content: '' } });
-  vi.mocked(octokit.issues.get).mockResolvedValue({
-    data: buildMockIssueData(42, 'review'),
-  });
-  vi.mocked(octokit.pulls.listFiles).mockResolvedValue({ data: [] });
-  vi.mocked(octokit.pulls.listReviews).mockResolvedValue({ data: [] });
-  vi.mocked(octokit.pulls.listReviewComments).mockResolvedValue({ data: [] });
-
-  const queryFactory: QueryFactory = async () => {
-    const q = createMockQuery();
-    q.pushMessage({
-      type: 'system',
-      subtype: 'init',
-      session_id: `session-${mockQueries.length + 1}`,
-    });
-    mockQueries.push(q);
-    return q;
-  };
-
-  const config = buildValidConfig({ issuePoller: { pollInterval: 1 } });
-
-  const engine = createEngine(config, {
-    octokit,
-    queryFactory,
-    repoRoot: '/tmp/test-repo',
-    worktreeManager,
-    execCommand: async (): Promise<void> => {
-      // Mock yarn install — always succeeds in tests
-    },
-  });
-
-  const events: EngineEvent[] = [];
-  engine.on((event) => {
-    events.push(event);
-  });
-
-  await engine.start();
-
-  // Advance past the poll interval to trigger the second cycle (status: review)
-  await vi.advanceTimersByTimeAsync(1500);
-
-  const reviewerStarted = events.filter(
-    (e) => e.type === 'agentStarted' && 'agentType' in e && e.agentType === 'reviewer',
-  );
-  expect(reviewerStarted.length).toBe(1);
-
-  engine.send({ command: 'shutdown' });
-});
-
-test('it does not auto-dispatch a reviewer when an agent is already running for the issue', async () => {
-  vi.useFakeTimers();
-
-  const octokit = createMockGitHubClient();
-  const mockQueries: MockQuery[] = [];
-  const worktreeManager = createMockWorktreeManager();
-
-  let pollCount = 0;
-  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
-    if (params.labels.includes('status:in-progress')) {
-      return { data: [] };
-    }
-    pollCount += 1;
-    if (pollCount === 1) {
-      return { data: [buildMockIssueData(42, 'pending')] };
-    }
-    // Second poll: transition to review
-    return { data: [buildMockIssueData(42, 'review')] };
-  });
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.git.getTree).mockResolvedValue({
-    data: { sha: 'tree-sha-1', tree: [] },
-  });
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'commit-sha-1' } },
-  });
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
-  });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'PR for #42',
-      changed_files: 3,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'sha-42', ref: 'issue-42-branch' },
-      body: null,
-      draft: false,
-    },
-  });
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
-    data: { state: 'pending', total_count: 0 },
-  });
-  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
-    data: { total_count: 0, check_runs: [] },
-  });
-  vi.mocked(octokit.repos.getContent).mockResolvedValue({ data: { content: '' } });
-  vi.mocked(octokit.issues.get).mockResolvedValue({
-    data: buildMockIssueData(42, 'review'),
-  });
-  vi.mocked(octokit.pulls.listFiles).mockResolvedValue({ data: [] });
-  vi.mocked(octokit.pulls.listReviews).mockResolvedValue({ data: [] });
-  vi.mocked(octokit.pulls.listReviewComments).mockResolvedValue({ data: [] });
-
-  const queryFactory: QueryFactory = async () => {
-    const q = createMockQuery();
-    // Send init but don't auto-complete — agent stays running
-    q.pushMessage({
-      type: 'system',
-      subtype: 'init',
-      session_id: `session-${mockQueries.length + 1}`,
-    });
-    mockQueries.push(q);
-    return q;
-  };
-
-  const config = buildValidConfig({ issuePoller: { pollInterval: 1 } });
-
-  const engine = createEngine(config, {
-    octokit,
-    queryFactory,
-    repoRoot: '/tmp/test-repo',
-    worktreeManager,
-    execCommand: async (): Promise<void> => {
-      // Mock yarn install — always succeeds in tests
-    },
-  });
-
-  const events: EngineEvent[] = [];
-  engine.on((event) => {
-    events.push(event);
-  });
-
-  await engine.start();
-
-  // Manually dispatch an implementor — it stays running (no auto-complete)
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-  await vi.advanceTimersByTimeAsync(0);
-
-  const implementorStarted = events.filter(
-    (e) => e.type === 'agentStarted' && 'agentType' in e && e.agentType === 'implementor',
-  );
-  expect(implementorStarted.length).toBe(1);
-
-  // Advance past the poll interval — issue transitions to review but agent is running
-  await vi.advanceTimersByTimeAsync(1500);
-
-  const reviewerStarted = events.filter(
-    (e) => e.type === 'agentStarted' && 'agentType' in e && e.agentType === 'reviewer',
-  );
-  expect(reviewerStarted.length).toBe(0);
-
-  engine.send({ command: 'shutdown' });
-});
-
-test('it auto-dispatches an implementor when an issue transitions to unblocked', async () => {
-  vi.useFakeTimers();
-
-  const octokit = createMockGitHubClient();
-  const mockQueries: MockQuery[] = [];
-  const capturedQueryParams: QueryFactoryParams[] = [];
-  const worktreeManager = createMockWorktreeManager();
-
-  let pollCount = 0;
-  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
-    if (params.labels.includes('status:in-progress')) {
-      return { data: [] };
-    }
-    pollCount += 1;
-    if (pollCount === 1) {
-      return { data: [buildMockIssueData(42, 'blocked')] };
-    }
-    // Second poll: external transition to unblocked
-    return { data: [buildMockIssueData(42, 'unblocked')] };
-  });
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.git.getTree).mockResolvedValue({
-    data: { sha: 'tree-sha-1', tree: [] },
-  });
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'commit-sha-1' } },
-  });
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
-  });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'PR for #42',
-      changed_files: 3,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'sha-42', ref: 'issue-42-branch' },
-      body: null,
-      draft: false,
-    },
-  });
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
-    data: { state: 'pending', total_count: 0 },
-  });
-  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
-    data: { total_count: 0, check_runs: [] },
-  });
-  vi.mocked(octokit.repos.getContent).mockResolvedValue({ data: { content: '' } });
-  vi.mocked(octokit.issues.get).mockResolvedValue({
-    data: buildMockIssueData(42, 'unblocked'),
-  });
-  vi.mocked(octokit.pulls.listFiles).mockResolvedValue({ data: [] });
-  vi.mocked(octokit.pulls.listReviews).mockResolvedValue({ data: [] });
-  vi.mocked(octokit.pulls.listReviewComments).mockResolvedValue({ data: [] });
-
-  const queryFactory: QueryFactory = async (params: QueryFactoryParams) => {
-    capturedQueryParams.push(params);
-    const q = createMockQuery();
-    q.pushMessage({
-      type: 'system',
-      subtype: 'init',
-      session_id: `session-${mockQueries.length + 1}`,
-    });
-    q.pushMessage({ type: 'result', subtype: 'success' });
-    q.end();
-    mockQueries.push(q);
-    return q;
-  };
-
-  const config = buildValidConfig({ issuePoller: { pollInterval: 1 } });
-
-  const engine = createEngine(config, {
-    octokit,
-    queryFactory,
-    repoRoot: '/tmp/test-repo',
-    worktreeManager,
-    execCommand: async (): Promise<void> => {
-      // Mock yarn install — always succeeds in tests
-    },
-  });
-
-  const events: EngineEvent[] = [];
-  engine.on((event) => {
-    events.push(event);
-  });
-
-  await engine.start();
-
-  // Advance past the poll interval to trigger the second cycle (status: unblocked)
-  await vi.advanceTimersByTimeAsync(1500);
-
-  const implementorStarted = events.filter(
-    (e) => e.type === 'agentStarted' && 'agentType' in e && e.agentType === 'implementor',
-  );
-  expect(implementorStarted.length).toBe(1);
-
-  const implementorParams = capturedQueryParams.filter((p) => p.agent === 'implementor');
-  expect(implementorParams.length).toBe(1);
-
-  engine.send({ command: 'shutdown' });
-});
-
-test('it does not auto-dispatch an implementor when the issue is unblocked at startup', async () => {
-  const issues = [buildMockIssueData(42, 'unblocked')];
-  const { engine, events } = setupTest({ issues });
-
-  await engine.start();
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter((e) => e.type === 'agentStarted');
-    expect(agentStarted.length).toBe(0);
-  });
-});
-
-test('it does not auto-dispatch an implementor when an agent is already running for the issue', async () => {
-  vi.useFakeTimers();
-
-  const octokit = createMockGitHubClient();
-  const mockQueries: MockQuery[] = [];
-  const worktreeManager = createMockWorktreeManager();
-
-  let pollCount = 0;
-  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
-    if (params.labels.includes('status:in-progress')) {
-      return { data: [] };
-    }
-    pollCount += 1;
-    if (pollCount === 1) {
-      return { data: [buildMockIssueData(42, 'blocked')] };
-    }
-    // Second poll: transition to unblocked
-    return { data: [buildMockIssueData(42, 'unblocked')] };
-  });
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.git.getTree).mockResolvedValue({
-    data: { sha: 'tree-sha-1', tree: [] },
-  });
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'commit-sha-1' } },
-  });
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
-  });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'PR for #42',
-      changed_files: 3,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'sha-42', ref: 'issue-42-branch' },
-      body: null,
-      draft: false,
-    },
-  });
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
-    data: { state: 'pending', total_count: 0 },
-  });
-  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
-    data: { total_count: 0, check_runs: [] },
-  });
-  vi.mocked(octokit.repos.getContent).mockResolvedValue({ data: { content: '' } });
-  vi.mocked(octokit.issues.get).mockResolvedValue({
-    data: buildMockIssueData(42, 'unblocked'),
-  });
-  vi.mocked(octokit.pulls.listFiles).mockResolvedValue({ data: [] });
-  vi.mocked(octokit.pulls.listReviews).mockResolvedValue({ data: [] });
-  vi.mocked(octokit.pulls.listReviewComments).mockResolvedValue({ data: [] });
-
-  // Use a second issue to have a running agent on issue 42
-  // We'll dispatch a reviewer on issue 42 manually first, then the unblocked transition
-  // should not dispatch another agent.
-  // Actually — simpler: start with issue in blocked + a second issue in review.
-  // Dispatch a reviewer on 42 manually, then transition 42 to unblocked.
-  // But the reviewer won't dispatch because 42 is blocked not review.
-  // Simpler approach: use the queryFactory to keep agents running.
-
-  const queryFactory: QueryFactory = async () => {
-    const q = createMockQuery();
-    // Send init but don't auto-complete — agent stays running
-    q.pushMessage({
-      type: 'system',
-      subtype: 'init',
-      session_id: `session-${mockQueries.length + 1}`,
-    });
-    mockQueries.push(q);
-    return q;
-  };
-
-  const config = buildValidConfig({ issuePoller: { pollInterval: 1 } });
-
-  const engine = createEngine(config, {
-    octokit,
-    queryFactory,
-    repoRoot: '/tmp/test-repo',
-    worktreeManager,
-    execCommand: async (): Promise<void> => {
-      // Mock yarn install — always succeeds in tests
-    },
-  });
-
-  const events: EngineEvent[] = [];
-  engine.on((event) => {
-    events.push(event);
-  });
-
-  await engine.start();
-
-  // Transition issue to unblocked on next poll — but first we need an agent running.
-  // Change the mock so first poll returns 'pending' (dispatchable) then second returns 'unblocked'.
-  // Reset pollCount and mock to: poll 1 = pending, poll 2 = unblocked
-  pollCount = 0;
-  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
-    if (params.labels.includes('status:in-progress')) {
-      return { data: [] };
-    }
-    pollCount += 1;
-    if (pollCount === 1) {
-      return { data: [buildMockIssueData(42, 'pending')] };
-    }
-    return { data: [buildMockIssueData(42, 'unblocked')] };
-  });
-
-  // Force a re-poll to pick up the 'pending' status
-  await vi.advanceTimersByTimeAsync(1500);
-
-  // Manually dispatch an implementor that stays running
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-  await vi.advanceTimersByTimeAsync(0);
-
-  const implementorStarted = events.filter(
-    (e) => e.type === 'agentStarted' && 'agentType' in e && e.agentType === 'implementor',
-  );
-  expect(implementorStarted.length).toBe(1);
-
-  // Next poll: transition to unblocked while implementor is still running
-  await vi.advanceTimersByTimeAsync(1500);
-
-  // Should NOT have dispatched a second agent
-  const allStarted = events.filter((e) => e.type === 'agentStarted');
-  expect(allStarted.length).toBe(1);
-
-  engine.send({ command: 'shutdown' });
-});
-
-test('it is a no-op when dispatching a reviewer for an issue not in review status', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, mockQueries } = setupTest({ issues });
-
-  await engine.start();
-  const queriesAfterStart = mockQueries.length;
-
-  engine.send({ command: 'dispatchReviewer', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    expect(mockQueries.length).toBe(queriesAfterStart);
-  });
-});
-
-test('it is a no-op when dispatching a reviewer for an issue not in snapshot', async () => {
-  const { engine, mockQueries } = setupTest();
-
-  await engine.start();
-
-  engine.send({ command: 'dispatchReviewer', issueNumber: 999 });
-
-  await vi.waitFor(() => {
-    expect(mockQueries.length).toBe(0);
-  });
-});
-
-test('it passes fetchRemote: true when dispatching a reviewer with a linked PR', async () => {
-  const issues = [buildMockIssueData(42, 'review')];
-  const { engine, events, octokit, worktreeManager, mockQueries } = setupTest({ issues });
-
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
-  });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'PR for issue 42',
-      changed_files: 5,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'pr-sha-1', ref: 'issue-42-branch' },
-      body: null,
-      draft: false,
-    },
-  });
-
-  await engine.start();
-
-  engine.send({ command: 'dispatchReviewer', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentStarted.length).toBe(1);
-  });
-
-  const query = mockQueries[0];
-  invariant(query, 'expected a query to have been dispatched');
-  query.pushMessage({ type: 'result', subtype: 'success' });
-  query.end();
-
-  expect(worktreeManager.createForBranch).toHaveBeenCalledWith({
-    branchName: 'issue-42-branch',
-    fetchRemote: true,
-  });
-
-  engine.send({ command: 'shutdown' });
-});
-
-test('it is a no-op when dispatching a reviewer for an issue with no linked PR', async () => {
-  const issues = [buildMockIssueData(42, 'review')];
-  const { engine, mockQueries, octokit } = setupTest({ issues });
-
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
-
-  await engine.start();
-  const queriesAfterStart = mockQueries.length;
-
-  engine.send({ command: 'dispatchReviewer', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    expect(mockQueries.length).toBe(queriesAfterStart);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Shutdown
-// ---------------------------------------------------------------------------
-
-test('it stops pollers and completes when no agents are running', async () => {
-  const { engine } = setupTest();
-
-  await engine.start();
-
-  engine.send({ command: 'shutdown' });
-});
-
-// ---------------------------------------------------------------------------
-// Cancel commands
-// ---------------------------------------------------------------------------
-
-test('it is a no-op when cancelling an agent for an issue with no running agent', async () => {
-  const { engine } = setupTest();
-
-  await engine.start();
-
-  engine.send({ command: 'cancelAgent', issueNumber: 999 });
-});
-
-test('it is a no-op when cancelling the planner when none is running', async () => {
-  const { engine } = setupTest();
-
-  await engine.start();
-
-  engine.send({ command: 'cancelPlanner' });
-});
-
-// ---------------------------------------------------------------------------
-// Query delegation
-// ---------------------------------------------------------------------------
-
-test('it delegates getIssueDetails to the queries module', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, octokit } = setupTest({ issues });
-
-  await engine.start();
-
-  const result = await engine.getIssueDetails(42);
-
-  expect(result.number).toBe(42);
-  expect(octokit.issues.get).toHaveBeenCalledWith(expect.objectContaining({ issue_number: 42 }));
-});
-
-test('it delegates getPRForIssue to the queries module', async () => {
-  const { engine } = setupTest();
-
-  await engine.start();
-
-  const result = await engine.getPRForIssue(42);
-
-  expect(result).toBeNull();
-});
-
-// ---------------------------------------------------------------------------
-// Stream accessor
-// ---------------------------------------------------------------------------
-
-test('it returns null from getAgentStream when no agent is running', async () => {
-  const { engine } = setupTest();
-
-  await engine.start();
-
-  const stream = engine.getAgentStream('session-42');
-
-  expect(stream).toBeNull();
-});
-
-// ---------------------------------------------------------------------------
-// Error resilience
-// ---------------------------------------------------------------------------
-
-test('it does not crash when a poll cycle throws a github API error', async () => {
-  const octokit = createMockGitHubClient();
-  const queryFactory: QueryFactory = async (_params: QueryFactoryParams) => {
-    const q = createMockQuery();
-    q.end();
-    return q;
-  };
-  const config = buildValidConfig({ issuePoller: { pollInterval: 1 } });
-
-  let callCount = 0;
-  vi.mocked(octokit.issues.listForRepo).mockImplementation(async () => {
-    callCount += 1;
-    if (callCount === 1) {
-      // First call (startup recovery)
-      return { data: [] };
-    }
-    if (callCount === 2) {
-      // Second call (first poll cycle) -- throw error
-      throw new Error('GitHub API rate limited');
-    }
-    return { data: [] };
-  });
-  vi.mocked(octokit.git.getTree).mockResolvedValue({
-    data: { sha: 'tree-sha-1', tree: [] },
-  });
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'commit-sha-1' } },
-  });
-
-  const engine = createEngine(config, {
-    octokit,
-    queryFactory,
-    repoRoot: '/tmp/test-repo',
-  });
-
-  const result = await engine.start();
-  expect(result.issueCount).toBe(0);
-
-  engine.send({ command: 'shutdown' });
-});
-
-// ---------------------------------------------------------------------------
-// Positive command routing
-// ---------------------------------------------------------------------------
-
-test('it dispatches an implementor agent when the issue is in a user-dispatch status', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, mockQueries } = setupTest({ issues });
-
-  await engine.start();
-
-  const queriesBeforeDispatch = mockQueries.length;
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    expect(mockQueries.length).toBeGreaterThan(queriesBeforeDispatch);
-  });
-
-  const lastQuery = mockQueries.at(-1);
-  invariant(lastQuery, 'expected at least one query to have been dispatched');
-  lastQuery.pushMessage({ type: 'result', subtype: 'success' });
-  lastQuery.end();
-
-  const agentStarted = events.filter(
-    (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-  );
-  expect(agentStarted.length).toBeGreaterThan(0);
-});
-
-test('it cancels a running agent and emits an agent-failed event', async () => {
-  const issues = [buildMockIssueData(42, 'review')];
-  const { engine, events, mockQueries } = setupTest({ issues });
-
-  await engine.start();
-
-  engine.send({ command: 'dispatchReviewer', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    // Verify the agent started
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentStarted.length).toBe(1);
-  });
-
-  engine.send({ command: 'cancelAgent', issueNumber: 42 });
-  const query = mockQueries[0];
-  invariant(query, 'expected a query to have been dispatched');
-  query.end();
-
-  await vi.waitFor(() => {
-    const agentFailed = events.filter(
-      (e): e is AgentFailedEvent =>
-        e.type === 'agentFailed' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentFailed.length).toBe(1);
-    expect(agentFailed[0]?.error).toContain('Cancelled');
-  });
-});
-
-test('it cancels running agents after shutdown timeout expires', async () => {
-  vi.useFakeTimers();
-
-  const issues = [buildMockIssueData(42, 'review')];
-  const { engine, events, mockQueries } = setupTest({
-    issues,
-    shutdownTimeout: 5,
-  });
-
-  await engine.start();
-
-  engine.send({ command: 'dispatchReviewer', issueNumber: 42 });
-
-  await vi.advanceTimersByTimeAsync(50);
-
-  const agentStarted = events.filter(
-    (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-  );
-  expect(agentStarted.length).toBe(1);
-
-  engine.send({ command: 'shutdown' });
-
-  // Advance past the shutdown timeout (5 seconds)
-  await vi.advanceTimersByTimeAsync(6000);
-  const query = mockQueries[0];
-  invariant(query, 'expected a query to have been dispatched');
-  query.end();
-
-  const agentFailed = events.filter(
-    (e): e is AgentFailedEvent =>
-      e.type === 'agentFailed' && 'issueNumber' in e && e.issueNumber === 42,
-  );
-  expect(agentFailed.length).toBe(1);
-});
-
-test('it cancels a running agent when its issue is removed from the poller snapshot', async () => {
-  vi.useFakeTimers();
-
-  const octokit = createMockGitHubClient();
-  const mockQueries: MockQuery[] = [];
-  const worktreeManager = createMockWorktreeManager();
-
-  let pollCount = 0;
-  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
-    if (params.labels.includes('status:in-progress')) {
-      return { data: [] };
-    }
-    pollCount += 1;
-    if (pollCount === 1) {
-      return { data: [buildMockIssueData(42, 'review')] };
-    }
-    // Second poll: issue removed
-    return { data: [] };
-  });
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.git.getTree).mockResolvedValue({
-    data: { sha: 'tree-sha-1', tree: [] },
-  });
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'commit-sha-1' } },
-  });
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
-  });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'PR for #42',
-      changed_files: 3,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'sha-42', ref: 'issue-42-branch' },
-      body: null,
-      draft: false,
-    },
-  });
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
-    data: { state: 'pending', total_count: 0 },
-  });
-  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
-    data: { total_count: 0, check_runs: [] },
-  });
-  vi.mocked(octokit.repos.getContent).mockResolvedValue({ data: { content: '' } });
-  vi.mocked(octokit.issues.get).mockResolvedValue({
-    data: buildMockIssueData(42, 'review'),
-  });
-  vi.mocked(octokit.pulls.listFiles).mockResolvedValue({
-    data: [],
-  });
-  vi.mocked(octokit.pulls.listReviews).mockResolvedValue({
-    data: [],
-  });
-  vi.mocked(octokit.pulls.listReviewComments).mockResolvedValue({
-    data: [],
-  });
-
-  const queryFactory: QueryFactory = async () => {
-    const q = createMockQuery();
-    // Send init but don't auto-complete -- agent stays running
-    q.pushMessage({
-      type: 'system',
-      subtype: 'init',
-      session_id: `session-${mockQueries.length + 1}`,
-    });
-    mockQueries.push(q);
-    return q;
-  };
-
-  const config = buildValidConfig({ issuePoller: { pollInterval: 1 } });
-
-  const engine = createEngine(config, {
-    octokit,
-    queryFactory,
-    repoRoot: '/tmp/test-repo',
-    worktreeManager,
-    execCommand: async (): Promise<void> => {
-      // Mock yarn install — always succeeds in tests
-    },
-  });
-
-  const events: EngineEvent[] = [];
-  engine.on((event) => {
-    events.push(event);
-  });
-
-  await engine.start();
-
-  engine.send({ command: 'dispatchReviewer', issueNumber: 42 });
-
-  await vi.advanceTimersByTimeAsync(0);
-
-  const started = events.filter(
-    (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-  );
-  expect(started.length).toBe(1);
-
-  // Advance past the poll interval (1 second) to trigger the second cycle
-  await vi.advanceTimersByTimeAsync(1500);
-
-  const issueRemoved = events.filter(
-    (e): e is IssueStatusChangedEvent =>
-      e.type === 'issueStatusChanged' && e.issueNumber === 42 && e.newStatus === null,
-  );
-  expect(issueRemoved.length).toBe(1);
-
-  const failed = events.filter(
-    (e): e is AgentFailedEvent =>
-      e.type === 'agentFailed' && 'issueNumber' in e && e.issueNumber === 42,
-  );
-  expect(failed.length).toBe(1);
-
-  engine.send({ command: 'shutdown' });
-});
-
-// ---------------------------------------------------------------------------
-// Repository root resolution
-// ---------------------------------------------------------------------------
-
-test('it uses the provided repository root when one is given via dependency injection', () => {
-  const octokit = createMockGitHubClient();
-  const worktreeManager = createMockWorktreeManager();
-  const config = buildValidConfig();
-
-  setupMockGitHubClient(octokit);
-
-  vi.mocked(execFileSync).mockClear();
-
-  createEngine(config, {
-    octokit,
-    queryFactory: async () => {
-      const q = createMockQuery();
-      q.end();
-      return q;
-    },
-    repoRoot: '/explicit/repo/root',
-    worktreeManager,
-  });
-
-  expect(execFileSync).not.toHaveBeenCalled();
-});
-
-test('it resolves the repository root via git when none is provided', () => {
-  const octokit = createMockGitHubClient();
-  const config = buildValidConfig();
-
-  setupMockGitHubClient(octokit);
-
-  vi.mocked(execFileSync).mockReturnValue('/resolved/repo/root\n');
-
-  createEngine(config, {
-    octokit,
-    queryFactory: async () => {
-      const q = createMockQuery();
-      q.end();
-      return q;
-    },
-  });
-
-  expect(execFileSync).toHaveBeenCalledWith('git', ['rev-parse', '--show-toplevel'], {
-    encoding: 'utf-8',
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Planner Cache integration
-// ---------------------------------------------------------------------------
-
-function buildCacheEntry(): PlannerCacheEntry {
+function buildMockStore(): MockStore {
+  const initialState = buildEmptyState();
+  const listeners = new Set<(engineState: EngineState) => void>();
   return {
-    snapshot: {
-      specsDirTreeSHA: 'tree-sha-1',
-      files: {
-        'docs/specs/decree/control-plane.md': {
-          blobSHA: 'blob-sha-1',
-          frontmatterStatus: 'approved',
-        },
-      },
-    },
-    commitSHA: 'cached-commit-sha',
+    getState: vi.fn().mockImplementation(() => initialState),
+    getInitialState: vi.fn().mockImplementation(() => initialState),
+    setState: vi.fn().mockImplementation((partial: Partial<EngineState>) => {
+      Object.assign(initialState, partial);
+      for (const listener of listeners) {
+        listener(initialState);
+      }
+    }),
+    subscribe: vi.fn().mockImplementation((listener: (engineState: EngineState) => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    }),
+    destroy: vi.fn(),
   };
 }
 
-function setupCacheTest(
-  options: SetupOptions & { cacheEntry?: PlannerCacheEntry } = {},
-): ReturnType<typeof setupTest> {
-  vol.reset();
-  vol.mkdirSync('/tmp/test-repo', { recursive: true });
-
-  if (options.cacheEntry) {
-    vol.writeFileSync('/tmp/test-repo/.decree-cache.json', JSON.stringify(options.cacheEntry));
-  }
-
-  return setupTest(options);
-}
-
-test('it does not dispatch the planner when the cache matches the current tree', async () => {
-  const cacheEntry = buildCacheEntry();
-  const { engine, mockQueries, octokit } = setupCacheTest({ cacheEntry });
-
-  // SpecPoller returns tree-sha-1, matching the cache
-  vi.mocked(octokit.git.getTree).mockResolvedValue({
-    data: { sha: 'tree-sha-1', tree: [] },
-  });
-
-  await engine.start();
-
-  // No planner should have been dispatched (no spec changes detected)
-  const plannerQueries = mockQueries.length;
-  expect(plannerQueries).toBe(0);
-});
-
-test('it reports only changed files when the cache has a different tree', async () => {
-  const cacheEntry: PlannerCacheEntry = {
-    snapshot: {
-      specsDirTreeSHA: 'old-tree-sha',
-      files: {
-        'docs/specs/control-plane.md': {
-          blobSHA: 'blob-sha-1',
-          frontmatterStatus: 'approved',
-        },
-      },
-    },
-    commitSHA: 'old-commit-sha',
-  };
-  const { engine, events, octokit, mockQueries } = setupCacheTest({
-    cacheEntry,
-  });
-
-  // SpecPoller: first call finds specs dir with a new tree SHA
-  vi.mocked(octokit.git.getTree).mockImplementation(async (params) => {
-    if (params.tree_sha === 'main') {
-      return {
-        data: {
-          sha: 'root-sha',
-          tree: [{ path: 'docs/specs', type: 'tree', sha: 'new-tree-sha' }],
-        },
-      };
-    }
-    // Second call: subtree enumeration
-    return {
-      data: {
-        sha: 'new-tree-sha',
-        tree: [
-          { path: 'control-plane.md', type: 'blob', sha: 'blob-sha-1' },
-          { path: 'new-spec.md', type: 'blob', sha: 'blob-sha-new' },
-        ],
-      },
-    };
-  });
-
-  vi.mocked(octokit.repos.getContent).mockImplementation(async (params) => {
-    if (params.path.includes('new-spec.md')) {
-      const content = Buffer.from('---\nstatus: approved\n---\n# New Spec').toString('base64');
-      return { data: { content } };
-    }
-    return { data: { content: '' } };
-  });
-
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'commit-sha-2' } },
-  });
-
-  await engine.start();
-
-  await vi.waitFor(() => {
-    // Should see a specChanged event only for the new file, not for control-plane.md
-    const specChanged = events.filter((e) => e.type === 'specChanged');
-    expect(specChanged.length).toBe(1);
-    expect(specChanged[0]).toMatchObject({
-      filePath: 'docs/specs/new-spec.md',
-      frontmatterStatus: 'approved',
-    });
-  });
-
-  // Complete any planner queries that were dispatched due to spec changes
-  for (const q of mockQueries) {
-    q.pushMessage({ type: 'result', subtype: 'success' });
-    q.end();
-  }
-});
-
-test('it writes the cache file when the planner completes successfully', async () => {
-  const { engine, octokit, events, mockQueries } = setupCacheTest();
-
-  // Set up SpecPoller to detect changes (which triggers planner dispatch)
-  vi.mocked(octokit.git.getTree).mockImplementation(async (params) => {
-    if (params.tree_sha === 'main') {
-      return {
-        data: {
-          sha: 'root-sha',
-          tree: [{ path: 'docs/specs', type: 'tree', sha: 'tree-sha-new' }],
-        },
-      };
-    }
-    return {
-      data: {
-        sha: 'tree-sha-new',
-        tree: [{ path: 'spec.md', type: 'blob', sha: 'blob-sha-1' }],
-      },
-    };
-  });
-
-  const specContent = Buffer.from('---\nstatus: approved\n---\n# Spec').toString('base64');
-  vi.mocked(octokit.repos.getContent).mockResolvedValue({
-    data: { content: specContent },
-  });
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'commit-sha-1' } },
-  });
-
-  await engine.start();
-
-  // Wait for the planner query to be created, then complete it
-  await vi.waitFor(() => {
-    expect(mockQueries.length).toBeGreaterThan(0);
-  });
-  const plannerQuery = mockQueries[0];
-  invariant(plannerQuery, 'planner query must exist');
-  plannerQuery.pushMessage({ type: 'result', subtype: 'success' });
-  plannerQuery.end();
-
-  await vi.waitFor(async () => {
-    // Verify the planner completed
-    const completed = events.filter(
-      (e): e is AgentCompletedEvent => e.type === 'agentCompleted' && e.agentType === 'planner',
-    );
-    expect(completed.length).toBe(1);
-
-    // Verify cache file was written with PlannerCacheEntry format
-    // (cache write is async and may not be flushed yet when the event appears)
-    const raw = await readFile('/tmp/test-repo/.decree-cache.json', 'utf-8');
-    const cached: unknown = JSON.parse(raw);
-    expect(cached).toMatchObject({
-      snapshot: { specsDirTreeSHA: 'tree-sha-new' },
-      commitSHA: 'commit-sha-1',
-    });
-  });
-});
-
-test('it does not write the cache file when the planner fails', async () => {
-  const { engine, octokit, events, mockQueries } = setupCacheTest();
-
-  // Set up SpecPoller to detect changes
-  vi.mocked(octokit.git.getTree).mockImplementation(async (params) => {
-    if (params.tree_sha === 'main') {
-      return {
-        data: {
-          sha: 'root-sha',
-          tree: [{ path: 'docs/specs', type: 'tree', sha: 'tree-sha-new' }],
-        },
-      };
-    }
-    return {
-      data: {
-        sha: 'tree-sha-new',
-        tree: [{ path: 'spec.md', type: 'blob', sha: 'blob-sha-1' }],
-      },
-    };
-  });
-
-  const specContent = Buffer.from('---\nstatus: approved\n---\n# Spec').toString('base64');
-  vi.mocked(octokit.repos.getContent).mockResolvedValue({
-    data: { content: specContent },
-  });
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'commit-sha-1' } },
-  });
-
-  await engine.start();
-
-  await vi.waitFor(() => {
-    // Wait for planner to start
-    expect(mockQueries.length).toBeGreaterThan(0);
-  });
-
-  // Fail the planner by ending the query with an execution error
-  const plannerQuery = mockQueries[0];
-  invariant(plannerQuery, 'planner query must exist');
-  plannerQuery.pushMessage({ type: 'result', subtype: 'error_during_execution' });
-  plannerQuery.end();
-
-  await vi.waitFor(() => {
-    // Verify the planner failed
-    const failed = events.filter(
-      (e): e is AgentFailedEvent => e.type === 'agentFailed' && e.agentType === 'planner',
-    );
-    expect(failed.length).toBe(1);
-  });
-
-  // Verify no cache file was written
-  const exists = vol.existsSync('/tmp/test-repo/.decree-cache.json');
-  expect(exists).toBe(false);
-});
-
-// ---------------------------------------------------------------------------
-// Planner Context Pre-computation
-// ---------------------------------------------------------------------------
-
-interface PlannerContextSetupOptions {
-  cacheEntry?: PlannerCacheEntry;
-  specTreeEntries: Array<{ path: string; sha: string }>;
-  specContents: Record<string, string>;
-  taskIssues?: Array<{
-    number: number;
-    title: string;
-    labels: Array<{ name: string }>;
-    body: string;
-    created_at: string;
-  }>;
-}
-
-function setupPlannerContextTest(options: PlannerContextSetupOptions): {
-  engine: ReturnType<typeof createEngine>;
-  events: EngineEvent[];
-  octokit: ReturnType<typeof createMockGitHubClient>;
-  capturedPrompts: string[];
-} {
-  vol.reset();
-  vol.mkdirSync('/tmp/test-repo', { recursive: true });
-
-  if (options.cacheEntry) {
-    vol.writeFileSync('/tmp/test-repo/.decree-cache.json', JSON.stringify(options.cacheEntry));
-  }
-
-  const octokit = createMockGitHubClient();
-  const capturedPrompts: string[] = [];
-  const worktreeManager = createMockWorktreeManager();
-
-  const queryFactory: QueryFactory = async (params: QueryFactoryParams) => {
-    capturedPrompts.push(params.prompt);
-    const q = createMockQuery();
-    q.pushMessage({
-      type: 'system',
-      subtype: 'init',
-      session_id: `session-${capturedPrompts.length}`,
-    });
-    q.pushMessage({ type: 'result', subtype: 'success' });
-    q.end();
-    return q;
-  };
-
-  const config = buildValidConfig();
-
-  // Issue poller: no in-progress issues (recovery), return task issues for regular polls
-  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
-    if (params.labels.includes('status:in-progress')) {
-      return { data: [] };
-    }
-    if (params.labels === 'task:implement' || params.labels === 'task:refinement') {
-      return { data: options.taskIssues ?? [] };
-    }
-    return { data: [] };
-  });
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
-
-  // SpecPoller: return the configured tree entries
-  vi.mocked(octokit.git.getTree).mockImplementation(async (params) => {
-    if (params.tree_sha === 'main') {
-      return {
-        data: {
-          sha: 'root-sha',
-          tree: [{ path: 'docs/specs', type: 'tree', sha: 'new-tree-sha' }],
-        },
-      };
-    }
-    return {
-      data: {
-        sha: 'new-tree-sha',
-        tree: options.specTreeEntries.map((entry) => ({
-          path: entry.path,
-          type: 'blob',
-          sha: entry.sha,
-        })),
-      },
-    };
-  });
-
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'current-commit-sha' } },
-  });
-
-  // Spec content: return base64-encoded content for each spec
-  vi.mocked(octokit.repos.getContent).mockImplementation(async (params) => {
-    const rawContent = options.specContents[params.path] ?? '';
-    const content = Buffer.from(rawContent).toString('base64');
-    return { data: { content } };
-  });
-
-  const engine = createEngine(config, {
-    octokit,
-    queryFactory,
-    repoRoot: '/tmp/test-repo',
-    worktreeManager,
-    execCommand: async (): Promise<void> => {
-      // Mock yarn install — always succeeds in tests
-    },
-  });
-
+function buildMockQueue(): MockQueue {
   const events: EngineEvent[] = [];
-  engine.on((event) => {
-    events.push(event);
-  });
+  let rejecting = false;
+  let filter: ((eventType: EngineEvent['type']) => boolean) | undefined;
 
-  return { engine, events, octokit, capturedPrompts };
+  return {
+    enqueue: vi.fn().mockImplementation((event: EngineEvent) => {
+      if (rejecting) {
+        const allowed = filter?.(event.type);
+        if (!allowed) {
+          throw new Error('Event queue is rejecting new events (shutdown in progress)');
+        }
+      }
+      events.push(event);
+    }),
+    dequeue: vi.fn().mockImplementation(() => events.shift()),
+    isEmpty: vi.fn().mockImplementation(() => events.length === 0),
+    size: vi.fn().mockImplementation(() => events.length),
+    setRejecting: vi
+      .fn()
+      .mockImplementation(
+        (newRejecting: boolean, newFilter?: (eventType: EngineEvent['type']) => boolean) => {
+          rejecting = newRejecting;
+          filter = newFilter;
+        },
+      ),
+  };
 }
 
-test('it includes the full content of each changed spec in the planner prompt', async () => {
-  const specContent = '---\nstatus: approved\n---\n# My Spec\n\nSpec body content here.';
-
-  const { engine, capturedPrompts } = setupPlannerContextTest({
-    specTreeEntries: [{ path: 'my-spec.md', sha: 'blob-sha-1' }],
-    specContents: { 'docs/specs/my-spec.md': specContent },
-  });
-
-  await engine.start();
-
-  await vi.waitFor(() => {
-    expect(capturedPrompts.length).toBeGreaterThan(0);
-  });
-
-  const prompt = capturedPrompts[0];
-  invariant(prompt, 'prompt must exist');
-  expect(prompt).toContain('## Changed Specs');
-  expect(prompt).toContain('### docs/specs/my-spec.md (added)');
-  expect(prompt).toContain(specContent);
-
-  engine.send({ command: 'shutdown' });
-});
-
-test('it includes a unified diff for modified specs in the planner prompt', async () => {
-  const specContent = '---\nstatus: approved\n---\n# My Spec\n\nUpdated content.';
-  const diffOutput =
-    'diff --git a/docs/specs/my-spec.md b/docs/specs/my-spec.md\n--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new';
-
-  // Set up a cache entry so the spec is "modified" (it was known before)
-  const cacheEntry: PlannerCacheEntry = {
-    snapshot: {
-      specsDirTreeSHA: 'old-tree-sha',
-      files: {
-        'docs/specs/my-spec.md': { blobSHA: 'old-blob-sha', frontmatterStatus: 'approved' },
-      },
-    },
-    commitSHA: 'previous-commit-sha',
+function buildMockPoller(): MockPoller {
+  return {
+    poll: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn(),
   };
+}
 
-  // Mock execFileSync to return diff output for git diff calls
-  vi.mocked(execFileSync).mockImplementation((file, args, _options) => {
-    if (file === 'git' && Array.isArray(args) && args[0] === 'diff') {
-      return diffOutput;
-    }
-    if (file === 'git' && Array.isArray(args) && args[0] === 'rev-parse') {
-      return '/resolved/repo/root\n';
-    }
-    return '';
-  });
+// =============================================================================
+// Configuration
+// =============================================================================
 
-  const { engine, capturedPrompts } = setupPlannerContextTest({
-    cacheEntry,
-    specTreeEntries: [{ path: 'my-spec.md', sha: 'new-blob-sha' }],
-    specContents: { 'docs/specs/my-spec.md': specContent },
-  });
+test('it throws when provider is missing workItemReader', () => {
+  const provider = buildMockProvider();
+  // @ts-expect-error — deliberately removing required field for test
+  provider.workItemReader = undefined;
 
-  await engine.start();
-
-  await vi.waitFor(() => {
-    expect(capturedPrompts.length).toBeGreaterThan(0);
-  });
-
-  const prompt = capturedPrompts[0];
-  invariant(prompt, 'prompt must exist');
-  expect(prompt).toContain('### docs/specs/my-spec.md (modified)');
-  expect(prompt).toContain('#### Diff');
-  expect(prompt).toContain(diffOutput);
-
-  // Reset the mock to default
-  vi.mocked(execFileSync).mockReturnValue('/resolved/repo/root\n');
-  engine.send({ command: 'shutdown' });
+  expect(() =>
+    createEngine({
+      provider,
+      createRuntimeAdapters: vi.fn().mockReturnValue({
+        planner: buildMockRuntimeAdapter(),
+        implementor: buildMockRuntimeAdapter(),
+        reviewer: buildMockRuntimeAdapter(),
+      }),
+    }),
+  ).toThrow('EngineConfig.provider.workItemReader is required');
 });
 
-test('it does not include a diff section for added specs in the planner prompt', async () => {
-  const specContent = '---\nstatus: approved\n---\n# Brand New Spec';
+test('it throws when provider is missing workItemWriter', () => {
+  const provider = buildMockProvider();
+  // @ts-expect-error — deliberately removing required field for test
+  provider.workItemWriter = undefined;
 
-  const { engine, capturedPrompts } = setupPlannerContextTest({
-    specTreeEntries: [{ path: 'new-spec.md', sha: 'blob-sha-1' }],
-    specContents: { 'docs/specs/new-spec.md': specContent },
-  });
-
-  await engine.start();
-
-  await vi.waitFor(() => {
-    expect(capturedPrompts.length).toBeGreaterThan(0);
-  });
-
-  const prompt = capturedPrompts[0];
-  invariant(prompt, 'prompt must exist');
-  expect(prompt).toContain('### docs/specs/new-spec.md (added)');
-  expect(prompt).not.toContain('#### Diff');
-
-  engine.send({ command: 'shutdown' });
+  expect(() =>
+    createEngine({
+      provider,
+      createRuntimeAdapters: vi.fn().mockReturnValue({
+        planner: buildMockRuntimeAdapter(),
+        implementor: buildMockRuntimeAdapter(),
+        reviewer: buildMockRuntimeAdapter(),
+      }),
+    }),
+  ).toThrow('EngineConfig.provider.workItemWriter is required');
 });
 
-test('it includes existing open task issues as a JSON array in the planner prompt', async () => {
-  const specContent = '---\nstatus: approved\n---\n# Spec';
-  const taskIssues = [
-    {
-      number: 10,
-      title: 'Implement feature X',
-      labels: [{ name: 'task:implement' }, { name: 'status:pending' }],
-      body: 'Task body for feature X',
-      created_at: '2026-01-01T00:00:00Z',
-    },
-    {
-      number: 20,
-      title: 'Refine spec Y',
-      labels: [{ name: 'task:refinement' }, { name: 'status:needs-refinement' }],
-      body: 'Refinement details',
-      created_at: '2026-01-02T00:00:00Z',
-    },
-  ];
+test('it throws when provider is missing revisionReader', () => {
+  const provider = buildMockProvider();
+  // @ts-expect-error — deliberately removing required field for test
+  provider.revisionReader = undefined;
 
-  const { engine, capturedPrompts } = setupPlannerContextTest({
-    specTreeEntries: [{ path: 'spec.md', sha: 'blob-sha-1' }],
-    specContents: { 'docs/specs/spec.md': specContent },
-    taskIssues,
-  });
-
-  await engine.start();
-
-  await vi.waitFor(() => {
-    expect(capturedPrompts.length).toBeGreaterThan(0);
-  });
-
-  const prompt = capturedPrompts[0];
-  invariant(prompt, 'prompt must exist');
-  expect(prompt).toContain('## Existing Open Issues');
-
-  // Parse the JSON array from the prompt
-  const issuesJsonMatch = prompt.split('## Existing Open Issues\n')[1];
-  invariant(issuesJsonMatch, 'issues JSON section must exist');
-  const parsedIssues: unknown = JSON.parse(issuesJsonMatch);
-  expect(parsedIssues).toStrictEqual([
-    {
-      number: 10,
-      title: 'Implement feature X',
-      labels: ['task:implement', 'status:pending'],
-      body: 'Task body for feature X',
-    },
-    {
-      number: 20,
-      title: 'Refine spec Y',
-      labels: ['task:refinement', 'status:needs-refinement'],
-      body: 'Refinement details',
-    },
-  ]);
-
-  engine.send({ command: 'shutdown' });
+  expect(() =>
+    createEngine({
+      provider,
+      createRuntimeAdapters: vi.fn().mockReturnValue({
+        planner: buildMockRuntimeAdapter(),
+        implementor: buildMockRuntimeAdapter(),
+        reviewer: buildMockRuntimeAdapter(),
+      }),
+    }),
+  ).toThrow('EngineConfig.provider.revisionReader is required');
 });
 
-test('it re-adds spec paths to the deferred buffer when spec content fetch fails', async () => {
-  const octokit = createMockGitHubClient();
-  const capturedPrompts: string[] = [];
-  const worktreeManager = createMockWorktreeManager();
+test('it throws when provider is missing revisionWriter', () => {
+  const provider = buildMockProvider();
+  // @ts-expect-error — deliberately removing required field for test
+  provider.revisionWriter = undefined;
 
-  const queryFactory: QueryFactory = async (params: QueryFactoryParams) => {
-    capturedPrompts.push(params.prompt);
-    const q = createMockQuery();
-    q.pushMessage({
-      type: 'system',
-      subtype: 'init',
-      session_id: `session-${capturedPrompts.length}`,
-    });
-    q.pushMessage({ type: 'result', subtype: 'success' });
-    q.end();
-    return q;
-  };
-
-  const config = buildValidConfig();
-
-  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
-    if (params.labels.includes('status:in-progress')) {
-      return { data: [] };
-    }
-    return { data: [] };
-  });
-  vi.mocked(octokit.issues.addLabels).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.issues.removeLabel).mockResolvedValue({ data: {} });
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
-
-  // First SpecPoller cycle: detect a new spec
-  vi.mocked(octokit.git.getTree).mockImplementation(async (params) => {
-    if (params.tree_sha === 'main') {
-      return {
-        data: {
-          sha: 'root-sha',
-          tree: [{ path: 'docs/specs', type: 'tree', sha: 'new-tree-sha' }],
-        },
-      };
-    }
-    return {
-      data: {
-        sha: 'new-tree-sha',
-        tree: [{ path: 'spec.md', type: 'blob', sha: 'blob-sha-1' }],
-      },
-    };
-  });
-
-  vi.mocked(octokit.git.getRef).mockResolvedValue({
-    data: { object: { sha: 'commit-sha-1' } },
-  });
-
-  // Make repos.getContent fail on first call, succeed on retry
-  let getContentCallCount = 0;
-  vi.mocked(octokit.repos.getContent).mockImplementation(async (_params) => {
-    getContentCallCount += 1;
-    if (getContentCallCount === 1) {
-      // First call to getContent (during frontmatter check in SpecPoller)
-      const content = Buffer.from('---\nstatus: approved\n---\n# Spec').toString('base64');
-      return { data: { content } };
-    }
-    if (getContentCallCount === 2) {
-      // Second call: planner context fetch — fail
-      throw new Error('GitHub API error');
-    }
-    // Subsequent calls: succeed
-    const content = Buffer.from('---\nstatus: approved\n---\n# Spec').toString('base64');
-    return { data: { content } };
-  });
-
-  const engine = createEngine(config, {
-    octokit,
-    queryFactory,
-    repoRoot: '/tmp/test-repo',
-    worktreeManager,
-    execCommand: async (): Promise<void> => {
-      // Mock yarn install — always succeeds in tests
-    },
-  });
-
-  const events: EngineEvent[] = [];
-  engine.on((event) => {
-    events.push(event);
-  });
-
-  await engine.start();
-
-  await vi.waitFor(() => {
-    // No planner should have been dispatched (the prompt build failed)
-    expect(capturedPrompts.length).toBe(0);
-  });
-
-  // The spec paths should be re-added to the deferred buffer.
-  // On the next spec poller cycle, the deferred paths will be re-dispatched.
-  // We verify this indirectly: no agentStarted event for planner
-  const plannerStarted = events.filter(
-    (e) => e.type === 'agentStarted' && e.agentType === 'planner',
-  );
-  expect(plannerStarted.length).toBe(0);
-
-  engine.send({ command: 'shutdown' });
+  expect(() =>
+    createEngine({
+      provider,
+      createRuntimeAdapters: vi.fn().mockReturnValue({
+        planner: buildMockRuntimeAdapter(),
+        implementor: buildMockRuntimeAdapter(),
+        reviewer: buildMockRuntimeAdapter(),
+      }),
+    }),
+  ).toThrow('EngineConfig.provider.revisionWriter is required');
 });
 
-test('it treats a corrupt cache file as a cold start', async () => {
-  vol.reset();
-  vol.mkdirSync('/tmp/test-repo', { recursive: true });
-  vol.writeFileSync('/tmp/test-repo/.decree-cache.json', '{corrupt json');
+test('it throws when provider is missing specReader', () => {
+  const provider = buildMockProvider();
+  // @ts-expect-error — deliberately removing required field for test
+  provider.specReader = undefined;
 
-  const { engine, octokit } = setupTest();
-
-  // SpecPoller should behave as cold start (empty snapshot)
-  vi.mocked(octokit.git.getTree).mockResolvedValue({
-    data: { sha: 'tree-sha-1', tree: [] },
-  });
-
-  // Should not throw
-  const result = await engine.start();
-  expect(result.issueCount).toBe(0);
+  expect(() =>
+    createEngine({
+      provider,
+      createRuntimeAdapters: vi.fn().mockReturnValue({
+        planner: buildMockRuntimeAdapter(),
+        implementor: buildMockRuntimeAdapter(),
+        reviewer: buildMockRuntimeAdapter(),
+      }),
+    }),
+  ).toThrow('EngineConfig.provider.specReader is required');
 });
 
-// ---------------------------------------------------------------------------
-// Commit SHA preservation across no-change poll cycles
-// ---------------------------------------------------------------------------
+test('it throws when createRuntimeAdapters is missing', () => {
+  const provider = buildMockProvider();
 
-test('it preserves the commit SHA when no-change poll cycles follow a change cycle', async () => {
-  vi.useFakeTimers();
-  const { engine, octokit, mockQueries } = setupTest();
-
-  // SpecPoller: poll 1 returns tree-sha-A (spec-a), poll 2 returns tree-sha-B (adds spec-b),
-  // poll 3+ returns tree-sha-B again (no change → EMPTY_RESULT)
-  let rootTreeCall = 0;
-  vi.mocked(octokit.git.getTree).mockImplementation(async (params) => {
-    if (params.tree_sha === 'main') {
-      rootTreeCall += 1;
-      const sha = rootTreeCall <= 1 ? 'tree-sha-A' : 'tree-sha-B';
-      return { data: { sha: 'root', tree: [{ path: 'docs/specs', type: 'tree', sha }] } };
-    }
-    if (params.tree_sha === 'tree-sha-A') {
-      return { data: { sha: 'tree-sha-A', tree: [{ path: 'a.md', type: 'blob', sha: 'blob-A' }] } };
-    }
-    return {
-      data: {
-        sha: 'tree-sha-B',
-        tree: [
-          { path: 'a.md', type: 'blob', sha: 'blob-A' },
-          { path: 'b.md', type: 'blob', sha: 'blob-B' },
-        ],
-      },
-    };
-  });
-
-  // Each getRef call returns a distinct SHA so we can trace which one the planner uses
-  let refCount = 0;
-  vi.mocked(octokit.git.getRef).mockImplementation(async () => {
-    refCount += 1;
-    return { data: { object: { sha: `commit-${refCount}` } } };
-  });
-
-  // Track refs from planner context builds (poller uses ref:'main', planner uses the commit SHA)
-  const plannerRefs: string[] = [];
-  vi.mocked(octokit.repos.getContent).mockImplementation(async (params) => {
-    if (params.ref && params.ref !== 'main') {
-      plannerRefs.push(params.ref);
-    }
-    const content = Buffer.from('---\nstatus: approved\n---\n# Spec').toString('base64');
-    return { data: { content } };
-  });
-
-  // Poll 1 (startup): spec-a detected → planner dispatched (stays running)
-  await engine.start();
-  expect(mockQueries.length).toBe(1);
-
-  // Poll 2: spec-b detected → deferred (planner running)
-  // Poll 3: no tree change → EMPTY_RESULT (would wipe SHA without fix)
-  await vi.advanceTimersByTimeAsync(61_000);
-  await vi.advanceTimersByTimeAsync(61_000);
-
-  // Complete the first planner, then poll 4 dispatches deferred spec-b
-  const q = mockQueries[0];
-  invariant(q, 'planner query must exist');
-  q.pushMessage({ type: 'result', subtype: 'success' });
-  q.end();
-  await vi.advanceTimersByTimeAsync(61_000);
-
-  expect(mockQueries.length).toBe(2);
-  // Second dispatch must use commit-2 (from poll 2 when spec-b was detected), not ''
-  expect(plannerRefs).toContain('commit-2');
-
-  // Complete the second planner query so it doesn't hang
-  const q2 = mockQueries[1];
-  invariant(q2, 'second planner query must exist');
-  q2.pushMessage({ type: 'result', subtype: 'success' });
-  q2.end();
-
-  engine.send({ command: 'shutdown' });
+  expect(() =>
+    createEngine({
+      provider,
+      // @ts-expect-error — deliberately removing required field for test
+      createRuntimeAdapters: undefined,
+    }),
+  ).toThrow('EngineConfig.createRuntimeAdapters is required');
 });
 
-// ---------------------------------------------------------------------------
-// Completion-dispatch: Implementor completes with a linked non-draft PR
-// ---------------------------------------------------------------------------
+test('it passes runtime adapter deps with store getState and provider readers', () => {
+  const { config, mocks } = setupTest();
 
-test('it dispatches the reviewer when an implementor completes with a linked non-draft PR', async () => {
-  const issues = [buildMockIssueData(42, 'in-progress')];
-  const { engine, events, octokit, mockQueries, capturedQueryParams } = setupTest({
-    issues,
-  });
-
-  // Set up a linked non-draft PR for issue #42
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
-  });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'PR for issue 42',
-      changed_files: 5,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'pr-sha-1', ref: 'issue-42' },
-      body: null,
-      draft: false,
-    },
-  });
-
-  await engine.start();
-
-  // Dispatch an implementor
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentStarted.length).toBe(1);
-  });
-
-  const implementorQuery = mockQueries.at(-1);
-  invariant(implementorQuery, 'implementor query must exist');
-
-  // Complete the implementor session
-  implementorQuery.pushMessage({ type: 'result', subtype: 'success' });
-  implementorQuery.end();
-
-  await vi.waitFor(() => {
-    // Verify the Reviewer was dispatched (a new query was created after the implementor)
-    const reviewerParams = capturedQueryParams.filter((p) => p.agent === 'reviewer');
-    expect(reviewerParams.length).toBeGreaterThan(0);
-  });
-
-  // Complete the reviewer query so it doesn't hang
-  const reviewerQuery = mockQueries.at(-1);
-  invariant(reviewerQuery, 'reviewer query must exist');
-  reviewerQuery.pushMessage({ type: 'result', subtype: 'success' });
-  reviewerQuery.end();
-
-  // Verify status:review was set via GitHub API
-  expect(octokit.issues.removeLabel).toHaveBeenCalledWith(
-    expect.objectContaining({ issue_number: 42, name: 'status:in-progress' }),
-  );
-  expect(octokit.issues.addLabels).toHaveBeenCalledWith(
-    expect.objectContaining({ issue_number: 42, labels: ['status:review'] }),
-  );
-
-  // Verify a synthetic issueStatusChanged event was emitted with isEngineTransition: true
-  const syntheticEvents = events.filter(
-    (e): e is IssueStatusChangedEvent =>
-      e.type === 'issueStatusChanged' &&
-      e.issueNumber === 42 &&
-      e.newStatus === 'review' &&
-      e.isEngineTransition === true,
-  );
-  expect(syntheticEvents).toHaveLength(1);
-
-  engine.send({ command: 'shutdown' });
-});
-
-test('it passes fetchRemote: true when dispatching reviewer after implementor completion', async () => {
-  const issues = [buildMockIssueData(42, 'in-progress')];
-  const { engine, events, octokit, mockQueries, worktreeManager } = setupTest({
-    issues,
-  });
-
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
-  });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'PR for issue 42',
-      changed_files: 5,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'pr-sha-1', ref: 'issue-42-completion-branch' },
-      body: null,
-      draft: false,
-    },
-  });
-
-  await engine.start();
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentStarted.length).toBe(1);
-  });
-
-  const implementorQuery = mockQueries.at(-1);
-  invariant(implementorQuery, 'implementor query must exist');
-
-  implementorQuery.pushMessage({ type: 'result', subtype: 'success' });
-  implementorQuery.end();
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentStarted.length).toBe(2);
-  });
-
-  // Complete the reviewer query so it doesn't hang
-  const reviewerQuery = mockQueries.at(-1);
-  invariant(reviewerQuery, 'reviewer query must exist');
-  reviewerQuery.pushMessage({ type: 'result', subtype: 'success' });
-  reviewerQuery.end();
-
-  const createForBranchCalls = vi.mocked(worktreeManager.createForBranch).mock.calls;
-  const reviewerCall = createForBranchCalls.filter(
-    (call) => call[0]?.branchName === 'issue-42-completion-branch',
-  );
-  expect(reviewerCall.length).toBeGreaterThan(0);
-  const lastReviewerCall = reviewerCall.at(-1);
-  expect(lastReviewerCall?.[0]).toMatchObject({
-    branchName: 'issue-42-completion-branch',
-    fetchRemote: true,
-  });
-
-  engine.send({ command: 'shutdown' });
-});
-
-// ---------------------------------------------------------------------------
-// Completion-dispatch: Snapshot sync prevents duplicate events
-// ---------------------------------------------------------------------------
-
-test('it does not emit a duplicate status change when the poller runs after completion-dispatch', async () => {
-  const issues = [buildMockIssueData(42, 'in-progress')];
-  const { engine, events, octokit, mockQueries } = setupTest({ issues });
-
-  // Set up a linked non-draft PR for issue #42
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
-  });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'PR for issue 42',
-      changed_files: 5,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'pr-sha-1', ref: 'issue-42' },
-      body: null,
-      draft: false,
-    },
-  });
-
-  await engine.start();
-
-  // Dispatch an implementor
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentStarted.length).toBe(1);
-  });
-
-  const implementorQuery = mockQueries.at(-1);
-  invariant(implementorQuery, 'implementor query must exist');
-
-  // Complete the implementor session
-  implementorQuery.pushMessage({ type: 'result', subtype: 'success' });
-  implementorQuery.end();
-
-  await vi.waitFor(() => {
-    const completed = events.filter(
-      (e) => e.type === 'agentCompleted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(completed.length).toBe(1);
-  });
-
-  // Simulate next poller cycle: issue now appears as status:review from GitHub
-  vi.mocked(octokit.issues.listForRepo).mockImplementation(async (params: { labels: string }) => {
-    if (params.labels.includes('status:in-progress')) {
-      return { data: [] };
-    }
-    return { data: [buildMockIssueData(42, 'review')] };
-  });
-
-  // Manually trigger another poll by re-creating the scenario via a short wait
-  // (The poller interval handles this in production; we just need to verify the snapshot matches)
-  // The snapshot was updated by completion-dispatch, so the poller should see no change.
-  // Verify by checking the snapshot directly
-  const statusEvents = events.filter(
-    (e): e is IssueStatusChangedEvent =>
-      e.type === 'issueStatusChanged' && e.issueNumber === 42 && e.newStatus === 'review',
-  );
-  // Should have exactly one (from completion-dispatch), not two
-  expect(statusEvents).toHaveLength(1);
-  expect(statusEvents[0]?.isEngineTransition).toBe(true);
-
-  engine.send({ command: 'shutdown' });
-});
-
-// ---------------------------------------------------------------------------
-// Completion-dispatch: No PR found — no action
-// ---------------------------------------------------------------------------
-
-test('it does not dispatch a reviewer when an implementor completes with no linked PR', async () => {
-  const issues = [buildMockIssueData(42, 'in-progress')];
-  const { engine, events, octokit, mockQueries, capturedQueryParams } = setupTest({
-    issues,
-  });
-
-  // No PRs linked to issue #42
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
-
-  await engine.start();
-
-  // Dispatch an implementor
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentStarted.length).toBe(1);
-  });
-
-  const paramsBeforeCompletion = capturedQueryParams.length;
-
-  const implementorQuery = mockQueries.at(-1);
-  invariant(implementorQuery, 'implementor query must exist');
-
-  // Complete the implementor session
-  implementorQuery.pushMessage({ type: 'result', subtype: 'success' });
-  implementorQuery.end();
-
-  await vi.waitFor(() => {
-    const completed = events.filter(
-      (e) => e.type === 'agentCompleted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(completed.length).toBe(1);
-  });
-
-  // No reviewer should have been dispatched (no new queries beyond the implementor)
-  const reviewerParams = capturedQueryParams
-    .slice(paramsBeforeCompletion)
-    .filter((p) => p.agent === 'reviewer');
-  expect(reviewerParams).toHaveLength(0);
-
-  // No synthetic issueStatusChanged with isEngineTransition should have been emitted
-  const syntheticEvents = events.filter(
-    (e): e is IssueStatusChangedEvent =>
-      e.type === 'issueStatusChanged' && e.isEngineTransition === true,
-  );
-  expect(syntheticEvents).toHaveLength(0);
-
-  // The status:review label should NOT have been set
-  const addLabelsCalls = vi.mocked(octokit.issues.addLabels).mock.calls;
-  const reviewLabelCalls = addLabelsCalls.filter(
-    (call) => Array.isArray(call[0]?.labels) && call[0].labels.includes('status:review'),
-  );
-  expect(reviewLabelCalls).toHaveLength(0);
-
-  engine.send({ command: 'shutdown' });
-});
-
-// ---------------------------------------------------------------------------
-// Completion-dispatch: Implementor failure — no PR check or Reviewer dispatch
-// ---------------------------------------------------------------------------
-
-test('it does not check for a PR or dispatch a reviewer when an implementor fails', async () => {
-  const issues = [buildMockIssueData(42, 'in-progress')];
-  const { engine, events, octokit, mockQueries, capturedQueryParams } = setupTest({
-    issues,
-  });
-
-  // Set up a linked non-draft PR (should NOT be checked for failures)
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: false })],
-  });
-
-  await engine.start();
-
-  // Dispatch an implementor
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentStarted.length).toBe(1);
-  });
-
-  // Clear the pulls.list call count from dispatch (which uses includeDrafts: true for worktree strategy)
-  vi.mocked(octokit.pulls.list).mockClear();
-
-  const paramsBeforeFailure = capturedQueryParams.length;
-
-  const implementorQuery = mockQueries.at(-1);
-  invariant(implementorQuery, 'implementor query must exist');
-
-  // Fail the implementor session
-  implementorQuery.pushMessage({ type: 'result', subtype: 'error_during_execution' });
-  implementorQuery.end();
-
-  await vi.waitFor(() => {
-    const agentFailed = events.filter(
-      (e) => e.type === 'agentFailed' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentFailed.length).toBe(1);
-  });
-
-  // No PR check should have been performed for the failure path
-  // (The completion-dispatch only fires on agentCompleted, not agentFailed)
-  // No reviewer should have been dispatched
-  const reviewerParams = capturedQueryParams
-    .slice(paramsBeforeFailure)
-    .filter((p) => p.agent === 'reviewer');
-  expect(reviewerParams).toHaveLength(0);
-
-  // No synthetic issueStatusChanged with isEngineTransition should have been emitted
-  const syntheticEvents = events.filter(
-    (e): e is IssueStatusChangedEvent =>
-      e.type === 'issueStatusChanged' && e.isEngineTransition === true,
-  );
-  expect(syntheticEvents).toHaveLength(0);
-
-  engine.send({ command: 'shutdown' });
-});
-
-// ---------------------------------------------------------------------------
-// Worktree strategy: dispatchImplementor calls getPRForIssue for strategy selection
-// ---------------------------------------------------------------------------
-
-test('it calls getPRForIssue with includeDrafts when dispatching an implementor', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit, mockQueries } = setupTest({ issues });
-
-  // No linked PR
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
-
-  await engine.start();
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentStarted.length).toBe(1);
-  });
-
-  // getPRForIssue calls octokit.pulls.list — verify it was called
-  expect(octokit.pulls.list).toHaveBeenCalled();
-
-  const query = mockQueries.at(-1);
-  invariant(query, 'query must exist');
-  query.pushMessage({ type: 'result', subtype: 'success' });
-  query.end();
-
-  engine.send({ command: 'shutdown' });
-});
-
-test('it uses a fresh branch with timestamp when no linked PR exists', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit, worktreeManager, mockQueries } = setupTest({ issues });
-
-  // No linked PR
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
-
-  await engine.start();
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-    );
-    expect(agentStarted.length).toBe(1);
-  });
-
-  // Verify createForBranch was called with a fresh branch name (issue-42-<timestamp>) and branchBase: 'main'
-  expect(worktreeManager.createForBranch).toHaveBeenCalledWith(
+  expect(config.createRuntimeAdapters).toHaveBeenCalledWith(
     expect.objectContaining({
-      branchName: expect.stringMatching(FRESH_BRANCH_PATTERN),
-      branchBase: 'main',
+      workItemReader: config.provider.workItemReader,
+      revisionReader: config.provider.revisionReader,
+      getState: mocks.store.getState,
+    }),
+  );
+});
+
+test('it threads provider readers to pollers and writers to command executor', () => {
+  const { config } = setupTest();
+
+  // Work item poller receives reader
+  expect(vi.mocked(createWorkItemPoller)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      reader: config.provider.workItemReader,
     }),
   );
 
-  const query = mockQueries.at(-1);
-  invariant(query, 'query must exist');
-  query.pushMessage({ type: 'result', subtype: 'success' });
-  query.end();
+  // Revision poller receives reader
+  expect(vi.mocked(createRevisionPoller)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      reader: config.provider.revisionReader,
+    }),
+  );
 
-  engine.send({ command: 'shutdown' });
+  // Spec poller receives reader
+  expect(vi.mocked(createSpecPoller)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      reader: config.provider.specReader,
+    }),
+  );
+
+  // Command executor receives writers (not readers)
+  expect(vi.mocked(createCommandExecutor)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      workItemWriter: config.provider.workItemWriter,
+      revisionWriter: config.provider.revisionWriter,
+    }),
+  );
+
+  // Verify executor does NOT receive readers
+  const executorCall = vi.mocked(createCommandExecutor).mock.lastCall;
+  invariant(executorCall, 'createCommandExecutor must have been called');
+  const executorDeps = executorCall[0];
+  expect(executorDeps).not.toHaveProperty('workItemReader');
+  expect(executorDeps).not.toHaveProperty('revisionReader');
+  expect(executorDeps).not.toHaveProperty('specReader');
 });
 
-test('it uses the PR branch when a linked PR exists', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit, worktreeManager, mockQueries } = setupTest({ issues });
+test('it uses the default policy when none is provided', () => {
+  setupTest();
 
-  // Linked PR with headRefName 'issue-42-1738000000'
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: true })],
+  expect(vi.mocked(createCommandExecutor)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      policy: defaultPolicy,
+    }),
+  );
+});
+
+test('it uses a custom policy when provided', () => {
+  const customPolicy = vi.fn().mockReturnValue({ allowed: true, reason: null });
+  setupTest({ policy: customPolicy });
+
+  expect(vi.mocked(createCommandExecutor)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      policy: customPolicy,
+    }),
+  );
+});
+
+// =============================================================================
+// Wiring
+// =============================================================================
+
+test('it exposes the zustand store instance for use-store binding', () => {
+  const { engine, mocks } = setupTest();
+
+  expect(engine.store).toBe(mocks.store);
+});
+
+test('it delegates getWorkItemBody to provider without caching', async () => {
+  const { engine, config } = setupTest();
+
+  const result = await engine.getWorkItemBody('wi-42');
+
+  expect(config.provider.workItemReader.getWorkItemBody).toHaveBeenCalledWith('wi-42');
+  expect(result).toBe('work item body');
+});
+
+test('it delegates getRevisionFiles to provider without caching', async () => {
+  const { engine, config } = setupTest();
+
+  const result = await engine.getRevisionFiles('rev-7');
+
+  expect(config.provider.revisionReader.getRevisionFiles).toHaveBeenCalledWith('rev-7');
+  expect(result).toStrictEqual([{ path: 'src/foo.ts', status: 'modified', patch: null }]);
+});
+
+// =============================================================================
+// Processing Loop
+// =============================================================================
+
+test('it processes the first event fully before dequeuing the second', async () => {
+  const { engine, mocks } = setupTest();
+
+  const processingOrder: string[] = [];
+  const event1 = buildWorkItemChangedUpsert({ workItemID: 'wi-1' });
+  const event2 = buildWorkItemChangedUpsert({ workItemID: 'wi-2' });
+
+  vi.mocked(applyStateUpdate).mockImplementation((_store, event, _logger) => {
+    if ('workItemID' in event) {
+      processingOrder.push(`update:${(event as WorkItemChanged).workItemID}`);
+    }
   });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'PR for issue 42',
-      changed_files: 5,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'pr-sha-1', ref: 'issue-42-1738000000' },
-      body: null,
-      draft: true,
-    },
+
+  // Add a handler that returns one command per event so executor gets called
+  const dummyCommand: EngineCommand = {
+    command: 'createWorkItem',
+    title: 'T',
+    body: 'B',
+    labels: [],
+    blockedBy: [],
+  };
+  const handler: Handler = vi.fn().mockReturnValue([dummyCommand]);
+  mocks.handlers.push(handler);
+
+  // Pre-load two events in the queue, then make it empty after both are consumed
+  let dequeueCount = 0;
+  mocks.queue.dequeue
+    .mockImplementationOnce(() => {
+      dequeueCount += 1;
+      return event1;
+    })
+    .mockImplementationOnce(() => {
+      dequeueCount += 1;
+      return event2;
+    })
+    .mockImplementation(() => undefined);
+
+  // Track executor calls
+  mocks.executor.execute.mockImplementation(async () => {
+    processingOrder.push(`execute:${dequeueCount}`);
+    return [];
   });
 
   await engine.start();
 
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
+  // Wait for processing loop to consume both events
+  await vi.waitFor(() => {
+    expect(dequeueCount).toBeGreaterThanOrEqual(2);
+  });
+
+  await engine.stop();
+
+  // Verify sequential processing: event1's update and execution before event2's
+  expect(processingOrder[0]).toBe('update:wi-1');
+  expect(processingOrder[1]).toBe('execute:1');
+  expect(processingOrder[2]).toBe('update:wi-2');
+  expect(processingOrder[3]).toBe('execute:2');
+});
+
+test('it enqueues result events from command execution for subsequent cycles', async () => {
+  const { engine, mocks } = setupTest();
+
+  const event1 = buildWorkItemChangedUpsert({ workItemID: 'wi-1' });
+  const resultEvent: EngineEvent = {
+    type: 'commandRejected',
+    command: { command: 'createWorkItem', title: '', body: '', labels: [], blockedBy: [] },
+    reason: 'test rejection',
+  };
+
+  const handler: Handler = vi
+    .fn()
+    .mockReturnValueOnce([
+      { command: 'createWorkItem', title: 'Test', body: 'Body', labels: [], blockedBy: [] },
+    ])
+    .mockReturnValue([]);
+
+  mocks.handlers.push(handler);
+
+  // Executor returns a result event for the first command
+  mocks.executor.execute.mockResolvedValueOnce([resultEvent]).mockResolvedValue([]);
+
+  // Queue: first dequeue returns event1, subsequent dequeues return from the actual queue
+  let firstDequeue = true;
+  const internalEvents: EngineEvent[] = [];
+  mocks.queue.dequeue.mockImplementation(() => {
+    if (firstDequeue) {
+      firstDequeue = false;
+      return event1;
+    }
+    return internalEvents.shift();
+  });
+  mocks.queue.isEmpty.mockImplementation(() => internalEvents.length === 0);
+  mocks.queue.enqueue.mockImplementation((event: EngineEvent) => {
+    internalEvents.push(event);
+  });
+
+  await engine.start();
+
+  // Wait for the result event to be enqueued
+  await vi.waitFor(() => {
+    expect(mocks.queue.enqueue).toHaveBeenCalledWith(resultEvent);
+  });
+
+  await engine.stop();
+});
+
+test('it passes the same state snapshot to all commands from one event', async () => {
+  const { engine, mocks } = setupTest();
+
+  const event1 = buildWorkItemChangedUpsert({ workItemID: 'wi-1' });
+
+  const command1: EngineCommand = {
+    command: 'createWorkItem',
+    title: 'T1',
+    body: 'B1',
+    labels: [],
+    blockedBy: [],
+  };
+  const command2: EngineCommand = {
+    command: 'createWorkItem',
+    title: 'T2',
+    body: 'B2',
+    labels: [],
+    blockedBy: [],
+  };
+
+  const handler: Handler = vi.fn().mockReturnValueOnce([command1, command2]).mockReturnValue([]);
+  mocks.handlers.push(handler);
+
+  const snapshotsPassedToExecute: EngineState[] = [];
+  mocks.executor.execute.mockImplementation(
+    async (_cmd: EngineCommand, engineState: EngineState) => {
+      snapshotsPassedToExecute.push(engineState);
+      return [];
+    },
+  );
+
+  // Return event1 on first dequeue, then undefined
+  mocks.queue.dequeue.mockReturnValueOnce(event1).mockReturnValue(undefined);
+
+  await engine.start();
 
   await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
+    expect(snapshotsPassedToExecute.length).toBe(2);
+  });
+
+  await engine.stop();
+
+  // Both commands received the exact same snapshot reference
+  expect(snapshotsPassedToExecute[0]).toBe(snapshotsPassedToExecute[1]);
+});
+
+test('it processes a user requested implementor run through the full pipeline', async () => {
+  const { engine, mocks } = setupTest();
+
+  const userEvent: EngineEvent = {
+    type: 'userRequestedImplementorRun',
+    workItemID: 'wi-1',
+  };
+
+  const handler: Handler = vi
+    .fn()
+    .mockReturnValueOnce([{ command: 'requestImplementorRun', workItemID: 'wi-1' }])
+    .mockReturnValue([]);
+  mocks.handlers.push(handler);
+  mocks.executor.execute.mockResolvedValue([]);
+
+  mocks.queue.dequeue.mockReturnValueOnce(userEvent).mockReturnValue(undefined);
+
+  await engine.start();
+
+  await vi.waitFor(() => {
+    expect(vi.mocked(applyStateUpdate)).toHaveBeenCalledWith(
+      mocks.store,
+      userEvent,
+      expect.anything(),
     );
-    expect(agentStarted.length).toBe(1);
   });
-
-  // Verify createForBranch was called with the PR's headRefName and NO branchBase
-  expect(worktreeManager.createForBranch).toHaveBeenCalledWith({
-    branchName: 'issue-42-1738000000',
-  });
-
-  const query = mockQueries.at(-1);
-  invariant(query, 'query must exist');
-  query.pushMessage({ type: 'result', subtype: 'success' });
-  query.end();
-
-  engine.send({ command: 'shutdown' });
-});
-
-// ---------------------------------------------------------------------------
-// Implementor Context Pre-computation
-// ---------------------------------------------------------------------------
-
-test('it calls getIssueDetails before every implementor dispatch', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit, mockQueries } = setupTest({ issues });
-
-  // No linked PR
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
-
-  await engine.start();
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
 
   await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
+    expect(handler).toHaveBeenCalledWith(userEvent, expect.anything());
+  });
+
+  await vi.waitFor(() => {
+    expect(mocks.executor.execute).toHaveBeenCalledWith(
+      { command: 'requestImplementorRun', workItemID: 'wi-1' },
+      expect.anything(),
     );
-    expect(agentStarted.length).toBe(1);
   });
 
-  // getIssueDetails calls octokit.issues.get — verify it was called with the issue number
-  expect(octokit.issues.get).toHaveBeenCalledWith(expect.objectContaining({ issue_number: 42 }));
-
-  const query = mockQueries.at(-1);
-  invariant(query, 'query must exist');
-  query.pushMessage({ type: 'result', subtype: 'success' });
-  query.end();
-
-  engine.send({ command: 'shutdown' });
+  await engine.stop();
 });
 
-test('it builds an enriched prompt with issue details only when no linked PR exists', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, capturedQueryParams, octokit, mockQueries } = setupTest({ issues });
+// =============================================================================
+// Startup
+// =============================================================================
 
-  // No linked PR
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
+test('it awaits all three poller first cycles before start resolves', async () => {
+  const { engine, mocks } = setupTest();
+
+  const pollOrder: string[] = [];
+  let wiResolved = false;
+  let revResolved = false;
+  let specResolved = false;
+
+  mocks.workItemPoller.poll.mockImplementation(async () => {
+    wiResolved = true;
+    pollOrder.push('workItem');
+  });
+  mocks.revisionPoller.poll.mockImplementation(async () => {
+    revResolved = true;
+    pollOrder.push('revision');
+  });
+  mocks.specPoller.poll.mockImplementation(async () => {
+    specResolved = true;
+    pollOrder.push('spec');
+  });
 
   await engine.start();
 
-  const paramsBeforeDispatch = capturedQueryParams.length;
+  // All three pollers completed their first cycle
+  expect(wiResolved).toBe(true);
+  expect(revResolved).toBe(true);
+  expect(specResolved).toBe(true);
+  expect(pollOrder).toHaveLength(3);
 
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const implementorParams = capturedQueryParams.slice(paramsBeforeDispatch);
-    expect(implementorParams.length).toBeGreaterThanOrEqual(1);
-  });
-
-  const implementorParams = capturedQueryParams.slice(paramsBeforeDispatch);
-  invariant(implementorParams[0], 'implementor params must exist');
-  const prompt = implementorParams[0].prompt;
-
-  // Prompt should contain the issue section
-  expect(prompt).toContain('## Task Issue #42');
-  expect(prompt).toContain('Task body for #42');
-  expect(prompt).toContain('### Labels');
-
-  // Prompt should NOT contain PR, reviews, or inline comments sections
-  expect(prompt).not.toContain('## PR #');
-  expect(prompt).not.toContain('### Changed Files');
-  expect(prompt).not.toContain('### Prior Reviews');
-  expect(prompt).not.toContain('### Prior Inline Comments');
-
-  const query = mockQueries.at(-1);
-  invariant(query, 'query must exist');
-  query.pushMessage({ type: 'result', subtype: 'success' });
-  query.end();
-
-  engine.send({ command: 'shutdown' });
+  await engine.stop();
 });
 
-test('it builds an enriched prompt with PR data when a linked PR exists', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, capturedQueryParams, octokit, mockQueries } = setupTest({ issues });
+test('it provides populated state when getState is called after start resolves', async () => {
+  const { engine, mocks } = setupTest();
 
-  // Linked PR
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: true })],
+  const populatedState = buildEmptyState();
+  populatedState.workItems.set('wi-1', {
+    id: 'wi-1',
+    title: 'Test',
+    status: 'pending',
+    priority: null,
+    complexity: null,
+    blockedBy: [],
+    createdAt: '2026-01-01T00:00:00Z',
+    linkedRevision: null,
   });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'Fix issue 42',
-      changed_files: 2,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'pr-sha-1', ref: 'issue-42-branch' },
-      body: null,
-      draft: true,
+
+  mocks.store.getState.mockReturnValue(populatedState);
+
+  await engine.start();
+
+  const currentState = engine.getState();
+  expect(currentState.workItems.size).toBe(1);
+  expect(currentState.workItems.get('wi-1')).toMatchObject({ id: 'wi-1', title: 'Test' });
+
+  await engine.stop();
+});
+
+test('it handles recovery through normal event processing without a separate phase', async () => {
+  const { engine, mocks } = setupTest();
+
+  // Simulate: first poll detects an in-progress work item with no active agent run
+  const inProgressEvent = buildWorkItemChangedUpsert({
+    workItemID: 'wi-orphan',
+    workItem: {
+      id: 'wi-orphan',
+      title: 'Orphaned work item',
+      status: 'in-progress',
+      priority: null,
+      complexity: null,
+      blockedBy: [],
+      createdAt: '2026-01-01T00:00:00Z',
+      linkedRevision: null,
     },
+    newStatus: 'in-progress',
   });
-  vi.mocked(octokit.pulls.listFiles).mockResolvedValue({
-    data: [{ filename: 'src/foo.ts', status: 'modified', patch: '@@ -1 +1 @@\n-old\n+new' }],
+
+  // The work item poller enqueues events during poll()
+  mocks.workItemPoller.poll.mockImplementation(async () => {
+    engine.enqueue(inProgressEvent);
   });
-  vi.mocked(octokit.pulls.listReviews).mockResolvedValue({
-    data: [
-      {
-        id: 1,
-        user: { login: 'reviewer1' },
-        state: 'CHANGES_REQUESTED',
-        body: 'Please fix the bug',
-      },
-    ],
+
+  // A handler (handleOrphanedWorkItem) would emit a transition command
+  const transitionCommand: EngineCommand = {
+    command: 'transitionWorkItemStatus',
+    workItemID: 'wi-orphan',
+    newStatus: 'pending',
+  };
+
+  const handler: Handler = vi.fn().mockImplementation((event: EngineEvent) => {
+    if (event.type === 'workItemChanged' && (event as WorkItemChanged).workItemID === 'wi-orphan') {
+      return [transitionCommand];
+    }
+    return [];
   });
-  vi.mocked(octokit.pulls.listReviewComments).mockResolvedValue({
-    data: [
-      {
-        id: 2,
-        user: { login: 'reviewer1' },
-        body: 'This line is wrong',
-        path: 'src/foo.ts',
-        line: 5,
-      },
-    ],
-  });
+  mocks.handlers.push(handler);
+  mocks.executor.execute.mockResolvedValue([]);
 
   await engine.start();
 
-  const paramsBeforeDispatch = capturedQueryParams.length;
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
+  // Wait for the event to be processed
   await vi.waitFor(() => {
-    const implementorParams = capturedQueryParams.slice(paramsBeforeDispatch);
-    expect(implementorParams.length).toBeGreaterThanOrEqual(1);
-  });
-
-  const implementorParams = capturedQueryParams.slice(paramsBeforeDispatch);
-  invariant(implementorParams[0], 'implementor params must exist');
-  const prompt = implementorParams[0].prompt;
-
-  // Prompt should contain the issue section
-  expect(prompt).toContain('## Task Issue #42');
-  expect(prompt).toContain('Task body for #42');
-
-  // Prompt should contain the PR section with files
-  expect(prompt).toContain('## PR #100 — Fix issue 42');
-  expect(prompt).toContain('### Changed Files');
-  expect(prompt).toContain('src/foo.ts (modified)');
-  expect(prompt).toContain('@@ -1 +1 @@');
-
-  // Prompt should contain review and inline comment sections
-  expect(prompt).toContain('### Prior Reviews');
-  expect(prompt).toContain('Review by reviewer1 — CHANGES_REQUESTED');
-  expect(prompt).toContain('Please fix the bug');
-  expect(prompt).toContain('### Prior Inline Comments');
-  expect(prompt).toContain('src/foo.ts:5 — reviewer1');
-  expect(prompt).toContain('This line is wrong');
-
-  const query = mockQueries.at(-1);
-  invariant(query, 'query must exist');
-  query.pushMessage({ type: 'result', subtype: 'success' });
-  query.end();
-
-  engine.send({ command: 'shutdown' });
-});
-
-test('it calls getPRFiles and getPRReviews when a linked PR exists during implementor dispatch', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit, mockQueries } = setupTest({ issues });
-
-  // Linked PR
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: true })],
-  });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'PR for issue 42',
-      changed_files: 1,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'pr-sha-1', ref: 'issue-42-branch' },
-      body: null,
-      draft: true,
-    },
-  });
-
-  await engine.start();
-
-  vi.mocked(octokit.pulls.listFiles).mockClear();
-  vi.mocked(octokit.pulls.listReviews).mockClear();
-  vi.mocked(octokit.pulls.listReviewComments).mockClear();
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  await vi.waitFor(() => {
-    const agentStarted = events.filter(
-      (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
+    expect(vi.mocked(applyStateUpdate)).toHaveBeenCalledWith(
+      mocks.store,
+      inProgressEvent,
+      expect.anything(),
     );
-    expect(agentStarted.length).toBe(1);
   });
-
-  // getPRFiles and getPRReviews should have been called with the PR number
-  expect(octokit.pulls.listFiles).toHaveBeenCalledWith(
-    expect.objectContaining({ pull_number: 100 }),
-  );
-  expect(octokit.pulls.listReviews).toHaveBeenCalledWith(
-    expect.objectContaining({ pull_number: 100 }),
-  );
-  expect(octokit.pulls.listReviewComments).toHaveBeenCalledWith(
-    expect.objectContaining({ pull_number: 100 }),
-  );
-
-  const query = mockQueries.at(-1);
-  invariant(query, 'query must exist');
-  query.pushMessage({ type: 'result', subtype: 'success' });
-  query.end();
-
-  engine.send({ command: 'shutdown' });
-});
-
-test('it omits review sections when a linked PR has no prior reviews or comments', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, capturedQueryParams, octokit, mockQueries } = setupTest({ issues });
-
-  // Linked PR with no reviews or comments
-  vi.mocked(octokit.pulls.list).mockResolvedValue({
-    data: [buildPullsListItem({ number: 100, body: 'Closes #42', draft: true })],
-  });
-  vi.mocked(octokit.pulls.get).mockResolvedValue({
-    data: {
-      number: 100,
-      title: 'PR for issue 42',
-      changed_files: 1,
-      html_url: 'https://github.com/owner/repo/pull/100',
-      user: null,
-      head: { sha: 'pr-sha-1', ref: 'issue-42-branch' },
-      body: null,
-      draft: true,
-    },
-  });
-  vi.mocked(octokit.pulls.listFiles).mockResolvedValue({
-    data: [{ filename: 'src/bar.ts', status: 'added', patch: '+new content' }],
-  });
-  vi.mocked(octokit.pulls.listReviews).mockResolvedValue({ data: [] });
-  vi.mocked(octokit.pulls.listReviewComments).mockResolvedValue({ data: [] });
-
-  await engine.start();
-
-  const paramsBeforeDispatch = capturedQueryParams.length;
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
 
   await vi.waitFor(() => {
-    const implementorParams = capturedQueryParams.slice(paramsBeforeDispatch);
-    expect(implementorParams.length).toBeGreaterThanOrEqual(1);
+    expect(mocks.executor.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'transitionWorkItemStatus',
+        workItemID: 'wi-orphan',
+        newStatus: 'pending',
+      }),
+      expect.anything(),
+    );
   });
 
-  const implementorParams = capturedQueryParams.slice(paramsBeforeDispatch);
-  invariant(implementorParams[0], 'implementor params must exist');
-  const prompt = implementorParams[0].prompt;
-
-  // Prompt should contain issue and PR sections
-  expect(prompt).toContain('## Task Issue #42');
-  expect(prompt).toContain('## PR #100');
-  expect(prompt).toContain('### Changed Files');
-
-  // Prompt should NOT contain review sections since there are none
-  expect(prompt).not.toContain('### Prior Reviews');
-  expect(prompt).not.toContain('### Prior Inline Comments');
-
-  const query = mockQueries.at(-1);
-  invariant(query, 'query must exist');
-  query.pushMessage({ type: 'result', subtype: 'success' });
-  query.end();
-
-  engine.send({ command: 'shutdown' });
+  await engine.stop();
 });
 
-test('it fails the implementor dispatch when getIssueDetails throws', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit, capturedQueryParams } = setupTest({ issues });
+// =============================================================================
+// Shutdown
+// =============================================================================
 
-  // No linked PR
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [] });
+test('it cancels all active agent runs before stopping pollers', async () => {
+  const { engine, mocks } = setupTest();
 
-  // Make getIssueDetails fail
-  vi.mocked(octokit.issues.get).mockRejectedValue(new Error('GitHub API error'));
-
-  await engine.start();
-
-  const paramsBeforeDispatch = capturedQueryParams.length;
-
-  engine.send({ command: 'dispatchImplementor', issueNumber: 42 });
-
-  // Wait a tick to let the command handler run
-  await vi.waitFor(() => {
-    // No new agent should have been dispatched (the context fetch failed)
-    expect(capturedQueryParams.length).toBe(paramsBeforeDispatch);
+  // Set up active agent runs in state
+  const stateWithRuns = buildEmptyState();
+  stateWithRuns.agentRuns.set('session-impl-1', {
+    role: 'implementor',
+    sessionID: 'session-impl-1',
+    status: 'running',
+    workItemID: 'wi-1',
+    branchName: 'feature/wi-1',
+    logFilePath: null,
+    error: null,
+    startedAt: '2026-01-01T00:00:00Z',
+  });
+  stateWithRuns.agentRuns.set('session-plan-1', {
+    role: 'planner',
+    sessionID: 'session-plan-1',
+    status: 'running',
+    specPaths: ['docs/specs/test.md'],
+    logFilePath: null,
+    error: null,
+    startedAt: '2026-01-01T00:00:00Z',
   });
 
-  // No agentStarted should have been emitted for issue 42 after the dispatch attempt
-  const agentStarted = events.filter(
-    (e) => e.type === 'agentStarted' && 'issueNumber' in e && e.issueNumber === 42,
-  );
-  expect(agentStarted).toHaveLength(0);
+  mocks.store.getState.mockReturnValue(stateWithRuns);
 
-  engine.send({ command: 'shutdown' });
-});
+  const callOrder: string[] = [];
+  mocks.runtimeAdapters.implementor.cancelAgent.mockImplementation(() => {
+    callOrder.push('cancelAgent:implementor');
+  });
+  mocks.runtimeAdapters.planner.cancelAgent.mockImplementation(() => {
+    callOrder.push('cancelAgent:planner');
+  });
+  mocks.workItemPoller.stop.mockImplementation(() => {
+    callOrder.push('stopPoller:workItem');
+  });
+  mocks.revisionPoller.stop.mockImplementation(() => {
+    callOrder.push('stopPoller:revision');
+  });
+  mocks.specPoller.stop.mockImplementation(() => {
+    callOrder.push('stopPoller:spec');
+  });
 
-// ---------------------------------------------------------------------------
-// Event type validation
-// ---------------------------------------------------------------------------
-
-test('it only emits events from the valid event type set', async () => {
-  const issues = [buildMockIssueData(1, 'pending')];
-  const { engine, events } = setupTest({ issues });
+  // Make agent runs transition to terminal state immediately so drain completes
+  mocks.store.getState.mockReturnValueOnce(stateWithRuns).mockReturnValue({
+    ...stateWithRuns,
+    agentRuns: new Map(), // cleared after cancellation
+  });
 
   await engine.start();
+  await engine.stop();
 
-  const validTypes = new Set([
-    'issueStatusChanged',
-    'specChanged',
-    'agentStarted',
-    'agentCompleted',
-    'agentFailed',
-    'prLinked',
-    'ciStatusChanged',
-  ]);
+  // Verify cancel happened before poller stop
+  const cancelIndices = callOrder
+    .filter((c) => c.startsWith('cancelAgent'))
+    .map((c) => callOrder.indexOf(c));
+  const pollerStopIndices = callOrder
+    .filter((c) => c.startsWith('stopPoller'))
+    .map((c) => callOrder.indexOf(c));
 
-  for (const event of events) {
-    expect(validTypes.has(event.type)).toBe(true);
+  for (const cancelIdx of cancelIndices) {
+    for (const pollerIdx of pollerStopIndices) {
+      expect(cancelIdx).toBeLessThan(pollerIdx);
+    }
   }
 });
 
-// ---------------------------------------------------------------------------
-// PR Poller integration: startup
-// ---------------------------------------------------------------------------
-
-test('it runs the first PR Poller cycle during startup', async () => {
-  const { engine, octokit } = setupTest();
-
-  // PR Poller calls pulls.list during its poll cycle
-  vi.mocked(octokit.pulls.list).mockClear();
+test('it rejects new events after shutdown begins', async () => {
+  const { engine, mocks } = setupTest();
 
   await engine.start();
 
-  // pulls.list is called by both PR Poller and query methods, so verify at least one call
-  expect(octokit.pulls.list).toHaveBeenCalled();
+  // Start shutdown in the background
+  const stopPromise = engine.stop();
+
+  // Verify setRejecting was called
+  expect(mocks.queue.setRejecting).toHaveBeenCalledWith(true, expect.any(Function));
+
+  await stopPromise;
 });
 
-// ---------------------------------------------------------------------------
-// PR Poller integration: shutdown
-// ---------------------------------------------------------------------------
-
-test('it clears the PR Poller timer during shutdown', async () => {
+test('it returns the same promise when stop is called multiple times', async () => {
   const { engine } = setupTest();
 
   await engine.start();
 
-  // Shutdown should not throw (timer is cleared and stop() is called)
-  engine.send({ command: 'shutdown' });
+  const first = engine.stop();
+  const second = engine.stop();
+
+  expect(second).toBe(first);
+
+  await first;
 });
 
-// ---------------------------------------------------------------------------
-// PR Poller integration: onCIStatusChanged callback
-// ---------------------------------------------------------------------------
+test('it only allows completed and failed agent events through the terminal filter', async () => {
+  const { engine, mocks } = setupTest();
 
-test('it emits a CI status changed event with a linked issue number when CI status changes', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit } = setupTest({ issues });
+  await engine.start();
+  await engine.stop();
 
-  // Set up PRs: one PR linked to issue #42 with CI failure
-  const prItem = buildPullsListItem({ number: 100, body: 'Closes #42', draft: false });
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [prItem] });
+  // Extract the filter function passed to setRejecting
+  expect(mocks.queue.setRejecting).toHaveBeenCalled();
+  const filterFn = mocks.queue.setRejecting.mock.calls[0]?.[1] as (eventType: string) => boolean;
+  invariant(filterFn, 'setRejecting must have been called with a filter function');
 
-  // First poll: CI status is null → pending (first detection)
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
-    data: { state: 'pending', total_count: 0 },
+  // Terminal events — should pass through
+  expect(filterFn('plannerCompleted')).toBe(true);
+  expect(filterFn('plannerFailed')).toBe(true);
+  expect(filterFn('implementorCompleted')).toBe(true);
+  expect(filterFn('implementorFailed')).toBe(true);
+  expect(filterFn('reviewerCompleted')).toBe(true);
+  expect(filterFn('reviewerFailed')).toBe(true);
+
+  // Non-terminal events — should be rejected
+  expect(filterFn('plannerStarted')).toBe(false);
+  expect(filterFn('implementorStarted')).toBe(false);
+  expect(filterFn('reviewerStarted')).toBe(false);
+  expect(filterFn('commandFailed')).toBe(false);
+  expect(filterFn('workItemChanged')).toBe(false);
+});
+
+test('it abandons remaining monitors when shutdown timeout is reached', async () => {
+  const { engine, mocks } = setupTest({ shutdownTimeout: 0.05 }); // 50ms timeout
+
+  // Active agent run that never transitions to terminal
+  const stateWithRun = buildEmptyState();
+  stateWithRun.agentRuns.set('session-stuck', {
+    role: 'implementor',
+    sessionID: 'session-stuck',
+    status: 'running',
+    workItemID: 'wi-1',
+    branchName: 'feature/wi-1',
+    logFilePath: null,
+    error: null,
+    startedAt: '2026-01-01T00:00:00Z',
   });
-  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
-    data: { total_count: 0, check_runs: [] },
-  });
+
+  // Always return the same state with the stuck agent run
+  mocks.store.getState.mockReturnValue(stateWithRun);
 
   await engine.start();
 
-  const ciEvents = events.filter((e): e is CIStatusChangedEvent => e.type === 'ciStatusChanged');
+  // stop() should resolve even though the agent never reaches terminal state
+  const stopStart = Date.now();
+  await engine.stop();
+  const stopDuration = Date.now() - stopStart;
 
-  // The first poll triggers onCIStatusChanged with oldCIStatus: null → newCIStatus: 'pending'
-  expect(ciEvents.length).toBeGreaterThanOrEqual(1);
-  expect(ciEvents[0]).toMatchObject({
-    type: 'ciStatusChanged',
-    prNumber: 100,
-    issueNumber: 42,
-    oldCIStatus: null,
-    newCIStatus: 'pending',
-  });
+  // Should complete reasonably quickly (within a few seconds, not hang)
+  expect(stopDuration).toBeLessThan(5000);
 
-  engine.send({ command: 'shutdown' });
+  // Pollers should still be stopped
+  expect(mocks.workItemPoller.stop).toHaveBeenCalled();
+  expect(mocks.revisionPoller.stop).toHaveBeenCalled();
+  expect(mocks.specPoller.stop).toHaveBeenCalled();
 });
 
-test('it emits a CI status changed event with no issue number for unlinked PRs', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit } = setupTest({ issues });
-
-  // PR body does NOT contain closing keyword for any tracked issue
-  const prItem = buildPullsListItem({ number: 200, body: 'Some unrelated PR', draft: false });
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [prItem] });
-
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
-    data: { state: 'pending', total_count: 0 },
-  });
-  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
-    data: { total_count: 0, check_runs: [] },
-  });
+test('it returns the same promise when stop is called multiple times', async () => {
+  const { engine } = setupTest();
 
   await engine.start();
 
-  const ciEvents = events.filter(
-    (e): e is CIStatusChangedEvent => e.type === 'ciStatusChanged' && e.prNumber === 200,
+  const promise1 = engine.stop();
+  const promise2 = engine.stop();
+
+  expect(promise1).toBe(promise2);
+
+  await promise1;
+});
+
+test('it processes terminal events from agent monitors during shutdown drain', async () => {
+  const { engine, mocks } = setupTest();
+
+  const stateWithRun = buildEmptyState();
+  stateWithRun.agentRuns.set('session-1', {
+    role: 'implementor',
+    sessionID: 'session-1',
+    status: 'running',
+    workItemID: 'wi-1',
+    branchName: 'feature/wi-1',
+    logFilePath: null,
+    error: null,
+    startedAt: '2026-01-01T00:00:00Z',
+  });
+
+  // First getState returns active run, second returns completed (after cancellation)
+  const completedState = buildEmptyState();
+  completedState.agentRuns.set('session-1', {
+    role: 'implementor',
+    sessionID: 'session-1',
+    status: 'completed',
+    workItemID: 'wi-1',
+    branchName: 'feature/wi-1',
+    logFilePath: null,
+    error: null,
+    startedAt: '2026-01-01T00:00:00Z',
+  });
+
+  mocks.store.getState
+    .mockReturnValueOnce(stateWithRun) // during cancellation check
+    .mockReturnValue(completedState); // after cancellation
+
+  const terminalEvent: EngineEvent = {
+    type: 'implementorCompleted',
+    workItemID: 'wi-1',
+    sessionID: 'session-1',
+    branchName: 'feature/wi-1',
+    result: { role: 'implementor', outcome: 'completed', patch: null, summary: 'Done' },
+    logFilePath: null,
+  };
+
+  // Terminal event is in the queue for draining
+  let drainDequeueCall = 0;
+  mocks.queue.dequeue.mockImplementation(() => {
+    // During drain phase, return the terminal event once
+    drainDequeueCall += 1;
+    if (drainDequeueCall === 1) {
+      return terminalEvent;
+    }
+    return;
+  });
+  mocks.queue.isEmpty.mockImplementation(() => drainDequeueCall > 0);
+
+  await engine.start();
+  await engine.stop();
+
+  // The terminal event should have been processed (applyStateUpdate called with it)
+  expect(vi.mocked(applyStateUpdate)).toHaveBeenCalledWith(
+    mocks.store,
+    terminalEvent,
+    expect.anything(),
   );
-
-  expect(ciEvents.length).toBeGreaterThanOrEqual(1);
-
-  const firstEvent = ciEvents[0];
-  invariant(firstEvent, 'ciStatusChanged event must exist');
-  expect(firstEvent.issueNumber).toBeUndefined();
-
-  engine.send({ command: 'shutdown' });
 });
 
-// (CI check failed / recovered tests removed — engine no longer emits ciCheckFailed or ciCheckRecovered events)
+// =============================================================================
+// Agent Run Handles
+// =============================================================================
 
-// ---------------------------------------------------------------------------
-// PR Poller integration: onPRDetected callback
-// ---------------------------------------------------------------------------
+test('it passes handle registration callbacks to the command executor', () => {
+  setupTest();
 
-test('it emits a prLinked event when a new PR is detected with a tracked issue', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit } = setupTest({ issues });
+  const executorCall = vi.mocked(createCommandExecutor).mock.lastCall;
+  invariant(executorCall, 'createCommandExecutor must have been called');
+  const executorDeps = executorCall[0];
 
-  // Set up a PR linked to issue #42 with closing keyword
-  const prItem = buildPullsListItem({
-    number: 100,
-    html_url: 'https://github.com/owner/repo/pull/100',
-    body: 'Closes #42',
-    draft: false,
-  });
-  vi.mocked(octokit.pulls.list).mockClear();
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [prItem] });
-
-  // Set up CI status for the PR
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockClear();
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
-    data: { state: 'pending', total_count: 0 },
-  });
-  vi.mocked(octokit.checks.listForRef).mockClear();
-  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
-    data: { total_count: 0, check_runs: [] },
-  });
-
-  await engine.start();
-
-  const prLinkedEvents = events.filter((e): e is PRLinkedEvent => e.type === 'prLinked');
-
-  expect(prLinkedEvents.length).toBeGreaterThanOrEqual(1);
-  expect(prLinkedEvents[0]).toMatchObject({
-    type: 'prLinked',
-    issueNumber: 42,
-    prNumber: 100,
-    url: 'https://github.com/owner/repo/pull/100',
-    ciStatus: null,
-  });
-
-  engine.send({ command: 'shutdown' });
+  expect(executorDeps).toHaveProperty('onHandleRegistered');
+  expect(executorDeps).toHaveProperty('onHandleRemoved');
+  expect(typeof executorDeps.onHandleRegistered).toBe('function');
+  expect(typeof executorDeps.onHandleRemoved).toBe('function');
 });
 
-test('it does not emit a prLinked event when a new PR has no matching tracked issue', async () => {
-  const issues = [buildMockIssueData(42, 'pending')];
-  const { engine, events, octokit } = setupTest({ issues });
+test('it returns the output stream via getAgentStream when a handle is registered through the callback', () => {
+  const { engine } = setupTest();
 
-  // PR body does NOT contain closing keyword for any tracked issue
-  const prItem = buildPullsListItem({ number: 200, body: 'Some unrelated PR', draft: false });
-  vi.mocked(octokit.pulls.list).mockClear();
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [prItem] });
+  const executorCall = vi.mocked(createCommandExecutor).mock.lastCall;
+  invariant(executorCall, 'createCommandExecutor must have been called');
+  const executorDeps = executorCall[0];
 
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockClear();
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
-    data: { state: 'pending', total_count: 0 },
-  });
-  vi.mocked(octokit.checks.listForRef).mockClear();
-  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
-    data: { total_count: 0, check_runs: [] },
-  });
+  const mockOutput = emptyAsyncIterable();
+  const mockHandle = {
+    output: mockOutput,
+    result: new Promise<never>(() => {
+      // never resolves — tests control lifecycle manually
+    }),
+    logFilePath: null,
+  };
 
-  await engine.start();
+  // Simulate the executor registering a handle (as startAgentAsync would)
+  invariant(executorDeps.onHandleRegistered, 'onHandleRegistered must be defined');
+  executorDeps.onHandleRegistered('session-active', mockHandle);
 
-  const prLinkedEvents = events.filter((e): e is PRLinkedEvent => e.type === 'prLinked');
-
-  expect(prLinkedEvents.length).toBe(0);
-
-  engine.send({ command: 'shutdown' });
+  const stream = engine.getAgentStream('session-active');
+  expect(stream).toBe(mockOutput);
 });
 
-test('it emits prLinked only for the matching issue when multiple tracked issues exist', async () => {
-  const issues = [buildMockIssueData(10, 'pending'), buildMockIssueData(20, 'pending')];
-  const { engine, events, octokit } = setupTest({ issues });
+test('it returns null from getAgentStream after a handle is removed through the callback', () => {
+  const { engine } = setupTest();
 
-  // PR linked only to issue #20
-  const prItem = buildPullsListItem({
-    number: 300,
-    html_url: 'https://github.com/owner/repo/pull/300',
-    body: 'Fixes #20',
-    draft: false,
+  const executorCall = vi.mocked(createCommandExecutor).mock.lastCall;
+  invariant(executorCall, 'createCommandExecutor must have been called');
+  const executorDeps = executorCall[0];
+
+  const mockOutput = emptyAsyncIterable();
+  const mockHandle = {
+    output: mockOutput,
+    result: new Promise<never>(() => {
+      // never resolves — tests control lifecycle manually
+    }),
+    logFilePath: null,
+  };
+
+  // Register then remove
+  invariant(executorDeps.onHandleRegistered, 'onHandleRegistered must be defined');
+  invariant(executorDeps.onHandleRemoved, 'onHandleRemoved must be defined');
+  executorDeps.onHandleRegistered('session-done', mockHandle);
+  executorDeps.onHandleRemoved('session-done');
+
+  const stream = engine.getAgentStream('session-done');
+  expect(stream).toBeNull();
+});
+
+test('it returns null from getAgentStream when no handle exists', () => {
+  const { engine } = setupTest();
+
+  const stream = engine.getAgentStream('nonexistent-session');
+  expect(stream).toBeNull();
+});
+
+test('it returns null from getAgentStream for a session in requested state', () => {
+  const { engine, mocks } = setupTest();
+
+  // Set up a session in requested state — handle is only registered after startAgent resolves
+  const stateWithRequestedSession = buildEmptyState();
+  stateWithRequestedSession.agentRuns.set('session-requested', {
+    role: 'implementor',
+    sessionID: 'session-requested',
+    status: 'requested',
+    workItemID: 'wi-1',
+    branchName: 'feature/wi-1',
+    logFilePath: null,
+    error: null,
+    startedAt: '2026-01-01T00:00:00Z',
   });
-  vi.mocked(octokit.pulls.list).mockClear();
-  vi.mocked(octokit.pulls.list).mockResolvedValue({ data: [prItem] });
+  mocks.store.getState.mockReturnValue(stateWithRequestedSession);
 
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockClear();
-  vi.mocked(octokit.repos.getCombinedStatusForRef).mockResolvedValue({
-    data: { state: 'success', total_count: 1 },
-  });
-  vi.mocked(octokit.checks.listForRef).mockClear();
-  vi.mocked(octokit.checks.listForRef).mockResolvedValue({
-    data: {
-      total_count: 1,
-      check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success', details_url: null }],
-    },
-  });
+  // Even though the session exists in state, getAgentStream returns null because
+  // no handle has been registered yet (startAgent hasn't resolved)
+  const stream = engine.getAgentStream('session-requested');
+  expect(stream).toBeNull();
+});
 
-  await engine.start();
+// =============================================================================
+// Refresh
+// =============================================================================
 
-  const prLinkedEvents = events.filter((e): e is PRLinkedEvent => e.type === 'prLinked');
+test('it triggers an immediate poll cycle on all pollers when refresh is called', () => {
+  const { engine, mocks } = setupTest();
 
-  expect(prLinkedEvents.length).toBe(1);
-  expect(prLinkedEvents[0]).toMatchObject({
-    type: 'prLinked',
-    issueNumber: 20,
-    prNumber: 300,
-    url: 'https://github.com/owner/repo/pull/300',
-    ciStatus: null,
-  });
+  engine.refresh();
 
-  engine.send({ command: 'shutdown' });
+  expect(mocks.workItemPoller.poll).toHaveBeenCalled();
+  expect(mocks.revisionPoller.poll).toHaveBeenCalled();
+  expect(mocks.specPoller.poll).toHaveBeenCalled();
+});
+
+// =============================================================================
+// Subscribe
+// =============================================================================
+
+test('it delegates subscribe to the zustand store', () => {
+  const { engine, mocks } = setupTest();
+
+  const listener = vi.fn();
+  const unsub = engine.subscribe(listener);
+
+  expect(mocks.store.subscribe).toHaveBeenCalledWith(listener);
+  expect(typeof unsub).toBe('function');
 });

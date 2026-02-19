@@ -1,5 +1,12 @@
+import invariant from 'tiny-invariant';
 import type { GitHubClient } from '../../github-client/types.ts';
-import type { PipelineResult, Revision } from '../../state-store/domain-type-stubs.ts';
+import type {
+  PipelineResult,
+  ReviewHistory,
+  ReviewInlineComment,
+  ReviewSubmission,
+  Revision,
+} from '../../state-store/domain-type-stubs.ts';
 import { isNotFoundError } from '../is-not-found-error.ts';
 import { derivePipelineStatus } from '../mapping/derive-pipeline-status.ts';
 import type { GitHubPRInput } from '../mapping/map-pr-to-revision.ts';
@@ -94,7 +101,51 @@ export function createRevisionReader(deps: RevisionReaderDeps): RevisionProvider
 
       return response.data.map((file) => mapFileToRevisionFile(file));
     },
+
+    getReviewHistory: async (revisionID: string): Promise<ReviewHistory> =>
+      fetchReviewHistory(deps, Number(revisionID)),
   };
+}
+
+async function fetchReviewHistory(
+  deps: RevisionReaderDeps,
+  pullNumber: number,
+): Promise<ReviewHistory> {
+  const [reviewsResponse, commentsResponse] = await Promise.all([
+    retryWithBackoff(() =>
+      deps.client.pulls.listReviews({
+        owner: deps.config.owner,
+        repo: deps.config.repo,
+        pull_number: pullNumber,
+        per_page: 100,
+      }),
+    ),
+    retryWithBackoff(() =>
+      deps.client.pulls.listReviewComments({
+        owner: deps.config.owner,
+        repo: deps.config.repo,
+        pull_number: pullNumber,
+        per_page: 100,
+      }),
+    ),
+  ]);
+
+  const reviews: ReviewSubmission[] = reviewsResponse.data
+    .filter((review) => review.state !== 'PENDING')
+    .map((review) => ({
+      author: review.user?.login ?? '',
+      state: review.state,
+      body: review.body ?? '',
+    }));
+
+  const inlineComments: ReviewInlineComment[] = commentsResponse.data.map((comment) => ({
+    path: comment.path,
+    line: comment.line ?? null,
+    author: comment.user?.login ?? '',
+    body: comment.body ?? '',
+  }));
+
+  return { reviews, inlineComments };
 }
 
 async function resolveReviewID(
@@ -110,9 +161,9 @@ async function resolveReviewID(
     }),
   );
 
-  const botReviews = response.data.filter(
-    (review) => review.user !== null && review.user.login === deps.config.botUsername,
-  );
+  const botReviews = response.data
+    .filter((review) => review.state !== 'PENDING')
+    .filter((review) => review.user !== null && review.user.login === deps.config.botUsername);
 
   if (botReviews.length === 0) {
     return null;
@@ -124,7 +175,8 @@ async function resolveReviewID(
     return dateB.localeCompare(dateA);
   });
 
-  return String(sorted[0]?.id ?? botReviews.at(-1)?.id);
+  invariant(sorted[0], 'sorted bot reviews must have at least one entry after length check');
+  return String(sorted[0].id);
 }
 
 async function resolvePipeline(

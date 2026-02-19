@@ -22,6 +22,8 @@ export type PipelineStatus = 'pending' | 'success' | 'failure';
 
 export type AgentRole = 'planner' | 'implementor' | 'reviewer';
 
+export type FailureReason = 'error' | 'timeout' | 'cancelled';
+
 // --- Entity types ---
 
 export interface PipelineResult {
@@ -59,6 +61,26 @@ export interface Spec {
   filePath: string;
   blobSHA: string;
   frontmatterStatus: SpecFrontmatterStatus;
+}
+
+// --- ReviewHistory ---
+
+export interface ReviewHistory {
+  reviews: ReviewSubmission[];
+  inlineComments: ReviewInlineComment[];
+}
+
+export interface ReviewSubmission {
+  author: string;
+  state: string;
+  body: string;
+}
+
+export interface ReviewInlineComment {
+  path: string;
+  line: number | null;
+  author: string;
+  body: string;
 }
 
 // --- Agent result types ---
@@ -164,6 +186,7 @@ export interface PlannerFailed {
   type: 'plannerFailed';
   specPaths: string[];
   sessionID: string;
+  reason: FailureReason;
   error: string;
   logFilePath: string | null;
 }
@@ -195,6 +218,7 @@ export interface ImplementorFailed {
   workItemID: string;
   sessionID: string;
   branchName: string;
+  reason: FailureReason;
   error: string;
   logFilePath: string | null;
 }
@@ -226,6 +250,7 @@ export interface ReviewerFailed {
   workItemID: string;
   revisionID: string;
   sessionID: string;
+  reason: FailureReason;
   error: string;
   logFilePath: string | null;
 }

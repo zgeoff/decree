@@ -1,6 +1,8 @@
 import { render } from 'ink-testing-library';
 import { expect, test, vi } from 'vitest';
 import type { StoreApi } from 'zustand';
+import type { Logger } from '../../engine/create-logger.ts';
+import { createLogger } from '../../engine/create-logger.ts';
 import { applyStateUpdate } from '../../engine/state-store/apply-state-update.ts';
 import type { EngineState, Priority, WorkItemStatus } from '../../engine/state-store/types.ts';
 import { buildRevision } from '../../test-utils/build-revision.ts';
@@ -11,9 +13,13 @@ import type { DisplayWorkItem } from '../types.ts';
 import {
   computeSectionCapacities,
   getIssuePriorityColor,
+  getRevisionPipelineColor,
   getVisibleTasks,
   IssueList,
 } from './issue-list.tsx';
+
+// biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op writer for test logger
+const testLogger: Logger = createLogger({ logLevel: 'error', writer: () => {} });
 
 function setupTest(config?: { paneHeight?: number; paneWidth?: number }): ReturnType<
   typeof render
@@ -48,21 +54,25 @@ function addWorkItem(
     createdAt?: string;
   },
 ): void {
-  applyStateUpdate(engineStore, {
-    type: 'workItemChanged',
-    workItemID: id,
-    workItem: buildWorkItem({
-      id,
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'workItemChanged',
+      workItemID: id,
+      workItem: buildWorkItem({
+        id,
+        title: overrides?.title ?? `Issue ${id}`,
+        status: overrides?.status ?? 'pending',
+        priority: overrides?.priority ?? null,
+        createdAt: overrides?.createdAt ?? '2026-01-01T00:00:00Z',
+      }),
       title: overrides?.title ?? `Issue ${id}`,
-      status: overrides?.status ?? 'pending',
+      oldStatus: null,
+      newStatus: overrides?.status ?? 'pending',
       priority: overrides?.priority ?? null,
-      createdAt: overrides?.createdAt ?? '2026-01-01T00:00:00Z',
-    }),
-    title: overrides?.title ?? `Issue ${id}`,
-    oldStatus: null,
-    newStatus: overrides?.status ?? 'pending',
-    priority: overrides?.priority ?? null,
-  });
+    },
+    testLogger,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -94,17 +104,25 @@ test('it shows AGENTS count when agent tasks exist', async () => {
   const { lastFrame, engineStore } = setupTest();
 
   addWorkItem(engineStore, '1', { status: 'in-progress' });
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -139,6 +157,17 @@ test('it renders the status label in the row', async () => {
   });
 });
 
+test('it renders PENDING status for pending tasks', async () => {
+  const { lastFrame, engineStore } = setupTest();
+
+  addWorkItem(engineStore, '1', { status: 'pending' });
+
+  await vi.waitFor(() => {
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('PENDING');
+  });
+});
+
 test('it renders APPROVED status for approved tasks', async () => {
   const { lastFrame, engineStore } = setupTest();
 
@@ -154,25 +183,38 @@ test('it renders FAILED status for crashed tasks', async () => {
   const { lastFrame, engineStore } = setupTest();
 
   addWorkItem(engineStore, '1', { status: 'in-progress' });
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorFailed',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-    error: 'boom',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorFailed',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+      reason: 'error',
+      error: 'boom',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -184,17 +226,25 @@ test('it renders WIP with dispatch count for implementing tasks', async () => {
   const { lastFrame, engineStore } = setupTest();
 
   addWorkItem(engineStore, '1', { status: 'in-progress' });
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -234,18 +284,22 @@ test('it shows revision id when a revision is linked', async () => {
   addWorkItem(engineStore, '1');
 
   // Add a revision to the engine store
-  applyStateUpdate(engineStore, {
-    type: 'revisionChanged',
-    revisionID: '482',
-    workItemID: '1',
-    revision: buildRevision({
-      id: '482',
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'revisionChanged',
+      revisionID: '482',
       workItemID: '1',
-      url: 'https://github.com/owner/repo/pull/482',
-    }),
-    oldPipelineStatus: null,
-    newPipelineStatus: null,
-  });
+      revision: buildRevision({
+        id: '482',
+        workItemID: '1',
+        url: 'https://github.com/owner/repo/pull/482',
+      }),
+      oldPipelineStatus: null,
+      newPipelineStatus: 'pending',
+    },
+    testLogger,
+  );
 
   // Link the work item to the revision
   const state = engineStore.getState();
@@ -326,17 +380,25 @@ test('it places implementing tasks in the AGENTS section', async () => {
   const { lastFrame, engineStore } = setupTest();
 
   addWorkItem(engineStore, '1', { status: 'in-progress' });
-  applyStateUpdate(engineStore, {
-    type: 'implementorRequested',
-    workItemID: '1',
-    sessionID: 'sess-1',
-    branchName: 'issue-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'implementorStarted',
-    sessionID: 'sess-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorRequested',
+      workItemID: '1',
+      sessionID: 'sess-1',
+      branchName: 'issue-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'implementorStarted',
+      sessionID: 'sess-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -348,17 +410,25 @@ test('it places reviewing tasks in the AGENTS section', async () => {
   const { lastFrame, engineStore } = setupTest();
 
   addWorkItem(engineStore, '1', { status: 'review' });
-  applyStateUpdate(engineStore, {
-    type: 'reviewerRequested',
-    workItemID: '1',
-    revisionID: 'rev-1',
-    sessionID: 'sess-r-1',
-  });
-  applyStateUpdate(engineStore, {
-    type: 'reviewerStarted',
-    sessionID: 'sess-r-1',
-    logFilePath: null,
-  });
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'reviewerRequested',
+      workItemID: '1',
+      revisionID: 'rev-1',
+      sessionID: 'sess-r-1',
+    },
+    testLogger,
+  );
+  applyStateUpdate(
+    engineStore,
+    {
+      type: 'reviewerStarted',
+      sessionID: 'sess-r-1',
+      logFilePath: null,
+    },
+    testLogger,
+  );
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -442,6 +512,44 @@ test('it returns the correct priority color', () => {
   expect(getIssuePriorityColor('medium')).toBe('yellow');
   expect(getIssuePriorityColor('low')).toBe('dim');
   expect(getIssuePriorityColor(null)).toBeUndefined();
+});
+
+test('it returns the correct pipeline status color', () => {
+  const makeItem = (
+    pipeline: {
+      status: 'pending' | 'success' | 'failure';
+      url: string | null;
+      reason: string | null;
+    } | null,
+  ): DisplayWorkItem => ({
+    workItem: buildWorkItem({ id: '1' }),
+    displayStatus: 'approved',
+    section: 'action',
+    linkedRevision: pipeline !== null ? buildRevision({ id: 'rev-1', pipeline }) : null,
+    latestRun: null,
+    dispatchCount: 0,
+  });
+
+  expect(getRevisionPipelineColor(makeItem({ status: 'success', url: null, reason: null }))).toBe(
+    'green',
+  );
+  expect(getRevisionPipelineColor(makeItem({ status: 'failure', url: null, reason: null }))).toBe(
+    'red',
+  );
+  expect(getRevisionPipelineColor(makeItem({ status: 'pending', url: null, reason: null }))).toBe(
+    'yellow',
+  );
+  expect(getRevisionPipelineColor(makeItem(null))).toBeUndefined();
+  expect(
+    getRevisionPipelineColor({
+      workItem: buildWorkItem({ id: '1' }),
+      displayStatus: 'dispatch',
+      section: 'action',
+      linkedRevision: null,
+      latestRun: null,
+      dispatchCount: 0,
+    }),
+  ).toBeUndefined();
 });
 
 test('it computes section capacities correctly for even pane height', () => {

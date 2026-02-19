@@ -77,6 +77,7 @@ function setupTest(overrides?: {
       listRevisions: vi.fn(),
       getRevision: vi.fn(),
       getRevisionFiles,
+      getReviewHistory: vi.fn().mockResolvedValue({ reviews: [], inlineComments: [] }),
     },
     getState: () => state,
     getReviewHistory,
@@ -420,6 +421,7 @@ test('it throws when the work item is not found in state', async () => {
       listRevisions: vi.fn(),
       getRevision: vi.fn(),
       getRevisionFiles: vi.fn(),
+      getReviewHistory: vi.fn().mockResolvedValue({ reviews: [], inlineComments: [] }),
     },
     getState: () => ({
       workItems: new Map(),
@@ -459,6 +461,7 @@ test('it throws when the linked revision is not found in state', async () => {
       listRevisions: vi.fn(),
       getRevision: vi.fn(),
       getRevisionFiles: vi.fn(),
+      getReviewHistory: vi.fn().mockResolvedValue({ reviews: [], inlineComments: [] }),
     },
     getState: () => ({
       workItems: new Map([['42', workItem]]),

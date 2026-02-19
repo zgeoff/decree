@@ -1,7 +1,7 @@
 import type { EngineEvent } from '../state-store/domain-type-stubs.ts';
-import type { EventQueue, EventTypeFilter } from './types.ts';
+import type { EventQueue, EventQueueConfig, EventTypeFilter } from './types.ts';
 
-export function createEventQueue(): EventQueue {
+export function createEventQueue(config: EventQueueConfig): EventQueue {
   const queue: EngineEvent[] = [];
   let rejecting = false;
   let filter: EventTypeFilter | undefined;
@@ -11,7 +11,8 @@ export function createEventQueue(): EventQueue {
       if (rejecting) {
         const allowed = filter?.(event.type);
         if (!allowed) {
-          throw new Error('Event queue is rejecting new events (shutdown in progress)');
+          config.logger.error('event rejected during shutdown', { eventType: event.type });
+          return;
         }
       }
       queue.push(event);

@@ -8,6 +8,7 @@ test('it returns a planner failed event with default values', () => {
     type: 'plannerFailed',
     specPaths: ['docs/specs/a.md'],
     sessionID: 'session-planner-1',
+    reason: 'error',
     error: 'Planner crashed',
     logFilePath: '/logs/planner.log',
   });

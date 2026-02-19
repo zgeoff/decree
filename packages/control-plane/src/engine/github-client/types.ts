@@ -350,6 +350,7 @@ export interface ChecksListForRefParams {
   owner: string;
   repo: string;
   ref: string;
+  per_page?: number;
 }
 
 export interface CheckRun {

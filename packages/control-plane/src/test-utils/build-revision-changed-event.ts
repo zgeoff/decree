@@ -19,7 +19,7 @@ export function buildRevisionChangedEvent(overrides?: Partial<RevisionChanged>):
       reviewID: null,
     },
     oldPipelineStatus: null,
-    newPipelineStatus: null,
+    newPipelineStatus: 'pending',
     ...overrides,
   };
 }

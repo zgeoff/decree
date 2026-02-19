@@ -26,6 +26,7 @@ test('it returns running when an active planner run exists with running status',
     status: 'running',
     specPaths: ['spec.md'],
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 
@@ -43,6 +44,7 @@ test('it returns running when an active planner run exists with requested status
     status: 'requested',
     specPaths: ['spec.md'],
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 
@@ -60,6 +62,7 @@ test('it returns idle when planner run has completed status', () => {
     status: 'completed',
     specPaths: ['spec.md'],
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 
@@ -77,6 +80,7 @@ test('it returns idle when planner run has failed status', () => {
     status: 'failed',
     specPaths: ['spec.md'],
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 

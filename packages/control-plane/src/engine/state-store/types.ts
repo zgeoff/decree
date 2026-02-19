@@ -17,6 +17,7 @@ export type {
   CreateWorkItem,
   EngineCommand,
   EngineEvent,
+  FailureReason,
   ImplementorCompleted,
   ImplementorFailed,
   ImplementorRequested,
@@ -43,6 +44,9 @@ export type {
   ReviewerRequested,
   ReviewerResult,
   ReviewerStarted,
+  ReviewHistory,
+  ReviewInlineComment,
+  ReviewSubmission,
   Revision,
   RevisionChanged,
   Spec,
@@ -89,6 +93,7 @@ export interface PlannerRun {
   status: AgentRunStatus;
   specPaths: string[];
   logFilePath: string | null;
+  error: string | null;
   startedAt: string;
 }
 
@@ -99,6 +104,7 @@ export interface ImplementorRun {
   workItemID: string;
   branchName: string;
   logFilePath: string | null;
+  error: string | null;
   startedAt: string;
 }
 
@@ -109,6 +115,7 @@ export interface ReviewerRun {
   workItemID: string;
   revisionID: string;
   logFilePath: string | null;
+  error: string | null;
   startedAt: string;
 }
 

@@ -8,6 +8,7 @@ function buildPlannerRun(overrides: Partial<PlannerRun> & { sessionID: string })
     status: 'running',
     specPaths: ['docs/specs/test.md'],
     logFilePath: null,
+    error: null,
     startedAt: '2026-01-01T00:00:00Z',
     ...overrides,
   };
@@ -67,6 +68,7 @@ test('it ignores non-planner agent runs', () => {
     workItemID: 'wi-1',
     branchName: 'feat/test',
     logFilePath: null,
+    error: null,
     startedAt: '2026-01-01T00:00:00Z',
   };
   const state = setupTest([implementorRun]);

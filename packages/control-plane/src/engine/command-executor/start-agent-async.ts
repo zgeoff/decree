@@ -1,5 +1,11 @@
+import invariant from 'tiny-invariant';
 import { match } from 'ts-pattern';
-import type { AgentResult, AgentRole, EngineEvent } from '../state-store/domain-type-stubs.ts';
+import type {
+  AgentResult,
+  AgentRole,
+  EngineEvent,
+  FailureReason,
+} from '../state-store/domain-type-stubs.ts';
 import type { AgentRunHandle, AgentStartParams, CommandExecutorDeps } from './types.ts';
 
 interface StartAgentContext {
@@ -24,14 +30,25 @@ export async function startAgentAsync(
       context.deps.enqueue(buildCompletedEvent(sessionID, params, result, handle.logFilePath));
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      context.deps.enqueue(buildFailedEvent(sessionID, params, message, handle.logFilePath));
+      const reason = deriveFailureReason(handle.abortSignal);
+      context.deps.enqueue(
+        buildFailedEvent({
+          sessionID,
+          params,
+          reason,
+          error: message,
+          logFilePath: handle.logFilePath,
+        }),
+      );
     } finally {
       context.agentHandles.delete(sessionID);
       context.deps.onHandleRemoved?.(sessionID);
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    context.deps.enqueue(buildFailedEvent(sessionID, params, message, null));
+    context.deps.enqueue(
+      buildFailedEvent({ sessionID, params, reason: 'error', error: message, logFilePath: null }),
+    );
   }
 }
 
@@ -65,48 +82,58 @@ function buildCompletedEvent(
   result: AgentResult,
   logFilePath: string | null,
 ): EngineEvent {
-  return match({ params, result })
-    .with({ params: { role: 'planner' }, result: { role: 'planner' } }, (m) => ({
-      type: 'plannerCompleted' as const,
-      sessionID,
-      specPaths: m.params.specPaths,
-      result: m.result,
-      logFilePath,
-    }))
-    .with({ params: { role: 'implementor' }, result: { role: 'implementor' } }, (m) => ({
-      type: 'implementorCompleted' as const,
-      sessionID,
-      workItemID: m.params.workItemID,
-      branchName: m.params.branchName,
-      result: m.result,
-      logFilePath,
-    }))
-    .with({ params: { role: 'reviewer' }, result: { role: 'reviewer' } }, (m) => ({
-      type: 'reviewerCompleted' as const,
-      sessionID,
-      workItemID: m.params.workItemID,
-      revisionID: m.params.revisionID,
-      result: m.result,
-      logFilePath,
-    }))
-    .otherwise(() => ({
-      type: 'commandFailed' as const,
-      command: { command: 'requestPlannerRun' as const, specPaths: [] },
-      error: `unexpected role mismatch: params.role=${params.role} result.role=${result.role}`,
-    }));
+  return match(result)
+    .with({ role: 'planner' }, (r) => {
+      invariant(params.role === 'planner', `expected planner params, got ${params.role}`);
+      return {
+        type: 'plannerCompleted' as const,
+        sessionID,
+        specPaths: params.specPaths,
+        result: r,
+        logFilePath,
+      };
+    })
+    .with({ role: 'implementor' }, (r) => {
+      invariant(params.role === 'implementor', `expected implementor params, got ${params.role}`);
+      return {
+        type: 'implementorCompleted' as const,
+        sessionID,
+        workItemID: params.workItemID,
+        branchName: params.branchName,
+        result: r,
+        logFilePath,
+      };
+    })
+    .with({ role: 'reviewer' }, (r) => {
+      invariant(params.role === 'reviewer', `expected reviewer params, got ${params.role}`);
+      return {
+        type: 'reviewerCompleted' as const,
+        sessionID,
+        workItemID: params.workItemID,
+        revisionID: params.revisionID,
+        result: r,
+        logFilePath,
+      };
+    })
+    .exhaustive();
 }
 
-function buildFailedEvent(
-  sessionID: string,
-  params: AgentStartParams,
-  error: string,
-  logFilePath: string | null,
-): EngineEvent {
+interface FailedEventInput {
+  sessionID: string;
+  params: AgentStartParams;
+  reason: FailureReason;
+  error: string;
+  logFilePath: string | null;
+}
+
+function buildFailedEvent(input: FailedEventInput): EngineEvent {
+  const { sessionID, params, reason, error, logFilePath } = input;
   return match(params)
     .with({ role: 'planner' }, (p) => ({
       type: 'plannerFailed' as const,
       sessionID,
       specPaths: p.specPaths,
+      reason,
       error,
       logFilePath,
     }))
@@ -115,6 +142,7 @@ function buildFailedEvent(
       sessionID,
       workItemID: p.workItemID,
       branchName: p.branchName,
+      reason,
       error,
       logFilePath,
     }))
@@ -123,8 +151,21 @@ function buildFailedEvent(
       sessionID,
       workItemID: p.workItemID,
       revisionID: p.revisionID,
+      reason,
       error,
       logFilePath,
     }))
     .exhaustive();
+}
+
+const ABORT_REASON_TO_FAILURE: Record<string, FailureReason> = {
+  timeout: 'timeout',
+  cancelled: 'cancelled',
+};
+
+function deriveFailureReason(abortSignal: AbortSignal | undefined): FailureReason {
+  if (abortSignal === undefined || !abortSignal.aborted) {
+    return 'error';
+  }
+  return ABORT_REASON_TO_FAILURE[abortSignal.reason] ?? 'error';
 }

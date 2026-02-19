@@ -115,6 +115,7 @@ test('it enqueues planner started then planner failed when agent result rejects'
     type: 'plannerFailed',
     sessionID: 'session-1',
     specPaths: ['docs/specs/a.md'],
+    reason: 'error',
     error: 'agent crashed',
     logFilePath: '/logs/agent.log',
   });
@@ -135,6 +136,7 @@ test('it enqueues planner failed without started when start agent itself rejects
     type: 'plannerFailed',
     sessionID: 'session-1',
     specPaths: ['docs/specs/a.md'],
+    reason: 'error',
     error: 'provisioning failure',
     logFilePath: null,
   });
@@ -200,6 +202,7 @@ test('it enqueues implementor started then implementor failed when agent result 
     sessionID: 'session-2',
     workItemID: 'wi-42',
     branchName: 'decree/wi-42',
+    reason: 'error',
     error: 'build failed',
     logFilePath: '/logs/agent.log',
   });
@@ -283,4 +286,78 @@ test('it does not add a handle when start agent itself rejects', async () => {
   await startAgentAsync('planner', 'session-1', params, { deps, agentHandles });
 
   expect(agentHandles.has('session-1')).toBe(false);
+});
+
+// --- Failure reason derivation: timeout ---
+
+test('it emits timeout reason when the abort signal was aborted with timeout', async () => {
+  const { deps, agentHandles, plannerAdapter, enqueueSpy } = setupTest();
+  const params: AgentStartParams = { role: 'planner', specPaths: ['docs/specs/a.md'] };
+
+  const promise = startAgentAsync('planner', 'session-1', params, { deps, agentHandles });
+  const handle = getFirstHandle(plannerAdapter);
+  handle.abortController.abort('timeout');
+  handle.rejectResult(new Error('agent timed out'));
+  await promise;
+
+  expect(enqueueSpy.events[1]).toStrictEqual({
+    type: 'plannerFailed',
+    sessionID: 'session-1',
+    specPaths: ['docs/specs/a.md'],
+    reason: 'timeout',
+    error: 'agent timed out',
+    logFilePath: '/logs/agent.log',
+  });
+});
+
+// --- Failure reason derivation: cancelled ---
+
+test('it emits cancelled reason when the abort signal was aborted with cancelled', async () => {
+  const { deps, agentHandles, implementorAdapter, enqueueSpy } = setupTest();
+  const params: AgentStartParams = {
+    role: 'implementor',
+    workItemID: 'wi-42',
+    branchName: 'decree/wi-42',
+  };
+
+  const promise = startAgentAsync('implementor', 'session-2', params, { deps, agentHandles });
+  const handle = getFirstHandle(implementorAdapter);
+  handle.abortController.abort('cancelled');
+  handle.rejectResult(new Error('agent was cancelled'));
+  await promise;
+
+  expect(enqueueSpy.events[1]).toStrictEqual({
+    type: 'implementorFailed',
+    sessionID: 'session-2',
+    workItemID: 'wi-42',
+    branchName: 'decree/wi-42',
+    reason: 'cancelled',
+    error: 'agent was cancelled',
+    logFilePath: '/logs/agent.log',
+  });
+});
+
+// --- Failure reason derivation: error (default) ---
+
+test('it emits error reason when the abort signal was not aborted', async () => {
+  const { deps, agentHandles, reviewerAdapter, enqueueSpy } = setupTest();
+  const params: AgentStartParams = {
+    role: 'reviewer',
+    workItemID: 'wi-1',
+    revisionID: 'rev-1',
+  };
+
+  const promise = startAgentAsync('reviewer', 'session-3', params, { deps, agentHandles });
+  getFirstHandle(reviewerAdapter).rejectResult(new Error('validation failed'));
+  await promise;
+
+  expect(enqueueSpy.events[1]).toStrictEqual({
+    type: 'reviewerFailed',
+    sessionID: 'session-3',
+    workItemID: 'wi-1',
+    revisionID: 'rev-1',
+    reason: 'error',
+    error: 'validation failed',
+    logFilePath: '/logs/agent.log',
+  });
 });

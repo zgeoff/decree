@@ -316,3 +316,109 @@ test('it maps file statuses to the domain file status type', async () => {
   expect(result[1]?.status).toBe('renamed');
   expect(result[2]?.status).toBe('copied');
 });
+
+// --- getReviewHistory ---
+
+test('it returns reviews and inline comments for a revision', async () => {
+  const { reader, client } = setupTest();
+
+  vi.mocked(client.pulls.listReviews).mockResolvedValue({
+    data: [
+      {
+        id: 1,
+        user: { login: 'alice' },
+        state: 'APPROVED',
+        body: 'LGTM',
+        submitted_at: '2026-01-01T00:00:00Z',
+      },
+    ],
+  });
+  vi.mocked(client.pulls.listReviewComments).mockResolvedValue({
+    data: [{ id: 10, user: { login: 'bob' }, body: 'Fix this', path: 'src/foo.ts', line: 42 }],
+  });
+
+  const result = await reader.getReviewHistory('5');
+
+  expect(result).toStrictEqual({
+    reviews: [{ author: 'alice', state: 'APPROVED', body: 'LGTM' }],
+    inlineComments: [{ path: 'src/foo.ts', line: 42, author: 'bob', body: 'Fix this' }],
+  });
+});
+
+test('it returns empty history when no reviews or comments exist', async () => {
+  const { reader } = setupTest();
+
+  const result = await reader.getReviewHistory('1');
+
+  expect(result).toStrictEqual({ reviews: [], inlineComments: [] });
+});
+
+test('it defaults author to empty string when user is null', async () => {
+  const { reader, client } = setupTest();
+
+  vi.mocked(client.pulls.listReviews).mockResolvedValue({
+    data: [
+      { id: 1, user: null, state: 'COMMENTED', body: null, submitted_at: '2026-01-01T00:00:00Z' },
+    ],
+  });
+  vi.mocked(client.pulls.listReviewComments).mockResolvedValue({
+    data: [{ id: 10, user: null, body: null, path: 'src/bar.ts', line: null }],
+  });
+
+  const result = await reader.getReviewHistory('1');
+
+  expect(result.reviews[0]?.author).toBe('');
+  expect(result.inlineComments[0]?.author).toBe('');
+});
+
+test('it excludes reviews with pending state from review history', async () => {
+  const { reader, client } = setupTest();
+
+  vi.mocked(client.pulls.listReviews).mockResolvedValue({
+    data: [
+      {
+        id: 1,
+        user: { login: 'alice' },
+        state: 'APPROVED',
+        body: 'LGTM',
+        submitted_at: '2026-01-01T00:00:00Z',
+      },
+      {
+        id: 2,
+        user: { login: 'bob' },
+        state: 'PENDING',
+        body: 'Draft review',
+        submitted_at: '2026-01-02T00:00:00Z',
+      },
+    ],
+  });
+  vi.mocked(client.pulls.listReviewComments).mockResolvedValue({ data: [] });
+
+  const result = await reader.getReviewHistory('1');
+
+  expect(result.reviews).toStrictEqual([{ author: 'alice', state: 'APPROVED', body: 'LGTM' }]);
+});
+
+test('it defaults body to empty string when body is null', async () => {
+  const { reader, client } = setupTest();
+
+  vi.mocked(client.pulls.listReviews).mockResolvedValue({
+    data: [
+      {
+        id: 1,
+        user: { login: 'dev' },
+        state: 'APPROVED',
+        body: null,
+        submitted_at: '2026-01-01T00:00:00Z',
+      },
+    ],
+  });
+  vi.mocked(client.pulls.listReviewComments).mockResolvedValue({
+    data: [{ id: 10, user: { login: 'dev' }, body: null, path: 'a.ts', line: 1 }],
+  });
+
+  const result = await reader.getReviewHistory('1');
+
+  expect(result.reviews[0]?.body).toBe('');
+  expect(result.inlineComments[0]?.body).toBe('');
+});

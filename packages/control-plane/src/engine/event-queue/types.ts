@@ -1,4 +1,9 @@
+import type { Logger } from '../create-logger.ts';
 import type { EngineEvent } from '../state-store/domain-type-stubs.ts';
+
+export interface EventQueueConfig {
+  logger: Logger;
+}
 
 export interface EventQueue {
   enqueue: (event: EngineEvent) => void;

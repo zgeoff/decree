@@ -1,5 +1,6 @@
 import type {
   AgentReview,
+  ReviewHistory,
   Revision,
   Spec,
   WorkItem,
@@ -18,6 +19,7 @@ export interface RevisionProviderReader {
   listRevisions: () => Promise<Revision[]>;
   getRevision: (id: string) => Promise<Revision | null>;
   getRevisionFiles: (id: string) => Promise<RevisionFile[]>;
+  getReviewHistory: (revisionID: string) => Promise<ReviewHistory>;
 }
 
 export interface SpecProviderReader {

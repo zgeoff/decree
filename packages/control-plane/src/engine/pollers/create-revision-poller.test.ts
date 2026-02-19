@@ -40,6 +40,7 @@ function setupTest(
     listRevisions: vi.fn(),
     getRevision: vi.fn(),
     getRevisionFiles: vi.fn(),
+    getReviewHistory: vi.fn().mockResolvedValue({ reviews: [], inlineComments: [] }),
   };
 
   const state: SetupTestState = {

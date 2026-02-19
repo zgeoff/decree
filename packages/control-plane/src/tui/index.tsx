@@ -1,10 +1,11 @@
 import { render } from 'ink';
-import type { Engine } from '../engine/v2-engine/types.ts';
+import type { Engine } from '../engine/types.ts';
 import { App } from './app.tsx';
 
 export interface RenderAppConfig {
   engine: Engine;
-  repository: string;
+  repoOwner: string;
+  repoName: string;
 }
 
 export interface RenderAppResult {
@@ -12,6 +13,8 @@ export interface RenderAppResult {
 }
 
 export function renderApp(config: RenderAppConfig): RenderAppResult {
-  const { waitUntilExit } = render(<App engine={config.engine} repository={config.repository} />);
+  const { waitUntilExit } = render(
+    <App engine={config.engine} repoOwner={config.repoOwner} repoName={config.repoName} />,
+  );
   return { waitUntilExit };
 }

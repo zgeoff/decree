@@ -19,7 +19,16 @@ export async function buildReviewerContext(config: BuildReviewerContextConfig): 
 
   const state = config.getState();
   const workItem = state.workItems.get(workItemID);
+
+  if (workItem === undefined) {
+    throw new Error(`Work item ${workItemID} not found in state`);
+  }
+
   const revision = state.revisions.get(revisionID);
+
+  if (revision === undefined) {
+    throw new Error(`Revision ${revisionID} not found in state`);
+  }
 
   const [body, files, reviewHistory] = await Promise.all([
     config.deps.workItemReader.getWorkItemBody(workItemID),
@@ -29,10 +38,8 @@ export async function buildReviewerContext(config: BuildReviewerContextConfig): 
 
   const sections: string[] = [];
 
-  sections.push(
-    buildWorkItemSection(workItemID, workItem?.title ?? '', body, workItem?.status ?? ''),
-  );
-  sections.push(buildRevisionSection(revisionID, revision?.title ?? '', files));
+  sections.push(buildWorkItemSection(workItemID, workItem.title, body, workItem.status));
+  sections.push(buildRevisionSection(revisionID, revision.title, files));
 
   const reviewsSection = buildReviewsSection(reviewHistory.reviews);
   if (reviewsSection !== null) {
@@ -44,7 +51,7 @@ export async function buildReviewerContext(config: BuildReviewerContextConfig): 
     sections.push(commentsSection);
   }
 
-  return sections.join('\n');
+  return sections.join('\n\n');
 }
 
 function buildWorkItemSection(

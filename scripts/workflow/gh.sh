@@ -12,7 +12,7 @@
 # In git worktrees, the main root is resolved automatically via git-common-dir.
 # See scripts/workflow/.env.example for the required variables.
 #
-# Dependencies: gh, openssl, curl, jq
+# Dependencies: git, gh, openssl, curl, jq
 
 set -euo pipefail
 
@@ -27,7 +27,7 @@ MAIN_SCRIPT_DIR="$MAIN_ROOT/scripts/workflow"
 
 # --- Check dependencies ---------------------------------------------------
 
-for cmd in openssl curl jq gh; do
+for cmd in git openssl curl jq gh; do
   if ! command -v "$cmd" &>/dev/null; then
     echo "Error: $cmd is required but not installed." >&2
     exit 1

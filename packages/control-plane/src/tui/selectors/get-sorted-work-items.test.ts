@@ -29,6 +29,7 @@ function buildImplementorRun(
     workItemID: 'wi-1',
     branchName: 'branch-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
     ...overrides,
   };
@@ -41,6 +42,7 @@ function buildReviewerRun(overrides: Partial<ReviewerRun> & { sessionID: string 
     workItemID: 'wi-1',
     revisionID: 'rev-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
     ...overrides,
   };

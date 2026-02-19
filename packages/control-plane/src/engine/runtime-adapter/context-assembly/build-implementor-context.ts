@@ -58,7 +58,7 @@ export async function buildImplementorContext(
     }
   }
 
-  return sections.join('\n');
+  return sections.join('\n\n');
 }
 
 function buildWorkItemSection(

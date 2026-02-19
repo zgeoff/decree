@@ -68,6 +68,7 @@ test('it counts work items with active implementor runs in the agents section', 
     workItemID: 'wi-1',
     branchName: 'branch-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 
@@ -89,6 +90,7 @@ test('it counts work items with active reviewer runs in the agents section', () 
     workItemID: 'wi-1',
     revisionID: 'rev-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 

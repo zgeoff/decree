@@ -33,6 +33,7 @@ test('it counts runs with requested status', () => {
     workItemID: 'wi-1',
     branchName: 'branch-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 
@@ -51,6 +52,7 @@ test('it counts runs with running status', () => {
     workItemID: 'wi-1',
     branchName: 'branch-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 
@@ -69,6 +71,7 @@ test('it does not count runs with completed status', () => {
     workItemID: 'wi-1',
     branchName: 'branch-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 
@@ -87,6 +90,7 @@ test('it does not count runs with failed status', () => {
     workItemID: 'wi-1',
     branchName: 'branch-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 
@@ -104,6 +108,7 @@ test('it includes planner runs in the count', () => {
     status: 'running',
     specPaths: ['spec.md'],
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 
@@ -121,6 +126,7 @@ test('it counts all running agents across all roles', () => {
     status: 'running',
     specPaths: ['spec.md'],
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 
@@ -131,6 +137,7 @@ test('it counts all running agents across all roles', () => {
     workItemID: 'wi-1',
     branchName: 'branch-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 
@@ -141,6 +148,7 @@ test('it counts all running agents across all roles', () => {
     workItemID: 'wi-2',
     revisionID: 'rev-1',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 
@@ -151,6 +159,7 @@ test('it counts all running agents across all roles', () => {
     workItemID: 'wi-3',
     branchName: 'branch-3',
     logFilePath: null,
+    error: null,
     startedAt: '2026-02-01T00:00:00Z',
   };
 

@@ -54,6 +54,7 @@ function buildPlannerRun(overrides: Partial<PlannerRun> & { sessionID: string })
     status: 'running',
     specPaths: ['docs/specs/test.md'],
     logFilePath: null,
+    error: null,
     startedAt: '2026-01-01T00:00:00Z',
     ...overrides,
   };
@@ -339,6 +340,27 @@ test('it does nothing when cancelling a planner run with no active planner run',
 
 // --- CancelImplementorRun ---
 
+test('it cancels an implementor run when an active implementor agent exists', async () => {
+  const implementorRun: AgentRun = {
+    role: 'implementor',
+    sessionID: 'session-impl-1',
+    status: 'running',
+    workItemID: 'wi-1',
+    branchName: 'decree/wi-1',
+    logFilePath: null,
+    error: null,
+    startedAt: '2026-01-01T00:00:00Z',
+  };
+  const state = setupState({ agentRuns: [implementorRun] });
+  const deps = buildMockDeps();
+  const command: EngineCommand = { command: 'cancelImplementorRun', workItemID: 'wi-1' };
+
+  const events = await translateAndExecute(command, state, deps, noopStartAgentAsync);
+
+  expect(events).toStrictEqual([]);
+  expect(deps.runtimeAdapters.implementor.cancelAgent).toHaveBeenCalledWith('session-impl-1');
+});
+
 test('it does nothing when cancelling an implementor run with no active agent', async () => {
   const state = setupState();
   const deps = buildMockDeps();
@@ -527,6 +549,59 @@ test('it transitions to blocked when implementor outcome is blocked', async () =
     },
   ]);
   expect(deps.revisionWriter.createFromPatch).not.toHaveBeenCalled();
+});
+
+// --- ApplyImplementorResult: validation-failure ---
+
+test('it transitions to needs-refinement when implementor outcome is validation-failure', async () => {
+  const workItem = buildWorkItem({ id: 'wi-1', status: 'in-progress' });
+  const state = setupState({ workItems: [['wi-1', workItem]] });
+  const deps = buildMockDeps();
+  const implResult: ImplementorResult = {
+    role: 'implementor',
+    outcome: 'validation-failure',
+    patch: null,
+    summary: 'Test failures outside scope',
+  };
+  const command: EngineCommand = {
+    command: 'applyImplementorResult',
+    workItemID: 'wi-1',
+    branchName: 'decree/wi-1',
+    result: implResult,
+  };
+
+  const events = await translateAndExecute(command, state, deps, noopStartAgentAsync);
+
+  expect(events).toStrictEqual([
+    {
+      type: 'workItemChanged',
+      workItemID: 'wi-1',
+      workItem: { ...workItem, status: 'needs-refinement' },
+      title: workItem.title,
+      oldStatus: 'in-progress',
+      newStatus: 'needs-refinement',
+      priority: null,
+    },
+  ]);
+  expect(deps.workItemWriter.transitionStatus).toHaveBeenCalledWith('wi-1', 'needs-refinement');
+  expect(deps.revisionWriter.createFromPatch).not.toHaveBeenCalled();
+});
+
+// --- UpdateRevision ---
+
+test('it updates a revision body and returns no events', async () => {
+  const deps = buildMockDeps();
+  const state = setupState();
+  const command: EngineCommand = {
+    command: 'updateRevision',
+    revisionID: 'rev-1',
+    body: 'Updated revision body',
+  };
+
+  const events = await translateAndExecute(command, state, deps, noopStartAgentAsync);
+
+  expect(events).toStrictEqual([]);
+  expect(deps.revisionWriter.updateBody).toHaveBeenCalledWith('rev-1', 'Updated revision body');
 });
 
 // --- ApplyReviewerResult: no linked revision ---

@@ -5,6 +5,7 @@ export function buildPlannerFailedEvent(overrides?: Partial<PlannerFailed>): Pla
     type: 'plannerFailed',
     specPaths: ['docs/specs/a.md'],
     sessionID: 'session-planner-1',
+    reason: 'error',
     error: 'Planner crashed',
     logFilePath: '/logs/planner.log',
     ...overrides,

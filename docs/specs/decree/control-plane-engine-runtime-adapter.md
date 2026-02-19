@@ -47,6 +47,7 @@ interface AgentRunHandle {
   output: AsyncIterable<string>;
   result: Promise<AgentResult>;
   logFilePath: string | null;
+  abortSignal?: AbortSignal;
 }
 ```
 
@@ -56,6 +57,11 @@ interface AgentRunHandle {
 - `result` — resolves with the parsed structured output on success. Rejects on failure (agent crash,
   timeout, invalid output, cancellation).
 - `logFilePath` — path to the session log file when logging is enabled, `null` otherwise.
+- `abortSignal` — optional `AbortSignal` from the adapter's internal `AbortController`. When
+  present, the async monitor (`startAgentAsync`) uses this to distinguish failure reasons: if the
+  signal is aborted, the failure is `'cancelled'` or `'timeout'` (based on the abort reason) rather
+  than a generic `'error'`. Adapters that support cancellation via `AbortController` should expose
+  this field.
 
 ### AgentStartParams
 

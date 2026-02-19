@@ -36,19 +36,20 @@ labels=(
   # Status labels
   "status:pending|Not yet started|bfd4f2"
   "status:in-progress|Actively being worked|0e8a16"
+  "status:ready|Dependencies resolved, eligible for dispatch|a2eeef"
   "status:blocked|Waiting on non-spec blocker|d93f0b"
   "status:needs-refinement|Blocked on spec issue|fbca04"
-  "status:unblocked|Previously blocked, ready to resume|c2e0c6"
   "status:review|PR submitted, awaiting review|006b75"
-  "status:needs-changes|Review rejected|e99695"
   "status:approved|Ready to merge|2ea44f"
   # Priority labels
   "priority:high|Do first|b60205"
   "priority:medium|Default|e4e669"
   "priority:low|Do when capacity allows|c5def5"
   # Complexity labels
-  "complexity:simple|Straightforward task — single-file, mechanical|d4c5f9"
-  "complexity:complex|Multi-file or architecturally nuanced task|7057ff"
+  "complexity:trivial|Trivial change, no review needed|c5def5"
+  "complexity:low|Small change, standard review|bfdadc"
+  "complexity:medium|Moderate change, thorough review needed|d4c5f9"
+  "complexity:high|Large or risky change, careful review needed|f9d0c4"
 )
 
 # ---------------------------------------------------------------------------

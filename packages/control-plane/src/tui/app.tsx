@@ -5,7 +5,8 @@ import type { ReactNode } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { match } from 'ts-pattern';
 import { useStore } from 'zustand';
-import type { Engine } from '../engine/v2-engine/types.ts';
+import type { AgentRun, ImplementorRun, ReviewerRun } from '../engine/state-store/types.ts';
+import type { Engine } from '../engine/types.ts';
 import { ConfirmationPrompt } from './components/confirmation-prompt.tsx';
 import { DetailPane } from './components/detail-pane.tsx';
 import { computeSectionCapacities, getVisibleTasks, IssueList } from './components/issue-list.tsx';
@@ -14,11 +15,13 @@ import { getDisplayWorkItems } from './selectors/get-display-work-items.ts';
 import { getPlannerDisplayStatus } from './selectors/get-planner-display-status.ts';
 import { getRunningAgentCount } from './selectors/get-running-agent-count.ts';
 import { getSortedWorkItems } from './selectors/get-sorted-work-items.ts';
+import { clearStreamBuffer, consumeAgentStream } from './store.ts';
 import type { DisplayStatus, DisplayWorkItem } from './types.ts';
 
 export interface AppProps {
   engine: Engine;
-  repository: string;
+  repoOwner: string;
+  repoName: string;
 }
 
 type FocusedPane = 'workItemList' | 'detailPane';
@@ -27,7 +30,7 @@ type PromptState =
   | { type: 'none' }
   | { type: 'quit' }
   | { type: 'dispatch'; workItemID: string }
-  | { type: 'retry'; workItemID: string; agentRole: 'implementor' | 'reviewer' };
+  | { type: 'retry'; workItemID: string };
 
 const DEFAULT_TERMINAL_WIDTH = 80;
 const DEFAULT_TERMINAL_HEIGHT = 24;
@@ -52,12 +55,30 @@ const SPINNER_INTERVAL_MS = 80;
 
 const DISPATCHABLE_STATUSES: ReadonlySet<DisplayStatus> = new Set(['dispatch', 'failed']);
 
+interface TaskListKeyInput {
+  upArrow: boolean;
+  downArrow: boolean;
+  return: boolean;
+}
+
 export function App(props: AppProps): ReactNode {
   const tuiStore = useEngine({ engine: props.engine });
-  const [started, setStarted] = useState(false);
-  const [startupError, setStartupError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState<PromptState>({ type: 'none' });
   const [spinnerFrame, setSpinnerFrame] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  // Start engine after subscriptions are established
+  useEffect(() => {
+    props.engine
+      .start()
+      .then(() => {
+        setLoading(false);
+      })
+      .catch(() => {
+        // Start failure is handled by the engine
+        setLoading(false);
+      });
+  }, [props.engine]);
 
   // Engine state (subscribe to raw state, derive in render)
   const engineState = useStore(props.engine.store);
@@ -76,6 +97,7 @@ export function App(props: AppProps): ReactNode {
   const selectWorkItem = useStore(tuiStore, (s) => s.selectWorkItem);
   const pinWorkItem = useStore(tuiStore, (s) => s.pinWorkItem);
   const dispatchImplementor = useStore(tuiStore, (s) => s.dispatchImplementor);
+  const handleWorkItemRemoval = useStore(tuiStore, (s) => s.handleWorkItemRemoval);
 
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -103,12 +125,9 @@ export function App(props: AppProps): ReactNode {
   const focusedPaneRef = useRef(focusedPane);
   focusedPaneRef.current = focusedPane;
 
-  const startupErrorRef = useRef(startupError);
-  startupErrorRef.current = startupError;
-
-  // Planner spinner animation
+  // Spinner animation (loading screen + planner indicator)
   useEffect(() => {
-    if (plannerStatus !== 'running') {
+    if (!loading && plannerStatus !== 'running') {
       return;
     }
     const timer = setInterval(() => {
@@ -117,18 +136,7 @@ export function App(props: AppProps): ReactNode {
     return () => {
       clearInterval(timer);
     };
-  }, [plannerStatus]);
-
-  useEffect(() => {
-    props.engine
-      .start()
-      .then(() => {
-        setStarted(true);
-      })
-      .catch((error) => {
-        setStartupError(error instanceof Error ? error.message : String(error));
-      });
-  }, [props.engine]);
+  }, [loading, plannerStatus]);
 
   useEffect(() => {
     if (!shuttingDown) {
@@ -139,17 +147,72 @@ export function App(props: AppProps): ReactNode {
     }
   }, [shuttingDown, runningAgentCount, exit]);
 
+  // Detect work item removals
+  const previousWorkItemIDsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const currentIDs = new Set(engineState.workItems.keys());
+    const prevIDs = previousWorkItemIDsRef.current;
+
+    for (const id of prevIDs) {
+      if (!currentIDs.has(id)) {
+        handleWorkItemRemoval(id, sortedWorkItems);
+      }
+    }
+
+    previousWorkItemIDsRef.current = currentIDs;
+  }, [engineState.workItems, sortedWorkItems, handleWorkItemRemoval]);
+
+  // Clear stream buffer when a new agent run starts for the pinned work item
+  const previousSessionIDRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (pinnedWorkItem === null) {
+      previousSessionIDRef.current = null;
+      return;
+    }
+
+    const latestSessionID = findLatestSessionIDForWorkItem(pinnedWorkItem, engineState.agentRuns);
+
+    const prevSessionID = previousSessionIDRef.current;
+    if (latestSessionID !== null && prevSessionID !== null && latestSessionID !== prevSessionID) {
+      clearStreamBuffer(tuiStore, prevSessionID);
+    }
+
+    previousSessionIDRef.current = latestSessionID;
+  }, [pinnedWorkItem, engineState.agentRuns, tuiStore]);
+
+  // Consume agent stream for pinned work item's latest session
+  const consumedSessionsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (pinnedWorkItem === null) {
+      return;
+    }
+
+    const latestSessionID = findLatestSessionIDForWorkItem(pinnedWorkItem, engineState.agentRuns);
+    if (latestSessionID === null) {
+      return;
+    }
+
+    if (consumedSessionsRef.current.has(latestSessionID)) {
+      return;
+    }
+
+    consumedSessionsRef.current.add(latestSessionID);
+    consumeAgentStream(tuiStore, props.engine, latestSessionID);
+  }, [pinnedWorkItem, engineState.agentRuns, tuiStore, props.engine]);
+
+  const repository = `${props.repoOwner}/${props.repoName}`;
+
   const handleOpenURL = useCallback(
     (item: DisplayWorkItem | null) => {
       if (!item) {
         return;
       }
-      const url = resolveTaskURL(item, props.repository);
+      const url = resolveTaskURL(item, repository);
       if (url) {
         openUrl(url);
       }
     },
-    [props.repository],
+    [repository],
   );
 
   const handleCopyURL = useCallback(
@@ -157,12 +220,12 @@ export function App(props: AppProps): ReactNode {
       if (!item) {
         return;
       }
-      const url = resolveTaskURL(item, props.repository);
+      const url = resolveTaskURL(item, repository);
       if (url) {
         copyToClipboard(url);
       }
     },
-    [props.repository],
+    [repository],
   );
 
   // Refs for values used in useInput callback
@@ -179,11 +242,6 @@ export function App(props: AppProps): ReactNode {
   pinnedItemRef.current = pinnedItem;
 
   useInput((input, key) => {
-    if (startupErrorRef.current) {
-      exit();
-      return;
-    }
-
     const currentPrompt = promptRef.current;
 
     // Confirmation prompt active — only y/n/Escape
@@ -233,10 +291,7 @@ export function App(props: AppProps): ReactNode {
     return selectedItemRef.current;
   }
 
-  function handleTaskListInput(
-    input: string,
-    key: { upArrow: boolean; downArrow: boolean; return: boolean },
-  ): void {
+  function handleTaskListInput(input: string, key: TaskListKeyInput): void {
     if (input === 'j' || key.downArrow) {
       navigateDown();
       return;
@@ -323,12 +378,11 @@ export function App(props: AppProps): ReactNode {
     if (!DISPATCHABLE_STATUSES.has(currentItem.displayStatus)) {
       return;
     }
-    if (currentItem.displayStatus === 'failed' && currentItem.latestRun) {
-      const agentRole =
-        currentItem.latestRun.role === 'reviewer'
-          ? ('reviewer' as const)
-          : ('implementor' as const);
-      setPrompt({ type: 'retry', workItemID: currentItem.workItem.id, agentRole });
+    if (currentItem.displayStatus === 'failed') {
+      if (!currentItem.latestRun || currentItem.latestRun.role !== 'implementor') {
+        return;
+      }
+      setPrompt({ type: 'retry', workItemID: currentItem.workItem.id });
       return;
     }
     setPrompt({ type: 'dispatch', workItemID: currentItem.workItem.id });
@@ -351,17 +405,15 @@ export function App(props: AppProps): ReactNode {
       .exhaustive();
   }
 
-  if (startupError) {
+  if (loading) {
     return (
       <Box
         width={terminalWidth}
         height={terminalHeight}
         alignItems="center"
         justifyContent="center"
-        flexDirection="column"
       >
-        <Text color="red">Startup failed: {startupError}</Text>
-        <Text dimColor={true}>Press any key to exit.</Text>
+        <Text>{SPINNER_FRAMES[spinnerFrame] ?? '\u280B'} Starting...</Text>
       </Box>
     );
   }
@@ -383,21 +435,8 @@ export function App(props: AppProps): ReactNode {
     );
   }
 
-  if (!started) {
-    return (
-      <Box
-        width={terminalWidth}
-        height={terminalHeight}
-        alignItems="center"
-        justifyContent="center"
-      >
-        <Text>Starting engine...</Text>
-      </Box>
-    );
-  }
-
   const promptMessage = buildPromptMessage(prompt, runningAgentCount);
-  const dispatchDimmed = !(selectedItem && DISPATCHABLE_STATUSES.has(selectedItem.displayStatus));
+  const dispatchDimmed = !(selectedItem && isDispatchEligible(selectedItem));
 
   return (
     <Box width={terminalWidth} height={terminalHeight} flexDirection="column">
@@ -524,10 +563,7 @@ export function resolveTaskURL(item: DisplayWorkItem, repository: string): strin
 function buildPromptMessage(prompt: PromptState, runningAgentCount: number): string | null {
   return match(prompt)
     .with({ type: 'dispatch' }, (p) => `Dispatch Implementor for #${p.workItemID}?`)
-    .with({ type: 'retry' }, (p) => {
-      const label = p.agentRole === 'implementor' ? 'Implementor' : 'Reviewer';
-      return `Retry ${label} for #${p.workItemID}?`;
-    })
+    .with({ type: 'retry' }, (p) => `Retry Implementor for #${p.workItemID}?`)
     .with({ type: 'quit' }, () => {
       if (runningAgentCount > 0) {
         return `Quit? ${runningAgentCount} agent(s) running.`;
@@ -574,4 +610,37 @@ function copyToClipboard(text: string): void {
   });
   child.stdin.write(text);
   child.stdin.end();
+}
+
+// ---------------------------------------------------------------------------
+// Agent Run Helpers
+// ---------------------------------------------------------------------------
+
+function findLatestSessionIDForWorkItem(
+  workItemID: string,
+  agentRuns: Map<string, AgentRun>,
+): string | null {
+  let latestRun: ImplementorRun | ReviewerRun | null = null;
+
+  for (const run of agentRuns.values()) {
+    if (
+      run.role !== 'planner' &&
+      run.workItemID === workItemID &&
+      (latestRun === null || run.startedAt > latestRun.startedAt)
+    ) {
+      latestRun = run;
+    }
+  }
+
+  return latestRun?.sessionID ?? null;
+}
+
+function isDispatchEligible(item: DisplayWorkItem): boolean {
+  if (!DISPATCHABLE_STATUSES.has(item.displayStatus)) {
+    return false;
+  }
+  if (item.displayStatus === 'failed') {
+    return item.latestRun !== null && item.latestRun.role === 'implementor';
+  }
+  return true;
 }

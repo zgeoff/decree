@@ -1,6 +1,11 @@
 import { expect, test, vi } from 'vitest';
 import type { RevisionFile } from '../engine/github-provider/types.ts';
-import type { UserRequestedImplementorRun } from '../engine/state-store/types.ts';
+import type {
+  EngineState,
+  UserRequestedImplementorRun,
+  WorkItem,
+} from '../engine/state-store/types.ts';
+import { buildWorkItem } from '../test-utils/build-work-item.ts';
 import {
   appendStreamLines,
   type CreateTUIStoreConfig,
@@ -9,6 +14,7 @@ import {
   createTUIStore,
   type TUIEngine,
 } from './store.ts';
+import type { DisplayWorkItem } from './types.ts';
 
 // ---------------------------------------------------------------------------
 // Mock engine factory
@@ -20,20 +26,28 @@ interface MockEngineResult {
   stopCalls: number;
 }
 
-function createMockEngine(overrides?: Partial<TUIEngine>): MockEngineResult {
+interface MockEngineConfig {
+  overrides?: Partial<TUIEngine>;
+  workItems?: Map<string, WorkItem>;
+}
+
+function createMockEngine(config?: MockEngineConfig): MockEngineResult {
   const enqueuedEvents: UserRequestedImplementorRun[] = [];
   let stopCalls = 0;
+  const overrides = config?.overrides;
+
+  const engineState: EngineState = {
+    workItems: config?.workItems ?? new Map(),
+    revisions: new Map(),
+    specs: new Map(),
+    agentRuns: new Map(),
+    errors: [],
+    lastPlannedSHAs: new Map(),
+  };
 
   const engine: TUIEngine = {
     store: overrides?.store ?? {
-      getState: () => ({
-        workItems: new Map(),
-        revisions: new Map(),
-        specs: new Map(),
-        agentRuns: new Map(),
-        errors: [],
-        lastPlannedSHAs: new Map(),
-      }),
+      getState: () => engineState,
       subscribe: vi.fn(() => () => {
         // no-op unsubscribe
       }),
@@ -64,15 +78,44 @@ function createMockEngine(overrides?: Partial<TUIEngine>): MockEngineResult {
   };
 }
 
-function setupTest(overrides?: Partial<TUIEngine>): {
+function setupTest(
+  overrides?: Partial<TUIEngine>,
+  workItems?: Map<string, WorkItem>,
+): {
   store: ReturnType<typeof createTUIStore>;
   engine: TUIEngine;
   enqueuedEvents: UserRequestedImplementorRun[];
 } {
-  const { engine, enqueuedEvents } = createMockEngine(overrides);
+  const mockConfig: MockEngineConfig = {};
+  if (overrides !== undefined) {
+    mockConfig.overrides = overrides;
+  }
+  if (workItems !== undefined) {
+    mockConfig.workItems = workItems;
+  }
+  const { engine, enqueuedEvents } = createMockEngine(mockConfig);
   const config: CreateTUIStoreConfig = { engine };
   const store = createTUIStore(config);
   return { store, engine, enqueuedEvents };
+}
+
+function buildWorkItemsMap(ids: string[]): Map<string, WorkItem> {
+  const map = new Map<string, WorkItem>();
+  for (const id of ids) {
+    map.set(id, buildWorkItem({ id, status: 'ready' }));
+  }
+  return map;
+}
+
+function buildMinimalDisplayWorkItem(id: string): DisplayWorkItem {
+  return {
+    workItem: buildWorkItem({ id, status: 'ready' }),
+    displayStatus: 'dispatch',
+    section: 'action',
+    linkedRevision: null,
+    latestRun: null,
+    dispatchCount: 0,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -130,15 +173,16 @@ test('it sets the pinned work item', () => {
   expect(store.getState().pinnedWorkItem).toBe('42');
 });
 
-test('it triggers on-demand detail fetch when pinning a work item', () => {
+test('it triggers on-demand body fetch when pinning a work item with dispatch status', () => {
   const getWorkItemBody = vi.fn(async () => 'fetched body');
   const getRevisionFiles = vi.fn(async (): Promise<RevisionFile[]> => []);
-  const { store } = setupTest({ getWorkItemBody, getRevisionFiles });
+  const workItems = buildWorkItemsMap(['42']);
+  const { store } = setupTest({ getWorkItemBody, getRevisionFiles }, workItems);
 
   store.getState().pinWorkItem('42');
 
   expect(getWorkItemBody).toHaveBeenCalledWith('42');
-  expect(getRevisionFiles).toHaveBeenCalledWith('42');
+  expect(getRevisionFiles).not.toHaveBeenCalled();
 });
 
 test('it clears stream buffers when the pinned work item changes', () => {
@@ -174,7 +218,8 @@ test('it populates the detail cache when on-demand fetch completes', async () =>
   const getRevisionFiles = vi.fn(
     async (): Promise<RevisionFile[]> => [{ path: 'src/main.ts', status: 'modified', patch: null }],
   );
-  const { store } = setupTest({ getWorkItemBody, getRevisionFiles });
+  const workItems = buildWorkItemsMap(['42']);
+  const { store } = setupTest({ getWorkItemBody, getRevisionFiles }, workItems);
 
   store.getState().pinWorkItem('42');
 
@@ -186,9 +231,8 @@ test('it populates the detail cache when on-demand fetch completes', async () =>
 
   const cached = store.getState().detailCache.get('42');
   expect(cached?.body).toBe('fetched body');
-  expect(cached?.revisionFiles).toStrictEqual([
-    { path: 'src/main.ts', status: 'modified', patch: null },
-  ]);
+  // revisionFiles not fetched for dispatch status
+  expect(cached?.revisionFiles).toBeNull();
 });
 
 test('it sets the detail cache to loading while fetch is in progress', () => {
@@ -200,7 +244,8 @@ test('it sets the detail cache to loading while fetch is in progress', () => {
   });
   const getWorkItemBody = vi.fn(() => bodyPromise);
   const getRevisionFiles = vi.fn(async (): Promise<RevisionFile[]> => []);
-  const { store } = setupTest({ getWorkItemBody, getRevisionFiles });
+  const workItems = buildWorkItemsMap(['42']);
+  const { store } = setupTest({ getWorkItemBody, getRevisionFiles }, workItems);
 
   store.getState().pinWorkItem('42');
 
@@ -230,7 +275,8 @@ test('it discards fetch results if pinned work item changed during fetch', async
     return Promise.resolve(`body for ${id}`);
   });
   const getRevisionFiles = vi.fn(async (): Promise<RevisionFile[]> => []);
-  const { store } = setupTest({ getWorkItemBody, getRevisionFiles });
+  const workItems = buildWorkItemsMap(['42', '99']);
+  const { store } = setupTest({ getWorkItemBody, getRevisionFiles }, workItems);
 
   store.getState().pinWorkItem('42');
 
@@ -541,4 +587,132 @@ test('it produces a new stream buffers reference when buffers are cleared on pin
   store.getState().pinWorkItem('42');
 
   expect(store.getState().streamBuffers).not.toBe(initialBuffers);
+});
+
+// ---------------------------------------------------------------------------
+// Action — handleWorkItemRemoval
+// ---------------------------------------------------------------------------
+
+test('it moves selection to the next work item when the selected work item is removed', () => {
+  const { store } = setupTest();
+  const sortedItems = [
+    buildMinimalDisplayWorkItem('1'),
+    buildMinimalDisplayWorkItem('2'),
+    buildMinimalDisplayWorkItem('3'),
+  ];
+
+  store.getState().selectWorkItem('2');
+  store.getState().handleWorkItemRemoval('2', sortedItems);
+
+  expect(store.getState().selectedWorkItem).toBe('3');
+});
+
+test('it moves selection to the previous work item when the last item is removed', () => {
+  const { store } = setupTest();
+  const sortedItems = [buildMinimalDisplayWorkItem('1'), buildMinimalDisplayWorkItem('2')];
+
+  store.getState().selectWorkItem('2');
+  store.getState().handleWorkItemRemoval('2', sortedItems);
+
+  expect(store.getState().selectedWorkItem).toBe('1');
+});
+
+test('it sets selection to null when the only work item is removed', () => {
+  const { store } = setupTest();
+  const sortedItems = [buildMinimalDisplayWorkItem('1')];
+
+  store.getState().selectWorkItem('1');
+  store.getState().handleWorkItemRemoval('1', sortedItems);
+
+  expect(store.getState().selectedWorkItem).toBeNull();
+});
+
+test('it clears the pinned work item when it is removed', () => {
+  const { store } = setupTest();
+  const sortedItems = [buildMinimalDisplayWorkItem('1'), buildMinimalDisplayWorkItem('2')];
+
+  store.getState().pinWorkItem('1');
+  store.getState().handleWorkItemRemoval('1', sortedItems);
+
+  expect(store.getState().pinnedWorkItem).toBeNull();
+});
+
+test('it clears the detail cache for a removed pinned work item', () => {
+  const workItems = buildWorkItemsMap(['1']);
+  const { store } = setupTest(undefined, workItems);
+  const sortedItems = [buildMinimalDisplayWorkItem('1')];
+
+  store.getState().pinWorkItem('1');
+  store.getState().handleWorkItemRemoval('1', sortedItems);
+
+  expect(store.getState().detailCache.has('1')).toBe(false);
+});
+
+test('it does not change selection when a non-selected work item is removed', () => {
+  const { store } = setupTest();
+  const sortedItems = [buildMinimalDisplayWorkItem('1'), buildMinimalDisplayWorkItem('2')];
+
+  store.getState().selectWorkItem('1');
+  store.getState().handleWorkItemRemoval('2', sortedItems);
+
+  expect(store.getState().selectedWorkItem).toBe('1');
+});
+
+// ---------------------------------------------------------------------------
+// Detail cache fetch optimization by display status
+// ---------------------------------------------------------------------------
+
+test('it skips fetch entirely when pinning a work item with implementing status', () => {
+  const getWorkItemBody = vi.fn(async () => 'body');
+  const getRevisionFiles = vi.fn(async (): Promise<RevisionFile[]> => []);
+  // Create a work item with in-progress status (maps to implementing display status)
+  const workItems = new Map([['42', buildWorkItem({ id: '42', status: 'in-progress' })]]);
+  const { store } = setupTest({ getWorkItemBody, getRevisionFiles }, workItems);
+
+  store.getState().pinWorkItem('42');
+
+  expect(getWorkItemBody).not.toHaveBeenCalled();
+  expect(getRevisionFiles).not.toHaveBeenCalled();
+});
+
+test('it fetches only revision files when pinning a work item with approved status', async () => {
+  const getWorkItemBody = vi.fn(async () => 'body');
+  const getRevisionFiles = vi.fn(
+    async (): Promise<RevisionFile[]> => [{ path: 'src/main.ts', status: 'modified', patch: null }],
+  );
+  const workItems = new Map([['42', buildWorkItem({ id: '42', status: 'approved' })]]);
+  const { store } = setupTest({ getWorkItemBody, getRevisionFiles }, workItems);
+
+  store.getState().pinWorkItem('42');
+
+  await vi.waitFor(() => {
+    const cached = store.getState().detailCache.get('42');
+    expect(cached?.loading).toBe(false);
+  });
+
+  expect(getWorkItemBody).not.toHaveBeenCalled();
+  expect(getRevisionFiles).toHaveBeenCalledWith('42');
+
+  const cached = store.getState().detailCache.get('42');
+  expect(cached?.body).toBeNull();
+  expect(cached?.revisionFiles).toStrictEqual([
+    { path: 'src/main.ts', status: 'modified', patch: null },
+  ]);
+});
+
+test('it fetches only body when pinning a work item with pending status', async () => {
+  const getWorkItemBody = vi.fn(async () => 'pending body');
+  const getRevisionFiles = vi.fn(async (): Promise<RevisionFile[]> => []);
+  const workItems = new Map([['42', buildWorkItem({ id: '42', status: 'pending' })]]);
+  const { store } = setupTest({ getWorkItemBody, getRevisionFiles }, workItems);
+
+  store.getState().pinWorkItem('42');
+
+  await vi.waitFor(() => {
+    const cached = store.getState().detailCache.get('42');
+    expect(cached?.loading).toBe(false);
+  });
+
+  expect(getWorkItemBody).toHaveBeenCalledWith('42');
+  expect(getRevisionFiles).not.toHaveBeenCalled();
 });

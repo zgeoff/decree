@@ -40,7 +40,7 @@ export function createRevisionWriter(deps: RevisionWriterDeps): RevisionProvider
       reviewID: string,
       review: AgentReview,
     ): Promise<void> => {
-      await updateReviewFn(deps, revisionID, reviewID, review);
+      await performUpdateReview(deps, revisionID, reviewID, review);
     },
     postComment: async (revisionID: string, body: string): Promise<void> => {
       await postComment(deps, revisionID, body);
@@ -325,7 +325,7 @@ async function postReview(
   return String(response.data.id);
 }
 
-async function updateReviewFn(
+async function performUpdateReview(
   deps: RevisionWriterDeps,
   revisionID: string,
   reviewID: string,
@@ -364,11 +364,13 @@ async function postComment(
   );
 }
 
-function buildReviewComment(comment: {
+interface ReviewCommentInput {
   path: string;
   line: number | null;
   body: string;
-}): PullsReviewComment {
+}
+
+function buildReviewComment(comment: ReviewCommentInput): PullsReviewComment {
   const result: PullsReviewComment = {
     path: comment.path,
     body: comment.body,

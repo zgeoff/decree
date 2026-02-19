@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { match } from 'ts-pattern';
 import type { StoreApi } from 'zustand';
 import { useStore } from 'zustand';
-import type { EngineState, Priority } from '../../engine/state-store/types.ts';
+import type { EngineState, PipelineStatus, Priority } from '../../engine/state-store/types.ts';
 import { getActionCount } from '../selectors/get-action-count.ts';
 import { getAgentSectionCount } from '../selectors/get-agent-section-count.ts';
 import { getSortedWorkItems } from '../selectors/get-sorted-work-items.ts';
@@ -42,7 +42,7 @@ const STATUS_DISPLAY: Record<DisplayStatus, string> = {
   blocked: 'BLOCKED',
   'needs-refinement': 'REFINE',
   dispatch: 'DISPATCH',
-  pending: 'DISPATCH',
+  pending: 'PENDING',
   implementing: 'WIP',
   reviewing: 'REVIEW',
 };
@@ -54,7 +54,7 @@ const STATUS_ICON: Record<DisplayStatus, string> = {
   blocked: '\u26D4',
   'needs-refinement': '\uD83D\uDCDD',
   dispatch: '\u25CF',
-  pending: '\u25CF',
+  pending: '\u25CB',
   // biome-ignore lint/security/noSecrets: emoji character, not a secret
   implementing: '\uD83E\uDD16',
   // biome-ignore lint/security/noSecrets: emoji character, not a secret
@@ -175,10 +175,14 @@ function TaskRow(props: TaskRowProps): ReactNode {
   const iconCol = renderIconColumn(props.item);
   const titleCol = truncateText(props.item.workItem.title, props.titleWidth);
 
+  const priorityColor = getIssuePriorityColor(props.item.workItem.priority);
+  const revisionColor = getRevisionPipelineColor(props.item);
+
   return (
     <Box paddingLeft={HORIZONTAL_PADDING}>
       <Text inverse={props.selected}>
-        {issueCol} {prCol} {statusCol} {iconCol} {titleCol}
+        {renderColoredText(issueCol, priorityColor)} {renderColoredText(prCol, revisionColor)}{' '}
+        {statusCol} {iconCol} {titleCol}
       </Text>
     </Box>
   );
@@ -201,6 +205,21 @@ export function getIssuePriorityColor(priority: Priority | null): string | undef
     .with('high', () => 'red')
     .with('medium', () => 'yellow')
     .with('low', () => 'dim')
+    .exhaustive();
+}
+
+export function getRevisionPipelineColor(item: DisplayWorkItem): string | undefined {
+  if (item.linkedRevision === null || item.linkedRevision.pipeline === null) {
+    return;
+  }
+  return getPipelineStatusColor(item.linkedRevision.pipeline.status);
+}
+
+function getPipelineStatusColor(status: PipelineStatus): string {
+  return match(status)
+    .with('success', () => 'green')
+    .with('failure', () => 'red')
+    .with('pending', () => 'yellow')
     .exhaustive();
 }
 
@@ -238,6 +257,13 @@ function buildSectionSlice(
     capacity,
     total,
   };
+}
+
+function renderColoredText(text: string, color: string | undefined): ReactNode {
+  if (color === undefined) {
+    return <Text>{text}</Text>;
+  }
+  return <Text color={color}>{text}</Text>;
 }
 
 function padRight(text: string, width: number): string {

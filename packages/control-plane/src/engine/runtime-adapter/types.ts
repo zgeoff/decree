@@ -1,6 +1,12 @@
 import type { RevisionProviderReader, WorkProviderReader } from '../github-provider/types.ts';
-import type { AgentResult } from '../state-store/domain-type-stubs.ts';
+import type { AgentResult, ReviewHistory } from '../state-store/domain-type-stubs.ts';
 import type { EngineState } from '../state-store/types.ts';
+
+export type {
+  ReviewHistory,
+  ReviewInlineComment,
+  ReviewSubmission,
+} from '../state-store/domain-type-stubs.ts';
 
 // --- RuntimeAdapter ---
 
@@ -19,6 +25,7 @@ export interface AgentRunHandle {
   output: AsyncIterable<string>;
   result: Promise<AgentResult>;
   logFilePath: string | null;
+  abortSignal?: AbortSignal;
 }
 
 // --- AgentStartParams ---
@@ -80,31 +87,25 @@ export interface RuntimeAdapterConfig {
   };
 }
 
-// --- ReviewHistory ---
+// --- BashValidatorHook ---
 
 /**
- * Review history for a given revision.
+ * Narrowed hook input for tool-use events — avoids leaking SDK types outside the adapter module.
  */
-export interface ReviewHistory {
-  reviews: ReviewSubmission[];
-  inlineComments: ReviewInlineComment[];
+export interface ToolUseEvent {
+  tool_name: string;
+  tool_input: Record<string, unknown>;
 }
 
 /**
- * A single review submission.
+ * Narrowed hook callback type — avoids leaking SDK types outside the adapter module.
  */
-export interface ReviewSubmission {
-  author: string;
-  state: string;
-  body: string;
-}
+export type BashValidatorHook = (event: ToolUseEvent) => Promise<BashValidatorHookResponse>;
 
 /**
- * A single inline comment on a revision.
+ * Hook response type narrowed from the SDK's SyncHookJSONOutput.
  */
-export interface ReviewInlineComment {
-  path: string;
-  line: number | null;
-  author: string;
-  body: string;
-}
+export type BashValidatorHookResponse =
+  | { decision: 'approve' }
+  | { decision: 'block'; reason: string }
+  | undefined;
