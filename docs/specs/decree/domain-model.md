@@ -30,7 +30,18 @@ The control plane is built on four structural pillars:
 - Component specs — define individual modules in detail; this document defines the boundaries,
   contracts, and invariants that all components must respect.
 
-## Domain Model
+## Constraints
+
+- All domain types (`WorkItem`, `Revision`, `Spec`) are provider-agnostic — the engine never imports
+  provider-specific types.
+- All external mutations flow through the CommandExecutor (broker boundary). No component bypasses
+  this boundary.
+- Commands emitted by a handler in a single event cycle must be independent — no command may depend
+  on the effects of another command in the same cycle (independence invariant).
+- Agent events, commands, and results are per-role. Each role carries exactly the data it needs — no
+  nullable fields gated on context.
+
+## Specification
 
 Domain IDs are strings — providers map their native ID types (e.g. GitHub issue numbers) to strings
 at the boundary.
@@ -60,7 +71,7 @@ WorkItem {
 regardless of whether those items have completed. The provider reports relationships as-is; the
 engine resolves completion status. `handleDependencyResolution` scans pending items when a blocker
 completes and promotes them to `ready` when all blockers are in terminal status (`closed` or
-`approved` — see [WorkItemStatus](#workitem) for the full enum).
+`approved` — see `WorkItemStatus` above for the full enum).
 
 `WorkItemStatus` is the domain-level status, normalized from provider-specific representations (e.g.
 GitHub status labels):
@@ -335,15 +346,18 @@ Notes:
   reviews, `CommentOnRevision` for one-off comments, `UpdateRevision` for editing the revision body.
   `reviewID` on Revision enables review updates — populated when the poller detects a review posted
   by the engine, read by selectors when a handler needs to emit `UpdateRevisionReview`.
-- `PlannerResult` carries create/close/update intents with dependency ordering. New work items use
-  planner-assigned `tempID` values referenced in `blockedBy`. The `ApplyPlannerResult` command
-  encapsulates the entire fan-out — the CommandExecutor resolves tempIDs, creates/closes/updates
-  work items in sequence, and updates `lastPlannedSHAs`.
+- `PlannerResult` carries create/close/update intents with dependency ordering. `ApplyPlannerResult`
+  encapsulates the entire fan-out. See
+  [CommandExecutor: ApplyPlannerResult](./control-plane-engine-command-executor.md#applyplannerresult)
+  for tempID resolution and execution sequence.
 - `ImplementorResult` carries a three-way outcome (`completed`, `blocked`, `validation-failure`).
-  `ApplyImplementorResult` encapsulates the outcome-dependent operations — creating a revision from
-  the patch and transitioning status, or just transitioning status for non-completed outcomes.
+  See
+  [CommandExecutor: ApplyImplementorResult](./control-plane-engine-command-executor.md#applyimplementorresult)
+  for outcome-dependent operations.
 - `ApplyReviewerResult` encapsulates review posting (or updating) and the verdict-dependent status
-  transition.
+  transition. See
+  [CommandExecutor: ApplyReviewerResult](./control-plane-engine-command-executor.md#applyreviewerresult)
+  for execution details.
 - Compound `Apply*Result` commands exist because these operations are multi-step and interdependent
   — they cannot be expressed as independent commands in the same event cycle (see independence
   invariant).
@@ -637,3 +651,35 @@ state store uses the `AgentRunStatus` transition table (see
 [control-plane-engine-state-store.md](./control-plane-engine-state-store.md)) to enforce validity.
 The state update step validates transitions before applying them — invalid transitions are logged
 and rejected.
+
+## Acceptance Criteria
+
+- [ ] Given the `EngineEvent` union, when all variants are enumerated, then every variant has a
+      corresponding entry in the state store's `applyStateUpdate` dispatch table — no event type is
+      unhandled.
+- [ ] Given the `EngineCommand` union, when all variants are enumerated, then every variant has a
+      corresponding entry in the CommandExecutor's command translation table.
+- [ ] Given the `WorkItemStatus` enum, when the workflow transition table is inspected, then every
+      status value appears in at least one transition row (no orphan statuses).
+- [ ] Given the `AgentRunStatus` transition table, when a terminal status is inspected, then it has
+      no outbound transitions.
+- [ ] Given any domain type used across component boundaries, when the type definition is located,
+      then it is defined in this document — not duplicated in component specs.
+- [ ] Given the independence invariant, when two handlers both emit commands for the same event,
+      then each handler receives the same pre-update state snapshot regardless of handler execution
+      order.
+
+## Dependencies
+
+This is the foundational domain model document. It has no normative dependencies on other specs —
+component specs depend on it.
+
+## References
+
+- [workflow.md](./workflow.md) — Status transitions and lifecycle phases
+- [control-plane-engine-state-store.md](./control-plane-engine-state-store.md) — `AgentRunStatus`
+  transition enforcement, selectors
+- [control-plane-engine-command-executor.md](./control-plane-engine-command-executor.md) — Command
+  translation, compound command execution
+- [control-plane-engine-handlers.md](./control-plane-engine-handlers.md) — Handler catalog consuming
+  domain events and producing domain commands

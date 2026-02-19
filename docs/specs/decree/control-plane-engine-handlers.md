@@ -76,10 +76,14 @@ planner results when runs complete.
 3. Collect all spec paths with `frontmatterStatus: 'approved'` from `state.specs`.
 4. Emit `RequestPlannerRun { specPaths }`.
 
-> **Rationale:** The planner receives all approved spec paths for full context — not just the
-> changed ones. The trigger condition ensures the handler only fires when at least one spec has
-> changed since it was last planned. The planner needs the full approved-spec corpus to make
-> holistic decisions about which work items to create, close, or update.
+The guard (step 2) uses `getSpecsRequiringPlanning` to check whether any spec has actually changed
+since last planned, but the command (step 4) sends all approved spec paths — not just the changed
+ones — because the planner needs the full approved-spec corpus to make holistic decisions about
+which work items to create, close, or update.
+
+> **Rationale:** The trigger condition ensures the handler only fires when at least one spec has
+> changed since it was last planned. Sending all approved paths gives the planner full context
+> without requiring it to track which specs changed.
 
 **`PlannerCompleted` behavior:**
 
@@ -246,10 +250,12 @@ Promotes pending work items when their blocking dependencies resolve.
    `TransitionWorkItemStatus { workItemID: dependent.id, newStatus: 'ready' }`.
 4. Return all collected commands.
 
+Only `pending` items are eligible — work items in `blocked` status (set by the implementor for
+runtime blocking reasons) are not automatically promoted.
+
 > **Rationale:** This handler complements `handleReadiness`. While `handleReadiness` promotes
 > newly-pending items with no blockers, `handleDependencyResolution` promotes already-pending items
-> when their last blocker resolves. Only `pending` items are eligible — work items in `blocked`
-> status (set by the implementor for runtime blocking reasons) are not automatically promoted.
+> when their last blocker resolves.
 
 #### handleOrphanedWorkItem
 
@@ -335,22 +341,10 @@ Events with no handler action are processed entirely by state updates.
 
 ### Independence Invariant
 
-Commands emitted by handlers in a single event cycle must be independent — no command may depend on
-the effects of another command in the same cycle. The processing loop passes a single state snapshot
-to all handlers and does not re-read state between command executions.
-
-In practice, handlers produce at most one or two commands per event:
-
-- **Single commands:** Most handler reactions produce exactly one command
-  (`TransitionWorkItemStatus`, `RequestImplementorRun`, etc.).
-- **Compound commands:** `ApplyPlannerResult`, `ApplyImplementorResult`, and `ApplyReviewerResult`
-  encapsulate multi-step sequences that the CommandExecutor executes atomically. Dependent
-  operations are expressed within a single compound command, not as separate commands in the same
-  cycle.
-- **Re-dispatch on completion:** `handlePlanning` may emit both `ApplyPlannerResult` and
-  `RequestPlannerRun` for the same `PlannerCompleted` event. These are independent — applying the
-  planner result does not affect whether specs require planning (the planner result creates/updates
-  work items, not specs).
+See [Engine: Processing Loop](./control-plane-engine.md#processing-loop) for the independence
+invariant. In practice, handlers produce at most one or two commands per event. Compound commands
+(`ApplyPlannerResult`, `ApplyImplementorResult`, `ApplyReviewerResult`) encapsulate multi-step
+dependent operations within a single command.
 
 ### Module Location
 

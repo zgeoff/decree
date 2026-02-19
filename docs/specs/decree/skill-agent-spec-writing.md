@@ -133,8 +133,8 @@ An agent spec defines **contracts** — what the agent must accomplish, what it 
 boundaries it operates within, and why. The agent definition (`.claude/agents/<name>.md`) owns the
 **prompt** — step-by-step workflows, command examples, and execution instructions.
 
-**The spec is for the person building or reviewing the agent. The agent definition is for the LLM
-doing the work.**
+> **Rationale:** The spec is for the person building or reviewing the agent. The agent definition is
+> for the LLM doing the work.
 
 **Belongs in the spec (contract layer):**
 
@@ -159,16 +159,13 @@ doing the work.**
 - Removing a behavioral section from the spec would not change what an implementor builds (the
   acceptance criteria already cover it).
 
-The spec may describe behavioral requirements that the agent definition implements as workflow
-steps. The spec says "must validate inputs before starting work"; the agent definition says "Step 3:
-Validate inputs — check A, B, C." The requirement is contract; the numbered steps are prompt.
+The spec states behavioral requirements (e.g., "must validate inputs"); the agent definition
+implements them as numbered steps — the requirement is contract, the steps are prompt.
 
-Design rationale (why Sonnet, why read-only, why 50 turns) belongs in the spec. The agent definition
-implements the decision without repeating the reasoning.
-
-When in doubt about whether content is contract or prompt: would another team member need to review
-and approve a change to this content? If yes, it is contract. If it is prompt tuning that does not
-change observable behavior, it is prompt.
+Design rationale (why Sonnet, why read-only, why 50 turns) belongs in the spec; the agent definition
+implements the decision without repeating the reasoning. When in doubt: if a change requires review
+and approval, the content is contract; if it is prompt tuning with no observable behavior change, it
+is prompt.
 
 #### The Contract Test
 
@@ -323,6 +320,8 @@ applies. The following additional guidance is specific to agent specs.
       contracts document, not inlined.
 - [ ] Given the output spec, when reviewed, then no acceptance criterion restates a constraint or
       tests a configuration property from the Agent Profile table.
+- [ ] Given a section fails the Contract Test (contains prompt-level content), when the spec is
+      finalized, then the section is either moved to the agent definition or removed from the spec.
 - [ ] Given the skill is invoked, when developing the spec, then `/doc-coauthoring` is invoked.
 
 ## Dependencies

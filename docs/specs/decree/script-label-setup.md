@@ -89,7 +89,8 @@ complexity labels.
 
 For each label:
 
-1. Check if the label already exists in the repository using `gh label list`.
+1. Look up the label in the pre-fetched list (see
+   [Fetching Existing Labels](#fetching-existing-labels)).
 2. If the label does not exist, create it using `gh label create` with the defined name,
    description, and color.
 3. If the label already exists but has an incorrect description or color, update it using
@@ -203,6 +204,8 @@ The script is idempotent. Running it multiple times:
       updated to the correct description and output shows `updated` for that label
 - [ ] Given labels unrelated to the workflow exist in the repository, when the script is run, then
       those labels are not modified or deleted
+- [ ] Given a label action is performed, when the output line is rendered, then the action verb is
+      left-padded to 10 characters followed by two spaces and the label name
 - [ ] Given the script has run, when the summary line is printed, then it matches the format
       `Done: <N> created, <N> updated, <N> up-to-date, <N> failed` and the four counts sum to the
       total number of defined labels
@@ -214,6 +217,8 @@ The script is idempotent. Running it multiple times:
       exits with code `1` before attempting any label operations
 - [ ] Given a label fails to create, when the script continues, then remaining labels are still
       attempted and the final exit code is `1`
+- [ ] Given an existing label has both wrong color and wrong description, when the script runs, then
+      exactly one `updated` action is performed (not two separate updates)
 
 ## Dependencies
 

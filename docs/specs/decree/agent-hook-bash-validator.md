@@ -40,8 +40,8 @@ Validation runs in two layers, strictly in this order:
    whether the command prefix is allowlisted.
 2. **Allowlist** — checked second. Every command segment must start with a recognized prefix.
 
-This order is mandatory. Blocklist-first ensures that a dangerous command (e.g., `git reset --hard`)
-is always rejected even though its prefix (`git`) is allowlisted.
+> **Rationale:** Blocklist-first ensures that a dangerous command (e.g., `git reset --hard`) is
+> always rejected even though its prefix (`git`) is allowlisted.
 
 ### Layer 1: Blocklist
 
@@ -93,32 +93,32 @@ is used for all subsequent validation (command segmentation and allowlist checks
 
 #### Blocklist Patterns
 
-Force pushing is not blocked by this validator. Branch protection rules are the appropriate
-mechanism for preventing force pushes to protected branches.
+> **Rationale:** Force pushing is not blocked by this validator. Branch protection rules are the
+> appropriate mechanism for preventing force pushes to protected branches.
 
-| Category              | Pattern                     | Blocks                      |
-| --------------------- | --------------------------- | --------------------------- | ----- | ------------------------- |
-| Git destructive       | `git\s+reset\s+--hard`      | Hard reset                  |
-| Git destructive       | `git\s+clean\s+-[a-zA-Z]*f` | Clean with force            |
-| Git destructive       | `git\s+checkout\s+\.`       | Discard all working changes |
-| Git destructive       | `git\s+restore\s+\.`        | Discard all working changes |
-| Git destructive       | `git\s+branch\s+.*-D\b`     | Force-delete branch         |
-| File deletion         | `rm\s`                      | Any `rm` invocation         |
-| Privilege escalation  | `\bsudo\b`                  | Any `sudo` usage            |
-| Remote code execution | `curl\s._\|\s_(bash         | sh                          | zsh)` | Piping downloads to shell |
-| Remote code execution | `wget\s._\|\s_(bash         | sh                          | zsh)` | Piping downloads to shell |
-| Remote code execution | `\beval\b`                  | Eval execution              |
-| System modification   | `\bdd\s+if=`                | Disk dump                   |
-| System modification   | `\bmkfs\b`                  | Filesystem creation         |
-| System modification   | `\bfdisk\b`                 | Partition management        |
-| System modification   | `chmod\s+-R`                | Recursive permission change |
-| System modification   | `chmod\s+777`               | World-writable permissions  |
-| System modification   | `chmod\s+.*o\+w`            | Other-write permission      |
-| System modification   | `chmod\s+.*a\+w`            | All-write permission        |
-| System modification   | `\bchown\b`                 | Ownership change            |
-| Process management    | `\bkill\b`                  | Kill process                |
-| Process management    | `\bpkill\b`                 | Kill by name                |
-| Process management    | `\bkillall\b`               | Kill all by name            |
+| Category              | Pattern                        | Blocks                      |
+| --------------------- | ------------------------------ | --------------------------- |
+| Git destructive       | `git\s+reset\s+--hard`         | Hard reset                  |
+| Git destructive       | `git\s+clean\s+-[a-zA-Z]*f`    | Clean with force            |
+| Git destructive       | `git\s+checkout\s+\.`          | Discard all working changes |
+| Git destructive       | `git\s+restore\s+\.`           | Discard all working changes |
+| Git destructive       | `git\s+branch\s+.*-D\b`        | Force-delete branch         |
+| File deletion         | `rm\s`                         | Any `rm` invocation         |
+| Privilege escalation  | `\bsudo\b`                     | Any `sudo` usage            |
+| Remote code execution | `curl\s.*\|\s*(bash\|sh\|zsh)` | Piping downloads to shell   |
+| Remote code execution | `wget\s.*\|\s*(bash\|sh\|zsh)` | Piping downloads to shell   |
+| Remote code execution | `\beval\b`                     | Eval execution              |
+| System modification   | `\bdd\s+if=`                   | Disk dump                   |
+| System modification   | `\bmkfs\b`                     | Filesystem creation         |
+| System modification   | `\bfdisk\b`                    | Partition management        |
+| System modification   | `chmod\s+-R`                   | Recursive permission change |
+| System modification   | `chmod\s+777`                  | World-writable permissions  |
+| System modification   | `chmod\s+.*o\+w`               | Other-write permission      |
+| System modification   | `chmod\s+.*a\+w`               | All-write permission        |
+| System modification   | `\bchown\b`                    | Ownership change            |
+| Process management    | `\bkill\b`                     | Kill process                |
+| Process management    | `\bpkill\b`                    | Kill by name                |
+| Process management    | `\bkillall\b`                  | Kill all by name            |
 
 ### Layer 2: Allowlist
 
@@ -192,15 +192,9 @@ accepted trade-offs.
 
 - **Command substitution.** Commands embedded in `$(...)` or backticks are not extracted as separate
   segments. A command like `git commit -m "$(python3 evil.py)"` passes both layers because the
-  blocklist sees only the masked (empty) quoted content and the allowlist only checks `git` as the
-  segment prefix. This is an accepted risk, partially mitigated by the blocklist catching dangerous
-  patterns in unquoted command substitutions (e.g., unquoted `$(rm -rf /)` would match `rm\s`
-  because the subshell content is not inside a quoted string). Double-quoted command substitutions
-  like `"$(rm -rf /)"` are not caught because quote masking replaces the quoted content — this is a
-  deliberate trade-off to eliminate false positives on string arguments (see
-  [Quote Masking](#quote-masking)). Command substitution with a non-blocklisted, non-allowlisted
-  binary is not caught. The agent system prompts and `tools` field provide behavioral (not
-  technical) guardrails against this class of bypass.
+  blocklist sees only masked content and the allowlist only checks `git`. Unquoted substitutions
+  (e.g., `$(rm -rf /)`) are partially mitigated by blocklist matching. Double-quoted substitutions
+  are not caught due to quote masking — an accepted trade-off (see [Quote Masking](#quote-masking)).
 - **Subshell operators.** Operators inside `$(...)` or backtick expressions that are not also inside
   a quoted string are treated as segment separators. This may produce incorrect segment boundaries
   but is a safe failure mode (false rejection, not false allow).
@@ -247,6 +241,16 @@ accepted trade-offs.
 - [ ] Given a command with `chmod o+w` or `chmod a+w`, when validated, then the command is blocked.
 - [ ] Given a command piping `wget` to a shell (e.g., `wget https://example.com | sh`), when
       validated, then the command is blocked.
+
+### Error Message Format
+
+- [ ] Given a command matches a blocklist pattern, when the validator rejects it, then the error
+      message follows the blocklist block format: `Blocked: matches dangerous pattern '<pattern>'`
+      where `<pattern>` is the ERE pattern that matched.
+- [ ] Given a command has an unrecognized prefix that fails the allowlist, when the validator
+      rejects it, then the error message follows the allowlist block format:
+      `Blocked: '<command>' is not in the allowed command list` where `<command>` is the
+      unrecognized first word.
 
 ### Blocklist — Quote Masking
 

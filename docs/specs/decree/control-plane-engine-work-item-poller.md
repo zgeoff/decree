@@ -43,12 +43,8 @@ engine populates the initial work item set.
 simultaneously. This is intentional — on startup (or restart), the engine should bring the system to
 the correct state via normal event processing.
 
-**First-cycle execution:** `Engine.start()` runs the first poll cycle of each poller as a direct
-invocation, not via the interval timer. It awaits all first cycles before resolving. Interval-based
-polling begins after the first cycles complete.
-
-> **Rationale:** This ensures the state store is populated with the initial work item set before
-> `start()` resolves.
+**First-cycle execution:** Follows the standard poller lifecycle. See
+[Engine: Poller Lifecycle](./control-plane-engine.md#poller-lifecycle).
 
 ### Diff Logic
 
@@ -101,18 +97,13 @@ WorkItemChanged {
 ```
 
 > **Rationale:** Diffing against the canonical state store instead of a poller-internal snapshot
-> eliminates the need for the engine core to mutate poller state (the v1 `updateEntry` pattern). The
-> store always reflects the latest processed state, so the poller's diff is always against the most
-> recent truth.
+> eliminates the need for the engine core to mutate poller state. The store always reflects the
+> latest processed state, so the poller's diff is always against the most recent truth.
 
 ### Error Handling
 
-If `reader.listWorkItems()` fails (after provider-internal retries are exhausted), the poll cycle is
-skipped — no events are emitted. The error is logged. The next interval-triggered poll cycle
-proceeds normally.
-
-> **Rationale:** Provider-internal retry handles transient failures. If the call still fails, the
-> poller skips the cycle rather than emitting events based on stale or partial data.
+Follows the standard poller error handling protocol. See
+[Engine: Poller Lifecycle](./control-plane-engine.md#poller-lifecycle).
 
 ### Type Definitions
 
@@ -162,6 +153,10 @@ engine/pollers/
 - [ ] Given `Engine.start()` is called, when the first WorkItemPoller cycle runs, then it is
       executed as a direct invocation (not via the interval timer) and `start()` awaits its
       completion before resolving.
+- [ ] Given the engine starts with N existing work items, when the first poll cycle runs, then up to
+      N `WorkItemChanged` events are enqueued.
+- [ ] Given `stop()` is called while a poll is in-flight, when the poll completes, then no further
+      polls are scheduled.
 
 ## Dependencies
 

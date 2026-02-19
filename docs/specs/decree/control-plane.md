@@ -51,30 +51,8 @@ the repository root. They are separate modules with explicit exports, not separa
 
 ### Component Architecture
 
-```mermaid
-flowchart TD
-    P[Pollers] -->|domain events| Q[Event Queue]
-    RA[Runtime Adapters] -->|agent lifecycle events| Q
-    TUI -->|user events| Q
-
-    Q --> Loop[Processing Loop]
-    Loop -->|1. update| Store[State Store]
-    Loop -->|2. event + snapshot| H[Handlers]
-    H -->|3. commands| CE[CommandExecutor]
-    CE -->|result events| Q
-    CE -->|write| PW[Provider Writers]
-    CE -->|start / cancel| RA
-    P -.->|read| PR[Provider Readers]
-    Store -.->|subscribe| TUI
-```
-
-Three categories of components surround the engine core:
-
-| Category             | Components                              | Role                                            |
-| -------------------- | --------------------------------------- | ----------------------------------------------- |
-| **Event sources**    | Pollers, runtime adapters, user actions | Produce domain events into the queue            |
-| **External systems** | Provider writers, runtime adapters      | Reached only through the CommandExecutor        |
-| **Subscribers**      | TUI                                     | Read engine state but do not modify it directly |
+See [Domain Model: Component Architecture](./domain-model.md#component-architecture) for the system
+component diagram and component category descriptions.
 
 See [control-plane-engine.md: Engine Wiring](./control-plane-engine.md#engine-wiring) for the full
 `createEngine(config)` assembly.
@@ -98,10 +76,10 @@ The engine exposes a store-based interface consumed by the TUI:
 
 The TUI subscribes to the engine's Zustand store via `useStore(engine.store, selector)`. User
 actions produce domain events enqueued via `engine.enqueue()` — the TUI never sends commands
-directly.
+directly. The entry point calls `renderApp()` to mount the TUI — see
+[control-plane-tui.md](./control-plane-tui.md) for the `renderApp` interface and TUI specification.
 
-See [control-plane-engine.md](./control-plane-engine.md) for the full engine specification. See
-[control-plane-tui.md](./control-plane-tui.md) for the TUI specification.
+See [control-plane-engine.md](./control-plane-engine.md) for the full engine specification.
 
 ### Data Flow
 
@@ -192,30 +170,11 @@ full command translation table, compound command execution, and error semantics.
 ### Runtime Adapter
 
 Agent execution is mediated by a `RuntimeAdapter` interface — the engine programs against this
-contract, and the runtime implementation is pluggable per role.
-
-```
-RuntimeAdapter {
-  startAgent(params: AgentStartParams): Promise<AgentRunHandle>
-  cancelAgent(sessionID):               void
-}
-
-AgentRunHandle {
-  output:    AsyncIterable<string>      // live log stream for TUI
-  result:    Promise<AgentResult>       // resolves on completion, rejects on failure
-}
-```
-
-**Artifact-based model.** Agents produce structured output only (`PlannerResult`,
-`ImplementorResult`, `ReviewerResult`). The runtime adapter validates output against per-role
-schemas. All external mutations (creating revisions, posting reviews, transitioning statuses) are
-performed by the CommandExecutor after processing agent results — agents never perform side effects.
-
-**Pluggable per role.** The engine holds a per-role adapter map. Swapping a role's runtime is a
-configuration change — the caller provides a different factory function.
+contract, and the runtime implementation is pluggable per role. Agents produce structured output
+only; all external mutations are performed by the CommandExecutor after processing agent results.
 
 See [control-plane-engine-runtime-adapter.md](./control-plane-engine-runtime-adapter.md) for the
-core contract and
+`RuntimeAdapter` and `AgentRunHandle` interface definitions, and
 [control-plane-engine-runtime-adapter-claude.md](./control-plane-engine-runtime-adapter-claude.md)
 for the Claude SDK implementation (worktree management, context assembly, structured output
 validation).
@@ -290,112 +249,8 @@ await exit. Provider construction, credential handling, and adapter wiring resid
 
 ### Testing Strategy
 
-The architecture is designed for testability. Handlers, selectors, and state updates are pure
-functions — test them with direct calls. Providers and runtime adapters are behind interfaces — mock
-them at the boundary. All component dependencies are injected, never imported directly.
-
-#### Test Utility Catalog
-
-Test utilities live in `src/test-utils/`, one per file, following the standard file organization
-rules. Every component test imports from this shared set — no inline mocks, no per-test-file mock
-factories.
-
-**Entity Builders** — Factory functions that return domain entities with sensible defaults. Accept
-an optional overrides parameter for test-specific values.
-
-```
-test-utils/build-work-item.ts         → buildWorkItem(overrides?)
-test-utils/build-revision.ts          → buildRevision(overrides?)
-test-utils/build-spec.ts              → buildSpec(overrides?)
-test-utils/build-planner-run.ts       → buildPlannerRun(overrides?)
-test-utils/build-implementor-run.ts   → buildImplementorRun(overrides?)
-test-utils/build-reviewer-run.ts      → buildReviewerRun(overrides?)
-```
-
-**State Builders** — Build `EngineState` snapshots from entity builders.
-
-```
-test-utils/build-engine-state.ts      → buildEngineState(overrides?)
-```
-
-`buildEngineState` is the primary test setup tool for handlers and selectors. It composes the entity
-builders — pass work items, revisions, specs, and agent runs as needed:
-
-```
-state = buildEngineState({
-  workItems: [buildWorkItem({ id: '1', status: 'ready' })],
-  revisions: [buildRevision({ id: '10', workItemID: '1' })],
-  agentRuns: [buildImplementorRun({ workItemID: '1', status: 'running' })],
-})
-```
-
-**Event Builders** — Factory functions for domain events.
-
-```
-test-utils/build-work-item-changed.ts       → buildWorkItemChanged(overrides?)
-test-utils/build-revision-changed.ts        → buildRevisionChanged(overrides?)
-test-utils/build-spec-changed.ts            → buildSpecChanged(overrides?)
-test-utils/build-planner-completed.ts       → buildPlannerCompleted(overrides?)
-test-utils/build-implementor-completed.ts   → buildImplementorCompleted(overrides?)
-test-utils/build-reviewer-completed.ts      → buildReviewerCompleted(overrides?)
-```
-
-**Mock Providers** — Mock implementations of provider interfaces. Readers accept initial data;
-writers record calls for assertion.
-
-```
-test-utils/create-mock-work-provider-reader.ts     → createMockWorkProviderReader(config?)
-test-utils/create-mock-work-provider-writer.ts     → createMockWorkProviderWriter()
-test-utils/create-mock-revision-provider-reader.ts → createMockRevisionProviderReader(config?)
-test-utils/create-mock-revision-provider-writer.ts → createMockRevisionProviderWriter()
-test-utils/create-mock-spec-provider-reader.ts     → createMockSpecProviderReader(config?)
-```
-
-Mock readers return configured data. Mock writers expose `calls` arrays for assertion:
-
-```
-writer = createMockWorkProviderWriter()
-// ... execute commands ...
-expect(writer.transitionStatus.calls).toContainEqual({ workItemID: '1', newStatus: 'in-progress' })
-```
-
-**Mock Runtime and Infrastructure:**
-
-```
-test-utils/create-mock-runtime-adapter.ts   → createMockRuntimeAdapter(config?)
-test-utils/create-mock-policy.ts            → createMockPolicy(config?)
-test-utils/create-mock-enqueue.ts           → createMockEnqueue()
-```
-
-`createMockRuntimeAdapter` returns an adapter whose `startAgent` produces a controllable
-`AgentRunHandle` — tests can resolve or reject the result promise to simulate completion or failure.
-
-`createMockPolicy` defaults to allowing all commands. Pass overrides to reject specific command
-types.
-
-`createMockEnqueue` captures enqueued events in an array for assertion.
-
-#### Testing Patterns by Component
-
-| Component                | Pattern                                                                                                                                                       | Key utilities                                                         |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| **Handlers**             | Pure function test. Call `handler(event, state)`, assert returned commands.                                                                                   | `buildEngineState`, event builders                                    |
-| **Selectors**            | Pure function test. Call `selector(state)`, assert derived value.                                                                                             | `buildEngineState`                                                    |
-| **State updates**        | Call `applyStateUpdate(store, event)`, assert state changes via `store.getState()`.                                                                           | Event builders, fresh Zustand store                                   |
-| **CommandExecutor**      | Inject mock providers + adapters + policy. Call `execute(command, state)`, assert provider calls and returned events.                                         | Mock providers, mock runtime adapter, mock policy, `buildEngineState` |
-| **Pollers**              | Inject mock reader + `getState` + mock enqueue. Trigger a poll cycle, assert enqueued events match the diff between reader data and store state.              | Mock provider readers, `buildEngineState`, `createMockEnqueue`        |
-| **Engine (integration)** | Wire real handlers and store with mock providers and adapters. Enqueue events, let the processing loop run, assert resulting state and provider interactions. | All mock utilities, `buildEngineState`                                |
-
-#### Testing Principles
-
-- **No inline mocks.** All mocks come from `test-utils/`. If a test needs a mock that doesn't exist,
-  add it to `test-utils/` — don't create it locally.
-- **Builders over literals.** Use `buildWorkItem({ status: 'ready' })` instead of spelling out full
-  object literals. Builders provide sensible defaults and insulate tests from entity shape changes.
-- **Assert commands, not side effects.** Handler tests assert the returned `EngineCommand[]`. They
-  never assert provider calls — that's the CommandExecutor's concern.
-- **One layer per test.** Handler tests don't involve the CommandExecutor. CommandExecutor tests
-  don't involve handlers. Integration tests are separate and deliberate.
+See [Control Plane Testing](./control-plane-testing.md) for the test utility catalog, mock
+factories, and component testing patterns.
 
 ## Acceptance Criteria
 
@@ -423,6 +278,9 @@ types.
 - [ ] Given a config file that provides provider interfaces backed by a non-GitHub implementation,
       when the engine starts, then polling, event processing, and command execution operate normally
       — no engine or entry point changes are required.
+- [ ] Given two handlers that both emit commands for the same event, when the commands are
+      collected, then each handler receives the same pre-update state snapshot regardless of handler
+      execution order.
 
 ## Known Limitations
 
@@ -444,8 +302,10 @@ spec's own Known Limitations section.
   (canonical state shape, selectors, update functions)
 - [control-plane-engine-github-provider.md](./control-plane-engine-github-provider.md) — Provider
   interfaces and GitHub implementation
-- [control-plane-engine-issue-poller.md](./control-plane-engine-issue-poller.md) — WorkItem poller
-- [control-plane-engine-pr-poller.md](./control-plane-engine-pr-poller.md) — Revision poller
+- [control-plane-engine-work-item-poller.md](./control-plane-engine-work-item-poller.md) — WorkItem
+  poller
+- [control-plane-engine-revision-poller.md](./control-plane-engine-revision-poller.md) — Revision
+  poller
 - [control-plane-engine-spec-poller.md](./control-plane-engine-spec-poller.md) — Spec poller
 - [control-plane-engine-handlers.md](./control-plane-engine-handlers.md) — Handler catalog (dispatch
   logic, recovery, dependency resolution)
@@ -455,6 +315,8 @@ spec's own Known Limitations section.
   adapter core contract
 - [control-plane-engine-runtime-adapter-claude.md](./control-plane-engine-runtime-adapter-claude.md)
   — Claude SDK adapter implementation
+- [control-plane-testing.md](./control-plane-testing.md) — Test utility catalog, mock factories, and
+  component testing patterns
 - [control-plane-tui.md](./control-plane-tui.md) — TUI specification (layout, interactions,
   rendering)
 - [workflow.md](./workflow.md) — Development workflow definition (roles, phases, status transitions)

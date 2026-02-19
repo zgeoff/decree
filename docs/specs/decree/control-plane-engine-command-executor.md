@@ -193,21 +193,21 @@ that entity — no duplicate event is produced.
 Commands that modify ancillary data (bodies, labels, comments, reviews) not tracked in the engine's
 entity maps produce no result events. These changes do not drive handler logic.
 
-| Command              | Provider operation                                        | Result events |
-| -------------------- | --------------------------------------------------------- | ------------- |
-| `UpdateWorkItem`     | `workItemWriter.updateWorkItem(workItemID, body, labels)` | `[]`          |
-| `UpdateRevision`     | `revisionWriter.updateBody(revisionID, body)`             | `[]`          |
-| `PostRevisionReview` | `revisionWriter.postReview(revisionID, review)`           | `[]`          |
-| `CommentOnRevision`  | `revisionWriter.postComment(revisionID, body)`            | `[]`          |
+| Command                | Resolution                                                           | Provider operation                                          | Result events |
+| ---------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------- | ------------- |
+| `UpdateWorkItem`       | _(none)_                                                             | `workItemWriter.updateWorkItem(workItemID, body, labels)`   | `[]`          |
+| `UpdateRevision`       | _(none)_                                                             | `revisionWriter.updateBody(revisionID, body)`               | `[]`          |
+| `PostRevisionReview`   | _(none)_                                                             | `revisionWriter.postReview(revisionID, review)`             | `[]`          |
+| `CommentOnRevision`    | _(none)_                                                             | `revisionWriter.postComment(revisionID, body)`              | `[]`          |
+| `UpdateRevisionReview` | Look up `reviewID` from `revisions.get(command.revisionID).reviewID` | `revisionWriter.updateReview(revisionID, reviewID, review)` | `[]`          |
 
-**`UpdateRevisionReview` requires state lookup.** The command carries `revisionID` and `review` but
-not `reviewID`. The executor resolves `reviewID` by finding the revision in the state snapshot whose
-`id` matches `command.revisionID` and reading its `reviewID` field. If the revision is not found or
-`reviewID` is `null`, the command fails.
+**`UpdateRevision` precondition:** The command type allows `body: string | null`, but the executor
+enforces `body !== null` at runtime via `invariant`. Commands with a null body are a programming
+error — the invariant crashes rather than silently passing `null` to the provider.
 
-| Command                | Resolution                                              | Provider operation                                          | Result events |
-| ---------------------- | ------------------------------------------------------- | ----------------------------------------------------------- | ------------- |
-| `UpdateRevisionReview` | Look up `reviewID` from `revisions[command.revisionID]` | `revisionWriter.updateReview(revisionID, reviewID, review)` | `[]`          |
+`UpdateRevisionReview` requires a state lookup — the command carries `revisionID` and `review` but
+not `reviewID`. The executor resolves `reviewID` from the state snapshot. If the revision is not
+found or `reviewID` is `null`, the command fails.
 
 #### Agent Request Commands
 
@@ -329,12 +329,23 @@ outside the synchronous `execute` call and enqueues events via `deps.enqueue`.
 async startAgentAsync(role, sessionID, params):
   try:
     handle = await runtimeAdapters[role].startAgent(params)
+    onHandleRegistered?.(sessionID, handle)
     enqueue(buildStartedEvent(role, sessionID, handle.logFilePath))
     result = await handle.result
+    onHandleRemoved?.(sessionID)
     enqueue(buildCompletedEvent(role, sessionID, result))
   catch error:
+    onHandleRemoved?.(sessionID)
     enqueue(buildFailedEvent(role, sessionID, error))
 ```
+
+`onHandleRegistered` and `onHandleRemoved` are optional callbacks (from `CommandExecutorDeps`) that
+bridge the executor's internal agent session tracking to the engine's external handle map. When
+`startAgentAsync` receives an `AgentRunHandle` from the runtime adapter, it calls
+`onHandleRegistered(sessionID, handle)`. When the agent run reaches a terminal state (completion or
+failure), it calls `onHandleRemoved(sessionID)`. The engine uses these callbacks to maintain the
+private `Map<string, AgentRunHandle>` described in
+[Engine: Agent Run Handle Map](./control-plane-engine.md#agent-run-handle-map).
 
 **Lifecycle events by role:**
 

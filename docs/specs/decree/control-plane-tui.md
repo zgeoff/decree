@@ -39,7 +39,7 @@ entity types.
 - **AgentRun** — from `EngineState.agentRuns`. Run status, role, session ID, branch name, log file
   path, error.
 
-Domain types are defined in [domain-model.md: Domain Model](./domain-model.md#domain-model).
+Domain types are defined in [domain-model.md: Specification](./domain-model.md#specification).
 `AgentRun` variants are defined in
 [control-plane-engine-state-store.md](./control-plane-engine-state-store.md#agentrun-variants).
 
@@ -350,18 +350,18 @@ Color is determined by pipeline status:
 
 ##### Status Column — Display Labels
 
-| `DisplayStatus`    | Display    | Icon |
-| ------------------ | ---------- | ---- |
-| `approved`         | `APPROVED` | ✔    |
-| `failed`           | `FAILED`   | 💥   |
-| `blocked`          | `BLOCKED`  | ⛔   |
-| `needs-refinement` | `REFINE`   | 📝   |
-| `dispatch`         | `DISPATCH` | ●    |
-| `pending`          | `PENDING`  | ◌    |
-| `implementing`     | `WIP(N)`   | 🤖   |
-| `reviewing`        | `REVIEW`   | 🔎   |
+| `DisplayStatus`    | Display                | Icon |
+| ------------------ | ---------------------- | ---- |
+| `approved`         | `APPROVED`             | ✔    |
+| `failed`           | `FAILED`               | 💥   |
+| `blocked`          | `BLOCKED`              | ⛔   |
+| `needs-refinement` | `REFINE`               | 📝   |
+| `dispatch`         | `DISPATCH`             | ●    |
+| `pending`          | `PENDING`              | ◌    |
+| `implementing`     | `WIP({dispatchCount})` | 🤖   |
+| `reviewing`        | `REVIEW`               | 🔎   |
 
-`WIP(N)` renders the work item's `dispatchCount` as a parenthetical suffix.
+`WIP({dispatchCount})` renders the work item's `dispatchCount` as a parenthetical suffix.
 
 #### Sorting
 
@@ -713,9 +713,9 @@ On `y`: call `shutdown()`. On `n` / `Escape`: dismiss.
 
 ### State Subscription
 
-- [ ] Given the engine processes a `WorkItemChanged` event that transitions a work item from `ready`
-      to `in-progress`, when the store updates, then the TUI re-renders the work item with
-      `implementing` display status without explicit event handling
+- [ ] Given the engine store reflects a work item with status changed from `ready` to `in-progress`,
+      when the Zustand subscription fires, then the TUI re-renders the work item with the
+      `implementing` display status
 - [ ] Given the engine processes a `PlannerRequested` event, when the store updates with a new
       `PlannerRun`, then the planner status indicator switches from 💤 to spinner
 
@@ -779,8 +779,6 @@ On `y`: call `shutdown()`. On `n` / `Escape`: dismiss.
 - [ ] Given the detail pane is focused and a work item is pinned, when `o` is pressed, then the URL
       is resolved from the pinned work item (not the selected work item)
 - [ ] Given `selectedWorkItem` is `null`, when `Enter` is pressed, then nothing happens
-- [ ] Given dispatch confirmation is accepted, when the event is enqueued, then it flows through the
-      engine's standard pipeline including concurrency guards and policy checks
 
 ### Agent Streams
 

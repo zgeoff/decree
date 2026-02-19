@@ -177,7 +177,7 @@ The script exchanges the JWT for an installation access token:
    - Header: `Accept: application/vnd.github+json`
 2. Parse the response JSON.
 3. Extract the `token` field.
-4. Return the token to the caller (execution flow step 2).
+4. Return the token to the caller (execution flow step 3).
 
 ### Error Handling
 
@@ -250,6 +250,9 @@ The script requires these commands on `PATH`:
       timestamp 3300 seconds (55 minutes) in the future
 - [ ] Given the repository's `.gitignore`, when inspected, then `scripts/workflow/.token-cache` and
       `scripts/workflow/.token-expiry` are excluded from version control
+- [ ] Given the script is invoked from a git worktree, when resolving cache file paths, then paths
+      resolve relative to `MAIN_SCRIPT_DIR` (the original script location), not the worktree working
+      directory
 
 ### Token Generation
 
@@ -258,32 +261,16 @@ The script requires these commands on `PATH`:
       `0`
 - [ ] Given a valid `.env.local`, when the script is run, then no diagnostic output appears on
       stdout (all diagnostics go to stderr; stdout is exclusively `gh` output)
-- [ ] Given `scripts/workflow/.env.local` does not exist, when the script is run, then an error
-      message referencing the missing file is printed to stderr and the exit code is `1`
-- [ ] Given `.env.local` exists but `GH_APP_ID` is empty, when the script is run, then an error
-      message naming `GH_APP_ID` is printed to stderr and the exit code is `1`
-- [ ] Given `.env.local` exists but `GH_APP_PRIVATE_KEY` is empty, when the script is run, then an
-      error message naming `GH_APP_PRIVATE_KEY` is printed to stderr and the exit code is `1`
-- [ ] Given `.env.local` exists but `GH_APP_INSTALLATION_ID` is empty, when the script is run, then
-      an error message naming `GH_APP_INSTALLATION_ID` is printed to stderr and the exit code is `1`
+- [ ] Given `.env.local` exists but a required variable is empty or unset, when the script is run,
+      then the error message names the specific missing variable
 - [ ] Given `GH_APP_PRIVATE_KEY` is set to a valid file path containing a PEM key, when the script
       is run, then the key is read from that file and token generation succeeds
 - [ ] Given `GH_APP_PRIVATE_KEY` is set to inline PEM content starting with `-----BEGIN`, when the
       script is run, then the inline content is used directly and token generation succeeds
-- [ ] Given `GH_APP_PRIVATE_KEY` is set to a path that does not exist, when the script is run, then
-      an error message naming the invalid path is printed to stderr and the exit code is `1`
 - [ ] Given `GH_APP_PRIVATE_KEY` contains malformed PEM content, when the script is run, then an
       error is printed to stderr and the exit code is `1`
-- [ ] Given `openssl` is not installed, when the script is run, then an error message naming
-      `openssl` is printed to stderr and the exit code is `1`
-- [ ] Given `curl` is not installed, when the script is run, then an error message naming `curl` is
-      printed to stderr and the exit code is `1`
-- [ ] Given `jq` is not installed, when the script is run, then an error message naming `jq` is
-      printed to stderr and the exit code is `1`
-- [ ] Given `gh` is not installed, when the script is run, then an error message naming `gh` is
-      printed to stderr and the exit code is `1`
-- [ ] Given the GitHub API returns an error response, when the script is run, then the API response
-      is printed to stderr and the exit code is `1`
+- [ ] Given a required dependency is not installed, when the script is run, then the error message
+      names the specific missing dependency and the exit code is `1`
 - [ ] Given the GitHub API returns a 200 response without a `token` field, when the script is run,
       then the response is printed to stderr and the exit code is `1`
 - [ ] Given `scripts/workflow/.env.example` exists, when inspected, then it contains the three

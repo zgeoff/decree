@@ -22,13 +22,11 @@ the role contract.
 ## Constraints
 
 - Must work on exactly one work item at a time.
-- Must not perform any GitHub operations — no `gh` CLI, no `gh.sh`, no API calls. All external
-  mutations (revision creation, status transitions, comments) are performed by the engine's
-  CommandExecutor after processing the agent's `ImplementorResult`.
-- Must not push branches or create revisions. Code changes are committed locally in the worktree;
-  the runtime adapter extracts a patch artifact after the session completes.
-- Must not change work item status labels. Status transitions (`ready` to `in-progress`, etc.) are
-  handled reactively by engine handlers in response to agent lifecycle events.
+- Must not mutate external state (no git push, no PR creation, no issue updates, no network requests
+  beyond the provided tools). All external mutations (revision creation, status transitions,
+  comments) are performed by the engine's CommandExecutor after processing the agent's
+  `ImplementorResult`. Code changes are committed locally in the worktree; the runtime adapter
+  extracts a patch artifact after the session completes.
 - Must conform to the project's code style, naming conventions, and patterns defined in `CLAUDE.md`.
 - Must use conventional commit format for commit messages.
 - Must not reprioritize work items or change sequencing. Executes what is assigned.
@@ -37,10 +35,8 @@ the role contract.
 - The agent definition body must include the permitted bash command list from
   [agent-hook-bash-validator.md: Allowlist Prefixes](./agent-hook-bash-validator.md#allowlist-prefixes)
   to prevent wasted turns on blocked commands.
-- When debugging a test or validation failure, re-reading a file the agent has already read in the
-  current session indicates the failure exceeds the agent's ability to resolve efficiently. The
-  agent must report a blocker (outcome: `validation-failure`) rather than re-reading files to trace
-  a failure.
+- Must not re-read files during validation debugging. See
+  [Pre-submit Validation](#pre-submit-validation) for the re-read detection rule and its scope.
 
 ## Agent Profile
 
@@ -77,20 +73,29 @@ prompt.
 
 ## Inputs
 
+### Injected Context
+
 The runtime adapter assembles an enriched trigger prompt from
 `ImplementorStartParams { workItemID, branchName }`. See
 [control-plane-engine-runtime-adapter-claude.md: Implementor Context](./control-plane-engine-runtime-adapter-claude.md#implementor-context)
 for the prompt format and data resolution.
 
-1. **Trigger prompt:** An enriched prompt containing the work item details (ID, title, body,
-   status). When a linked revision exists (resume scenarios), the prompt additionally includes
-   per-file revision diffs, CI failure details (when pipeline has failed), and prior review history.
-2. **Project context:** CLAUDE.md content (coding conventions, style rules, architecture) appended
+The enriched prompt contains:
+
+1. **Work item details:** ID, title, body (objective, spec reference, scope, acceptance criteria,
+   constraints), and status.
+2. **Revision context** (resume scenarios only): Per-file revision diffs, CI failure details (when
+   pipeline has failed), and prior review history.
+3. **Project context:** CLAUDE.md content (coding conventions, style rules, architecture) appended
    to the agent's system prompt. See
    [control-plane-engine-runtime-adapter-claude.md: Project Context Injection](./control-plane-engine-runtime-adapter-claude.md#project-context-injection).
-3. **Working directory:** A git worktree on a fresh branch based on `defaultBranch`. The branch name
-   is assigned by the engine — the agent works on whatever branch its worktree starts on. See
-   [control-plane-engine-runtime-adapter-claude.md: Worktree Management](./control-plane-engine-runtime-adapter-claude.md#worktree-management).
+
+### Codebase State
+
+The agent's working directory is a git worktree on a fresh branch based on `defaultBranch`. The
+branch name is assigned by the engine — the agent works on whatever branch its worktree starts on.
+See
+[control-plane-engine-runtime-adapter-claude.md: Worktree Management](./control-plane-engine-runtime-adapter-claude.md#worktree-management).
 
 The agent fetches remaining data via tool calls: referenced spec sections and in-scope file state.
 The work item body, revision diffs, and review comments are pre-computed in the trigger prompt.
@@ -134,15 +139,18 @@ in `CLAUDE.md` (typically `yarn check` or equivalent).
   dependency, infrastructure issue): The agent produces a `validation-failure` outcome with a
   summary describing the external failure.
 - **Repeated re-reads during debugging:** If the agent re-reads a file it has already read in the
-  current session while debugging a validation failure, it must stop and produce a
-  `validation-failure` outcome rather than continuing to loop.
+  current session while debugging a validation failure, the failure exceeds the agent's ability to
+  resolve efficiently. The agent must stop and produce a `validation-failure` outcome rather than
+  continuing to loop. This rule applies only during the debugging sub-phase (fixing validation
+  failures), not during initial implementation where re-reading a file for reference is expected.
 
 ### Scope Enforcement
 
 The agent must only modify files listed in the work item's "In Scope" section, subject to the scope
 enforcement rules defined in
 [workflow-contracts.md: Scope Enforcement Rules](./workflow-contracts.md#scope-enforcement-rules)
-(primary scope, co-located test files, incidental changes, scope inaccuracy).
+(primary scope, co-located test files, incidental changes, scope inaccuracy, owner-authorized scope
+extension).
 
 When non-incidental changes to out-of-scope files are needed:
 
@@ -151,19 +159,23 @@ When non-incidental changes to out-of-scope files are needed:
 - If it does not block progress: note the scope conflict in the summary and continue with in-scope
   work.
 
+When the work item body has no "In Scope" section, the work item is malformed. The agent produces a
+`blocked` outcome with blocker type `spec-gap` and a summary describing the missing section. The
+agent does not guess scope boundaries.
+
 When the In Scope list names a file that does not contain the expected code:
 
 - If the task intent is unambiguous and the correct target is identifiable from the codebase: the
   agent determines the correct target file, treats it as effective primary scope, and documents the
-  discrepancy in a commit message.
+  discrepancy in the revision body using a "Scope correction" section (see
+  [workflow-contracts.md: Scope Enforcement Rules](./workflow-contracts.md#scope-enforcement-rules)).
 - If the discrepancy makes the task intent unclear: produce a `blocked` outcome. Include the blocker
   type (`spec-gap`) in the summary text.
 
 ## Blocker Handling
 
-When the agent encounters something that prevents continued progress, it stops work and produces a
-structured output with the appropriate outcome. The agent does not post comments, open draft PRs, or
-change labels — all of that is handled by the engine.
+When the agent cannot continue, it stops work and produces a structured output with the appropriate
+outcome. The mapping from blocker type to outcome:
 
 | Blocker type                                | Outcome              | Summary content                                                        |
 | ------------------------------------------- | -------------------- | ---------------------------------------------------------------------- |
@@ -172,11 +184,7 @@ change labels — all of that is handled by the engine.
 | Debugging limit (re-reading files)          | `validation-failure` | Description of the failure and what was attempted before stopping      |
 | Pre-existing validation failure             | `validation-failure` | Which validation step failed and why it is outside the agent's scope   |
 
-The `summary` field carries blocker information (type label, description, options, recommendation,
-impact) as plain text. Blocker type is not a separate schema field — it is embedded in the summary
-text (e.g., "Type: spec-gap — …"). The engine's `ApplyImplementorResult` command handles
-outcome-dependent operations — transitioning status to `blocked` or `needs-refinement`, and
-including the summary in the work item update if needed.
+The `summary` field format for each outcome is defined in [Summary Guidelines](#summary-guidelines).
 
 ## Structured Output
 
@@ -207,6 +215,11 @@ extracts it from the worktree via `git diff` after the session completes. See
 | `blocked`            | Progress prevented by an issue outside the agent's control (spec, dependency, scope).    | Transition to `blocked`.                            |
 | `validation-failure` | Pre-submit validation failed due to something outside the agent's scope or debug limits. | Transition to `needs-refinement`.                   |
 
+If the agent produces a `completed` outcome but the worktree is clean (no commits), the runtime
+adapter treats this as an error — a `completed` result requires at least one commit. The runtime
+adapter maps this to a `validation-failure` outcome. See
+[control-plane-engine-runtime-adapter-claude.md: Patch Extraction](./control-plane-engine-runtime-adapter-claude.md#patch-extraction).
+
 The engine processes outcomes via `ApplyImplementorResult`. See
 [domain-model.md: Implementor](./domain-model.md#implementor) for the full status flow.
 
@@ -234,6 +247,8 @@ and the human operator (for understanding what happened). Content varies by outc
 - [ ] Given a work item whose In Scope list names a file that does not contain the expected code,
       when the discrepancy makes the task intent unclear, then the agent produces a `blocked`
       outcome.
+- [ ] Given a work item whose body has no "In Scope" section, when the agent starts work, then it
+      produces a `blocked` outcome with blocker type `spec-gap`.
 - [ ] Given a satisfiable work item, when the agent completes work, then the structured output has
       outcome `completed` and the worktree contains committed changes against the branch.
 - [ ] Given a spec ambiguity during implementation, when the agent stops work, then the structured
@@ -255,6 +270,9 @@ and the human operator (for understanding what happened). Content varies by outc
 - [ ] Given a review comment requesting changes to out-of-scope files, when the change does not
       block progress, then the agent notes the scope conflict in the summary and continues with
       in-scope work.
+- [ ] Given a review comment from a human reviewer that explicitly authorizes a scope extension
+      (resume scenario), when the agent addresses the feedback, then it treats the authorized files
+      as effective scope and notes the authorization in the summary.
 - [ ] Given a non-incidental change needed to an out-of-scope file that blocks progress, when the
       agent stops work, then the structured output has outcome `blocked` with a summary identifying
       the blocker type as `technical-constraint`.

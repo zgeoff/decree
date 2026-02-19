@@ -17,26 +17,28 @@ create, close, and update with dependency ordering via `tempID` references.
 
 ## Constraints
 
-- Must not perform any external mutations. The Planner produces structured output only — all work
-  item creation, closure, and updates are performed by the CommandExecutor when it processes the
+- Must not mutate external state (no git push, no PR creation, no issue updates, no network requests
+  beyond the provided tools). The Planner produces structured output only — all work item creation,
+  closure, and updates are performed by the CommandExecutor when it processes the
   `ApplyPlannerResult` command.
-- Must not narrate reasoning between tool calls. Output only: gate check results, action summaries
-  (planned creates/updates/closes with titles), and the final structured output. No exploratory
-  commentary.
 - Must not make interpretive decisions about spec intent. Ambiguity, contradiction, or gaps must
   produce refinement work items in the `create` array, not guesses.
+- Must not create acceptance criteria that contradict the task's own Constraints or Out of Scope
+  boundaries. If a criterion requires modifying a file the task excludes, either expand scope to
+  include the file or defer the criterion to a separate task that owns it.
 - The agent definition body must include the permitted bash command list from
   [agent-hook-bash-validator.md: Allowlist Prefixes](./agent-hook-bash-validator.md#allowlist-prefixes)
   to prevent wasted turns on blocked commands.
 
 ## Agent Profile
 
-| Constraint       | Value                                   | Rationale                                                    |
-| ---------------- | --------------------------------------- | ------------------------------------------------------------ |
-| Model tier       | Opus                                    | Reliable multi-phase execution and codebase delta assessment |
-| Tool access      | No write tools (Read, Grep, Glob, Bash) | Reads codebase for delta assessment; never modifies files    |
-| Turn budget      | 50                                      | Bounded analysis with structured output                      |
-| Permission model | Non-interactive with bash validation    | Runs unattended; bash validator enforces command safety      |
+| Constraint       | Value                                   | Rationale                                                                                      |
+| ---------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Model tier       | Opus                                    | Reliable multi-phase execution and codebase delta assessment                                   |
+| Tool access      | No write tools (Read, Grep, Glob, Bash) | Reads codebase for delta assessment; never modifies files                                      |
+| Turn budget      | 100                                     | Codebase delta assessment and multi-spec decomposition require extended budget                 |
+| Permission model | Non-interactive with bash validation    | Runs unattended; bash validator enforces command safety                                        |
+| Output verbosity | Suppress narration between tool calls   | Minimizes token waste; agent outputs gate checks, action summaries, and structured output only |
 
 The agent definition (`.claude/agents/planner.md`) implements these constraints as frontmatter. See
 [control-plane-engine-runtime-adapter-claude.md: Agent Definition Loading](./control-plane-engine-runtime-adapter-claude.md#agent-definition-loading)
@@ -90,16 +92,16 @@ are evaluated per spec — a failing spec is reported and skipped; passing specs
 1. Spec frontmatter `status` is `approved`.
 2. No existing work items with `needs-refinement` status reference this spec.
 
+For each spec that fails a gate, the Planner notes the failure (spec name, which gate failed, and
+why) as chain-of-thought before continuing. If all specs fail, the Planner stops after reporting all
+failures and outputs a `PlannerResult` with all arrays empty.
+
 > **Rationale:** Gate 1 duplicates the trigger condition (`approved` status) as defense-in-depth —
 > the trigger is evaluated by the handler at enqueue time, while the gate is evaluated by the agent
 > at execution time. A spec's status could change between the two. Gate 2 uses `WorkItemStatus`
 > domain values from the injected context rather than provider-specific label queries. The runtime
 > adapter provides all work items with their current status — the Planner filters by status and spec
 > reference to evaluate the gate.
-
-For each spec that fails a gate, the Planner notes the failure (spec name, which gate failed, and
-why) as chain-of-thought before continuing. If all specs fail, the Planner stops after reporting all
-failures and outputs a `PlannerResult` with all arrays empty.
 
 ## Decomposition Process
 
@@ -114,9 +116,12 @@ path in the "Spec Reference" section. Work items that do not reference any input
 
 The Planner identifies:
 
-1. **Irrelevant tasks:** Work items whose referenced spec section has been removed or whose work is
+1. **Terminal-state work items:** Work items in terminal status (`closed`, `approved`, `completed`)
+   are skipped — they are not candidates for closure, update, or re-creation. The Planner treats
+   them as historical records.
+2. **Irrelevant tasks:** Work items whose referenced spec section has been removed or whose work is
    no longer needed due to spec changes. Their ids are added to the `close` array of the result.
-2. **Stale tasks:** Work items whose scope or acceptance criteria no longer match the updated spec.
+3. **Stale tasks:** Work items whose scope or acceptance criteria no longer match the updated spec.
    Added to the `update` array with revised body and/or labels.
 
 When a new work item supersedes an existing one, the existing work item's id is added to `close`.
@@ -169,11 +174,12 @@ Assemble the `PlannerResult` from the decisions made in Phases 1-3:
 
 For each task, the Planner assigns a complexity label:
 
-- `complexity:trivial` — Trivial changes, mechanical transformations, straightforward updates.
-- `complexity:low` — Single-file changes, simple logic, boilerplate.
-- `complexity:medium` — Multi-file changes with moderate coordination.
-- `complexity:high` — Multi-file coordination, architectural decisions, nuanced logic, non-trivial
-  error handling.
+| Label                | Criteria                                                                                    |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| `complexity:trivial` | Trivial changes, mechanical transformations, straightforward updates                        |
+| `complexity:low`     | Single-file changes, simple logic, boilerplate                                              |
+| `complexity:medium`  | Multi-file changes with moderate coordination                                               |
+| `complexity:high`    | Multi-file coordination, architectural decisions, nuanced logic, non-trivial error handling |
 
 When in doubt, prefer higher complexity — the cost of under-resourcing a task (wasted turns, poor
 output) exceeds the cost of over-resourcing (higher token cost).
@@ -182,10 +188,11 @@ Complexity labels are included in the `labels` array of each `PlannedWorkItem`.
 
 ## Priority Assignment
 
-- `high` — Blocks other tasks or is on the critical path. Foundation work (types, core interfaces)
-  that other tasks depend on.
-- `medium` — Default. Standard implementation work with no special urgency.
-- `low` — Nice-to-have, non-blocking, or can be deferred without impacting other work.
+| Label             | Criteria                                                                           |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| `priority:high`   | Blocks other tasks or is on the critical path; foundation work (types, interfaces) |
+| `priority:medium` | Default; standard implementation work with no special urgency                      |
+| `priority:low`    | Nice-to-have, non-blocking, or deferrable without impacting other work             |
 
 The Planner sequences tasks so that foundational work is marked `high` priority, with dependent
 tasks referencing them via `blockedBy` in their `PlannedWorkItem`.

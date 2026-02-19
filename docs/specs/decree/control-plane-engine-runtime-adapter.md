@@ -252,11 +252,6 @@ The following types are owned by this module and live in `engine/runtime-adapter
 - `RuntimeAdapterDeps`
 - `RuntimeAdapterConfig`
 
-**Type migration.** `RuntimeAdapter`, `AgentRunHandle`, and `AgentStartParams` (per-role variants)
-are currently defined in `engine/command-executor/types.ts` as temporarily hosted types. When this
-module is implemented, move these types to `engine/runtime-adapter/types.ts` and update imports in
-the command executor.
-
 ### Module Location
 
 Core types live in `engine/runtime-adapter/types.ts`. Implementation files are adapter-specific —
@@ -286,25 +281,19 @@ see the Claude adapter spec for the Claude SDK file layout.
 
 ### Execution Environment
 
-- [ ] Given an Implementor session starts, when the environment is provisioned, then the agent
-      operates on a branch matching `branchName` from the start params.
+- [ ] Given any role, when a session starts, then the agent's working directory matches the
+      [Execution Environment Requirements](#execution-environment-requirements) table.
 - [ ] Given an Implementor session completes (success or failure), when cleanup runs, then the
       execution environment is removed.
-- [ ] Given a Planner session starts, when the environment is configured, then the agent operates
-      against the default branch.
-- [ ] Given a Reviewer session starts, when the environment is configured, then the agent operates
-      against the default branch.
 
 ### Context Assembly — Planner
 
-- [ ] Given `startAgent` is called with `PlannerStartParams` containing two spec paths, when context
-      is assembled, then the adapter fetches content for both specs.
-- [ ] Given a spec path has no entry in `lastPlannedSHAs`, when context is assembled, then the spec
-      is classified as added (no diff).
-- [ ] Given a spec path has an entry in `lastPlannedSHAs` with a different blobSHA, when context is
-      assembled, then the spec is classified as modified (diff included).
-- [ ] Given existing work items in the state store, when planner context is assembled, then the
-      adapter fetches id, title, status, and body for each work item.
+- [ ] Given `lastPlannedSHAs` contains the same blobSHA as the current spec, when context is
+      assembled, then the spec is excluded from the changed set.
+- [ ] Given `specPaths` contains a path with no entry in `lastPlannedSHAs`, when context is
+      assembled, then no diff is produced for that spec (added specs have content only).
+- [ ] Given `specPaths` is empty, when context is assembled, then no spec content is included and
+      only existing work items are fetched.
 
 ### Context Assembly — Implementor
 

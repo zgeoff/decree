@@ -22,13 +22,16 @@ for debugging and auditing.
 
 ### File Lifecycle
 
-1. When a session starts (SDK `init` message received), create the log file at
-   `{logsDir}/{timestamp}-{agentType}[-{context}].log` where:
-   - `timestamp` is `Date.now()` (milliseconds since epoch)
-   - `agentType` is `planner`, `implementor`, or `reviewer`
-   - `[-{context}]` is `-{issueNumber}` for Implementor/Reviewer, omitted entirely (including the
-     dash) for Planner
-   - Examples: `1738934400000-implementor-42.log`, `1738934400000-planner.log`
+1. When a session starts (SDK `init` message received), create the log file at the path determined
+   by the agent's role:
+   - **Planner:** `{logsDir}/{timestamp}-planner.log`
+   - **Implementor:** `{logsDir}/{timestamp}-implementor-{issueNumber}.log`
+   - **Reviewer:** `{logsDir}/{timestamp}-reviewer-{issueNumber}.log`
+
+   Where `timestamp` is `Date.now()` (milliseconds since epoch) and `issueNumber` is the numeric
+   issue number of the work item being implemented or reviewed. Examples:
+   `1738934400000-implementor-42.log`, `1738934400000-planner.log`.
+
 2. Write the session header immediately.
 3. As each SDK message arrives, format and append it to the file.
 4. When the session ends (success, failure, or cancellation), write a footer with the outcome, then
@@ -77,11 +80,14 @@ Finished: 2026-02-08T19:21:50.000Z
 
 ### Context-Specific Header Fields
 
-| Agent       | Header field                          |
-| ----------- | ------------------------------------- |
-| Planner     | `Spec Paths: {comma-separated paths}` |
-| Implementor | `Issue: #{issueNumber}`               |
-| Reviewer    | `Issue: #{issueNumber}`               |
+| Agent       | Header field                          | Context suffix in filename |
+| ----------- | ------------------------------------- | -------------------------- |
+| Planner     | `Spec Paths: {comma-separated paths}` | _(none)_                   |
+| Implementor | `Issue: #{issueNumber}`               | `-{issueNumber}`           |
+| Reviewer    | `Issue: #{issueNumber}`               | `-{issueNumber}`           |
+
+The `issueNumber` for Implementor and Reviewer is the numeric issue number of the work item
+associated with the agent run.
 
 ### Message Formatting
 
@@ -149,13 +155,11 @@ the log file could not be created, or the session ended before the SDK `init` me
 ## Dependencies
 
 - [control-plane-engine-runtime-adapter.md](./control-plane-engine-runtime-adapter.md) — Parent
-  runtime adapter spec (agent lifecycle, session tracking)
+  runtime adapter spec (agent lifecycle, session tracking, startAgent lifecycle contract)
 - [control-plane-engine.md](./control-plane-engine.md) — Parent engine spec (event types including
   `logFilePath` on per-role terminal events, logging configuration)
 
 ## References
 
-- [control-plane-engine.md: Configuration — Logging](./control-plane-engine.md#logging) —
-  `agentSessions` and `logsDir` settings
-- [control-plane-engine-runtime-adapter.md: startAgent Lifecycle Contract](./control-plane-engine-runtime-adapter.md#startagent-lifecycle-contract)
-  — Session completion flow that triggers log footer writing
+- [Engine: Configuration](./control-plane-engine.md#configuration) — `logging.agentSessions` and
+  `logging.logsDir` settings

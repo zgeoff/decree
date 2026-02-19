@@ -209,11 +209,13 @@ All status transitions are handler-mediated — handlers react to domain events 
 the CommandExecutor translates into provider operations. Agents do not perform status transitions
 directly.
 
+Recovery transitions always return to `pending`, forcing a readiness check before re-dispatch.
+`pending` and `ready` are distinct states — work items must pass a readiness check
+(`handleReadiness`) before entering the dispatch pool.
+
 > **Rationale:** Reactive status transitions prevent status drift when commands are rejected by
 > concurrency guards or policy. The work item remains in its current status until the engine
-> confirms the operation was accepted. `pending` and `ready` are distinct states — work items must
-> pass a readiness check (`handleReadiness`) before entering the dispatch pool. Recovery transitions
-> always return to `pending`, forcing a readiness check before re-dispatch.
+> confirms the operation was accepted.
 
 The `UserTransitionedStatus` event allows the Human to manually transition work items via the TUI.
 The standard use cases are unblocking work items (`blocked` → `pending`, `needs-refinement` →
@@ -225,6 +227,8 @@ closes the issue after merging the revision. The engine does not mediate this tr
 "Integrate to Complete" quality gate defines the conditions.
 
 This table is the normative home for status transitions.
+
+> The following diagram is informational. The transition table above is normative.
 
 ```mermaid
 stateDiagram-v2
@@ -346,10 +350,6 @@ Agents report issues through their structured output:
 | Revision      | GitHub PRs                        | Engine (from patch)         | N/A                     |
 | Plan          | PlannerResult (structured output) | Planner                     | `agent-planner.md`      |
 
-Work items are created by the engine's CommandExecutor when processing the Planner's
-`PlannerResult`. Revisions are created by the engine when processing the Implementor's
-`ImplementorResult` (completed outcome with patch artifact).
-
 #### Labels
 
 Work items use four mutually exclusive label categories. A work item has exactly one label from each
@@ -368,9 +368,6 @@ decomposition. They are informational — they signal to the Human that a spec n
 Refinement work items do not flow through the Implement or Review phases. The Human resolves the
 ambiguity (via `/spec-writing`), and the next Planner run closes the refinement work item if the
 ambiguity is addressed.
-
-Label definitions (names, descriptions, colors) and the setup script are specified in
-`script-label-setup.md`.
 
 ## Acceptance Criteria
 
@@ -410,8 +407,8 @@ Label definitions (names, descriptions, colors) and the setup script are specifi
       when `handleReadiness` runs, then the work item transitions to `status:ready`.
 - [ ] Given a work item with `status:pending` and unresolved `blockedBy` dependencies, when
       `handleReadiness` runs, then the work item remains in `status:pending`.
-- [ ] Given a work item with `status:in-progress` and no active agent run, when a `WorkItemChanged`
-      event is processed, then `handleOrphanedWorkItem` transitions the work item to
+- [ ] Given a work item with `status:in-progress` and no active agent run, when the engine detects
+      the orphaned state, then `handleOrphanedWorkItem` transitions the work item to
       `status:pending`.
 - [ ] Given a work item with `status:needs-refinement`, when the Human transitions it to `pending`
       via the TUI, then `handleReadiness` re-evaluates the work item for dispatch eligibility.

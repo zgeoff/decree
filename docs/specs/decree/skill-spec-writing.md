@@ -267,7 +267,8 @@ Use Given/When/Then. Each criterion must be verifiable with observable outcomes.
 6. If separable concerns exist (multiple distinct features that could be implemented independently),
    advise splitting into separate specs.
 7. Before finalizing, verify:
-   - No content is duplicated from another spec (check normative homes).
+   - No content is duplicated from another spec (verify each behavior has exactly one normative home
+     across the spec corpus).
    - All rationale is in blockquote admonitions.
    - Procedures use step lists, not paragraph form.
    - Acceptance criteria are non-redundant with prose.
@@ -275,9 +276,6 @@ Use Given/When/Then. Each criterion must be verifiable with observable outcomes.
 
 ## Acceptance Criteria
 
-- [ ] Given the skill is invoked, when it completes, then a spec file exists in `docs/specs/` (or a
-      subfolder).
-- [ ] Given the output spec, when reviewed, then all template sections are present.
 - [ ] Given the output spec, when reviewed, then each acceptance criterion is verifiable by an agent
       with an observable outcome.
 - [ ] Given the output spec, when reviewed, then no acceptance criterion is a GWT rephrasing of a

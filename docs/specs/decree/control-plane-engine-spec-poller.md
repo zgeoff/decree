@@ -50,13 +50,8 @@ store but absent from the provider result. The `SpecChanged` event defines `chan
 **Initial poll cycle:** On the first cycle, the store is empty. All specs from the provider are
 treated as additions — each produces a `SpecChanged` event with `changeType: 'added'`.
 
-**First-cycle execution:** `Engine.start()` runs the first poll cycle of each poller as a direct
-invocation, not via the interval timer. It awaits all first cycles before resolving. Interval-based
-polling begins after the first cycles complete.
-
-> **Rationale:** This ensures the state store is populated with the initial spec set before
-> `start()` resolves. The initial `SpecChanged` events feed the planning handler, which uses
-> `lastPlannedSHAs` to determine which specs need planning — no snapshot seeding is needed.
+**First-cycle execution:** Follows the standard poller lifecycle. See
+[Engine: Poller Lifecycle](./control-plane-engine.md#poller-lifecycle).
 
 ### Diff Logic
 
@@ -90,26 +85,21 @@ SpecChanged {
 }
 ```
 
-> **Rationale:** `blobSHA` comparison detects content changes. `frontmatterStatus` comparison
-> detects status-only changes that may not alter the blob (e.g., if frontmatter is stored
-> separately). In practice, any content change produces a different `blobSHA`, so comparing both
-> fields is a defensive measure.
+> **Rationale:** Both `blobSHA` and `frontmatterStatus` are compared. `blobSHA` detects content
+> changes; `frontmatterStatus` is compared independently to ensure status transitions are never
+> missed.
+
+The `commitSHA` field on `SpecChanged` events is consumed by the TUI to construct diff URLs (e.g.,
+GitHub compare links) for spec changes.
 
 ### Error Handling
 
-If `reader.listSpecs()` fails (after provider-internal retries are exhausted), the poll cycle is
-skipped — no events are emitted. The error is logged. The next interval-triggered poll cycle
-proceeds normally.
+Follows the standard poller error handling protocol. See
+[Engine: Poller Lifecycle](./control-plane-engine.md#poller-lifecycle).
 
 If `reader.getDefaultBranchSHA()` fails after changes were detected, the poll cycle is skipped — no
 events are emitted for that cycle. The next cycle re-detects the same changes (the store was not
 updated) and retries.
-
-> **Rationale:** Provider-internal retry handles transient failures. If the call still fails, the
-> poller skips the cycle rather than emitting events with missing commit metadata.
-
-The `commitSHA` field on `SpecChanged` events is consumed by the TUI to construct diff URLs (e.g.,
-GitHub compare links) for spec changes.
 
 ### Type Definitions
 

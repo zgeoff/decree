@@ -17,8 +17,8 @@ structured artifact and handles all downstream operations.
 
 ## Constraints
 
-- Must not perform any external mutations — no GitHub operations, no status transitions, no review
-  posting. The agent's sole output is a structured `ReviewerResult`.
+- Must not mutate external state (no git push, no PR creation, no issue updates, no network requests
+  beyond the provided tools). The agent's sole output is a structured `ReviewerResult`.
 - Must never issue a `needs-changes` verdict without providing actionable feedback. Each finding
   must include what is wrong, why it is wrong, and what to change.
 - Scope issues are reported as warnings, not as findings that trigger rejection.
@@ -56,6 +56,8 @@ passed). The dispatch mechanism is defined by the `handleReview` handler — see
 
 ## Inputs
 
+### Injected Context
+
 The runtime adapter assembles an enriched trigger prompt from the minimal
 `ReviewerStartParams { role: 'reviewer', workItemID, revisionID }`. See
 [control-plane-engine-runtime-adapter-claude.md: Reviewer Context](./control-plane-engine-runtime-adapter-claude.md#reviewer-context)
@@ -69,21 +71,25 @@ The enriched prompt contains:
    linked revision.
 3. **Prior review history** — review submissions (author, state, body) and inline comments (author,
    body, path, line) from prior Reviewer runs and human reviewers. Omitted on first review.
+4. **Project context:** CLAUDE.md content (coding conventions, style rules, architecture) appended
+   to the agent's system prompt. See
+   [control-plane-engine-runtime-adapter-claude.md: Project Context Injection](./control-plane-engine-runtime-adapter-claude.md#project-context-injection).
 
-Additionally:
+### Codebase State
 
-- **Project context:** CLAUDE.md content (coding conventions, style rules, architecture) appended to
-  the agent's system prompt. See
-  [control-plane-engine-runtime-adapter-claude.md: Project Context Injection](./control-plane-engine-runtime-adapter-claude.md#project-context-injection).
-- **Working directory:** The repository root. The Reviewer reads source files on the default branch
-  via tool calls; revision diffs are provided in the enriched prompt.
+The Reviewer's working directory is the repository root. The agent reads source files on the default
+branch via tool calls; revision diffs are provided in the enriched prompt. A dedicated worktree is
+not required.
 
-> **Rationale:** The Reviewer does not need a worktree — revision diffs are pre-computed in the
-> enriched prompt, and source file reads against the default branch are sufficient for code quality
-> assessment. See
+> **Rationale:** Revision diffs are pre-computed in the enriched prompt, and source file reads
+> against the default branch are sufficient for code quality assessment. See
 > [control-plane-engine-runtime-adapter-claude.md: Planner and Reviewer Working Directory](./control-plane-engine-runtime-adapter-claude.md#planner-and-reviewer-working-directory).
 
 ## Review Checklist
+
+This section is the authoritative definition of what "reviewed" means. The agent definition
+(`.claude/agents/reviewer.md`) implements these steps as workflow instructions — see
+[control-plane-engine-runtime-adapter-claude.md: Agent Definition Loading](./control-plane-engine-runtime-adapter-claude.md#agent-definition-loading).
 
 The agent evaluates the revision against each of the following criteria. All six steps run on every
 review — individual failures do not short-circuit the remaining steps. Findings from all steps are
@@ -118,9 +124,13 @@ If the revision description contains a "Scope correction" section (rule 4 of the
 rules), files listed as the corrected scope are treated as effective primary scope — no warning is
 recorded.
 
-If a modified file is neither in primary scope, a co-located test file, an incidental change, nor
-covered by a documented scope inaccuracy, record it as a warning (not a finding) with an
-explanation.
+If the implementation summary documents an owner-authorized scope extension (rule 5 of the scope
+enforcement rules), files authorized by a human reviewer are treated as effective primary scope — no
+warning is recorded.
+
+If a modified file is neither in primary scope, a co-located test file, an incidental change,
+covered by a documented scope inaccuracy, nor an owner-authorized scope extension, record it as a
+warning (not a finding) with an explanation.
 
 ### 3. Task Constraints
 
@@ -141,6 +151,10 @@ For each acceptance criterion in the work item:
 Read the referenced spec sections and compare the implementation against the specified behavior.
 Verify the implementation does not contradict, omit, or extend beyond what the spec requires. Record
 deviations with the specific spec file, section, and description.
+
+When the spec has been updated since the work item was created (e.g., the spec version or content
+differs from what the work item body references), the Reviewer uses the current spec version as the
+authoritative source and records a warning noting the version discrepancy.
 
 ### 6. Code Quality and Consistency
 
@@ -185,12 +199,10 @@ Types are defined in [domain-model.md: Agent Results](./domain-model.md#agent-re
 
 ### Comments
 
-Each finding or warning that references a specific file location is recorded as an
-`AgentReviewComment` with `path` and `line`. Findings that are general (e.g., missing test coverage
-for a criterion, unresolved prior review comment) use the most relevant file path with `line: null`.
-
-Warnings are included in comments with a `[Warning]` prefix in the body to distinguish them from
-findings. Warnings do not influence the verdict.
+Each finding or warning is recorded as an `AgentReviewComment`. File-specific items include `path`
+and `line`; general items (e.g., missing test coverage, unresolved prior comment) use the most
+relevant file path with `line: null`. Warning and finding semantics are defined in the
+[Review Checklist](#review-checklist) section above.
 
 ### Result Processing
 
@@ -222,8 +234,6 @@ and transitions the work item status based on the verdict:
       still run.
 - [ ] Given a work item with no Constraints section, when the agent reviews the revision, then the
       task constraints step records a warning and the remaining steps still run.
-- [ ] Given a revision with unresolved review comments from prior reviews, when the agent reviews
-      it, then it records unaddressed items as findings.
 - [ ] Given a revision that modifies files outside primary scope where the modification qualifies as
       incidental, then the Reviewer does not flag it as a scope warning.
 - [ ] Given a revision that modifies files outside primary scope where the modification does not
@@ -232,8 +242,13 @@ and transitions the work item status based on the verdict:
 - [ ] Given a revision whose description contains a "Scope correction" section documenting a scope
       inaccuracy, when the Reviewer checks scope compliance, then files listed as the corrected
       scope are treated as effective primary scope and no scope warning is recorded for them.
+- [ ] Given a revision whose implementation summary documents an owner-authorized scope extension,
+      when the Reviewer checks scope compliance, then files authorized by the human reviewer are
+      treated as effective primary scope and no scope warning is recorded for them.
 - [ ] Given a revision that satisfies all checklist steps, when the agent produces its structured
       output, then the verdict is `approve` and the summary confirms approval.
+- [ ] Given a review that produces one or more findings of any severity, when the verdict is
+      determined, then the verdict is `needs-changes` (not `approve`).
 - [ ] Given a revision that fails one or more acceptance criteria, when the agent produces a
       `needs-changes` verdict, then the comments include which criteria failed with an explanation
       for each failure.
@@ -275,4 +290,4 @@ and transitions the work item status based on the verdict:
   — Enriched prompt format and data sources.
 - [control-plane-engine-command-executor.md: ApplyReviewerResult](./control-plane-engine-command-executor.md#applyreviewerresult)
   — How the engine processes the reviewer's structured output.
-- `docs/specs/decree/workflow.md` — Development Protocol (Reviewer role, Review Phase).
+- [workflow.md](./workflow.md) — Development Protocol (Reviewer role, Review Phase).

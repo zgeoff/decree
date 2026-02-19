@@ -142,62 +142,19 @@ guards and policy checks as automated dispatch.
 receives pre-built provider interfaces as injected dependencies, and a factory function for runtime
 adapters. It does not know or care what implementations back the interfaces.
 
-```
-createEngine(config: EngineConfig): Engine
+Construction steps (order matters — later steps depend on earlier ones):
 
-  // 1. Create state store
-  store = createEngineStore()
-
-  // 2. Create event queue
-  queue = createEventQueue()
-
-  // 3. Create runtime adapters (engine provides deps the adapters need)
-  runtimeAdapters = config.createRuntimeAdapters({
-    workItemReader:   config.provider.workItemReader,
-    revisionReader:   config.provider.revisionReader,
-    getState:         store.getState,
-    getReviewHistory: buildReviewHistoryFetcher(config.provider.revisionReader),
-  })
-
-  // 4. Create command executor
-  executor = createCommandExecutor({
-    workItemWriter:  config.provider.workItemWriter,
-    revisionWriter:  config.provider.revisionWriter,
-    runtimeAdapters,
-    policy:          config.policy ?? defaultPolicy,
-    getState:        store.getState,
-    enqueue:         queue.enqueue,
-  })
-
-  // 5. Create handlers
-  handlers = createHandlers()
-
-  // 6. Create pollers
-  workItemPoller = createWorkItemPoller({
-    reader:   config.provider.workItemReader,
-    getState: store.getState,
-    enqueue:  queue.enqueue,
-    interval: config.workItemPoller?.pollInterval ?? 30,
-  })
-  revisionPoller = createRevisionPoller({
-    reader:   config.provider.revisionReader,
-    getState: store.getState,
-    enqueue:  queue.enqueue,
-    interval: config.revisionPoller?.pollInterval ?? 30,
-  })
-  specPoller = createSpecPoller({
-    reader:   config.provider.specReader,
-    getState: store.getState,
-    enqueue:  queue.enqueue,
-    interval: config.specPoller?.pollInterval ?? 60,
-  })
-
-  pollers = [workItemPoller, revisionPoller, specPoller]
-
-  // 7. Return Engine
-  return { store, start, stop, enqueue, getState, subscribe,
-           getWorkItemBody, getRevisionFiles, getAgentStream, refresh }
-```
+1. **Create state store** — `createEngineStore()`.
+2. **Create event queue** — `createEventQueue()`.
+3. **Create runtime adapters** — call `config.createRuntimeAdapters(deps)` with `getState` from the
+   store and provider readers from config.
+4. **Create command executor** — `createCommandExecutor(deps)` with provider writers, runtime
+   adapters, policy, `getState`, and `enqueue`.
+5. **Create handlers** — `createHandlers()`.
+6. **Create pollers** — one each for work items, revisions, and specs. Each receives its reader,
+   `getState`, `enqueue`, and a poll interval from config (defaults: 30s, 30s, 60s).
+7. **Return Engine** — the public interface (store, start, stop, enqueue, getState, subscribe,
+   getWorkItemBody, getRevisionFiles, getAgentStream, refresh).
 
 `refresh()` calls `poll()` on each poller directly, outside the interval timer. The pollers enqueue
 events as usual — the processing loop handles them in order.
@@ -213,6 +170,25 @@ events as usual — the processing loop handles them in order.
 the CommandExecutor. No component receives both a reader and writer for the same entity type. This
 is enforced through wiring and TypeScript types — `WorkProviderReader` and `WorkProviderWriter` are
 distinct interfaces.
+
+## Poller Lifecycle
+
+All three pollers (work item, revision, spec) share a common lifecycle protocol.
+
+**First-cycle execution.** Pollers execute their first cycle immediately when `start()` is called —
+direct invocation, awaited. This ensures the state store is populated with current external state
+before interval-based polling begins. See [Startup Sequence](#startup-sequence) for the full startup
+ordering.
+
+**Interval-based polling.** After the first cycle completes, pollers begin interval-based polling.
+Each poller runs independently on its configured interval (see [Configuration](#configuration) for
+defaults).
+
+**Error handling.** Individual item errors within a poll cycle are logged and skipped — they never
+abort the batch. If a single entity fails to process (e.g., a malformed API response for one work
+item), the poller continues processing the remaining entities in that cycle. Provider-level errors
+(e.g., network failure affecting the entire API call) are caught and logged; the poller waits for
+the next interval and retries.
 
 ### Agent Run Handle Map
 
@@ -278,6 +254,10 @@ interface EngineConfig {
   // Engine-owned config
   logLevel?: "debug" | "info" | "error"; // default: 'info'
   shutdownTimeout?: number; // seconds, default: 300
+  logging?: {
+    agentSessions?: boolean; // default: false — enable per-session log files
+    logsDir?: string; // default: './logs' — directory for agent session log files
+  };
   workItemPoller?: {
     pollInterval?: number; // seconds, default: 30
   };
@@ -319,8 +299,8 @@ dedicated spec. The engine spec defines only how components are wired together.
 | Component        | Spec                                                                                   | Engine wiring role                                                     |
 | ---------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | State Store      | [control-plane-engine-state-store.md](./control-plane-engine-state-store.md)           | `createEngineStore()` — loop calls `applyStateUpdate` and `getState`   |
-| WorkItem Poller  | [control-plane-engine-issue-poller.md](./control-plane-engine-issue-poller.md)         | `createWorkItemPoller(config)` — enqueues `WorkItemChanged` events     |
-| Revision Poller  | [control-plane-engine-pr-poller.md](./control-plane-engine-pr-poller.md)               | `createRevisionPoller(config)` — enqueues `RevisionChanged` events     |
+| WorkItem Poller  | [control-plane-engine-work-item-poller.md](./control-plane-engine-work-item-poller.md) | `createWorkItemPoller(config)` — enqueues `WorkItemChanged` events     |
+| Revision Poller  | [control-plane-engine-revision-poller.md](./control-plane-engine-revision-poller.md)   | `createRevisionPoller(config)` — enqueues `RevisionChanged` events     |
 | Spec Poller      | [control-plane-engine-spec-poller.md](./control-plane-engine-spec-poller.md)           | `createSpecPoller(config)` — enqueues `SpecChanged` events             |
 | Handlers         | [control-plane-engine-handlers.md](./control-plane-engine-handlers.md)                 | `createHandlers()` — loop passes events and state snapshots            |
 | Command Executor | [control-plane-engine-command-executor.md](./control-plane-engine-command-executor.md) | `createCommandExecutor(deps)` — loop executes handler-emitted commands |
@@ -328,40 +308,19 @@ dedicated spec. The engine spec defines only how components are wired together.
 
 ### Logging
 
-| Event                    | Level   | Content                                                                                                        |
-| ------------------------ | ------- | -------------------------------------------------------------------------------------------------------------- |
-| Startup                  | `info`  | Configuration summary (polling intervals, log level, adapter roles)                                            |
-| Processing loop event    | `debug` | Event type, identifying fields (workItemID, sessionID, filePath)                                               |
-| Agent dispatch           | `info`  | Agent role, workItemID or specPaths, sessionID                                                                 |
-| Agent dispatch rejected  | `info`  | Agent role, rejection reason (concurrency guard or policy)                                                     |
-| Agent completed          | `info`  | Agent role, workItemID or specPaths, sessionID                                                                 |
-| Agent failed             | `error` | Agent role, error details, sessionID                                                                           |
-| Command execution failed | `error` | Command type, error details                                                                                    |
-| Poller cycle start       | `debug` | Poller name, cycle number                                                                                      |
-| Change detected          | `info`  | Poller name, change type, entity identifier                                                                    |
-| No changes detected      | `debug` | Poller name, cycle number                                                                                      |
-| Provider API error       | `error` | Provider method, error details                                                                                 |
-| Shutdown initiated       | `info`  | Reason                                                                                                         |
-| Shutdown complete        | `info`  | Active runs cancelled count                                                                                    |
-| Agent session transcript | (file)  | See [control-plane-engine-runtime-adapter-claude.md](./control-plane-engine-runtime-adapter-claude.md#logging) |
+The engine logs structured events at `info`, `debug`, and `error` levels covering startup, shutdown,
+processing loop events, agent dispatch/completion/failure, poller cycles, and provider errors. See
+[Agent Session Logging: Log Format](./control-plane-engine-agent-session-logging.md#log-file-format)
+for per-event logging behavior of agent sessions.
 
 ### Error Handling
 
 Error handling follows the architecture defined in
-[control-plane-engine-command-executor.md: Error Handling](./control-plane-engine-command-executor.md#error-handling).
-
-| Error                                 | Behavior                                                                                                             |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Provider call failure (after retries) | CommandExecutor emits `CommandFailed`. Normal event processing handles it.                                           |
-| Concurrency guard violation           | CommandExecutor emits `CommandRejected`. Normal event processing logs it.                                            |
-| Policy rejection                      | CommandExecutor emits `CommandRejected`. Normal event processing logs it.                                            |
-| Agent definition missing / malformed  | Runtime adapter throws during `startAgent`. The `startAgentAsync` monitor catches it and enqueues a `*Failed` event. |
-| Invalid or incomplete EngineConfig    | `createEngine` throws. Missing provider interfaces, runtime adapters, or required config fields.                     |
-
-The engine does not retry failed commands. Recovery from persistent failures is handled through the
+[CommandExecutor: Error Handling](./control-plane-engine-command-executor.md#error-handling). The
+engine does not retry failed commands. Recovery from persistent failures is handled through the
 normal event pipeline — handlers reacting to state changes (e.g. detecting in-progress work items
 with no active run and transitioning them to `pending`). See
-[control-plane-engine-handlers.md: handleOrphanedWorkItem](./control-plane-engine-handlers.md#handleorphanedworkitem).
+[Handlers: handleOrphanedWorkItem](./control-plane-engine-handlers.md#handleorphanedworkitem).
 
 ### Type Definitions
 
@@ -457,10 +416,10 @@ binds the reader method to satisfy the `RuntimeAdapterDeps.getReviewHistory` sig
 
 - [control-plane-engine-state-store.md](./control-plane-engine-state-store.md) —
   `createEngineStore`, `applyStateUpdate`, selectors.
-- [control-plane-engine-issue-poller.md](./control-plane-engine-issue-poller.md) —
+- [control-plane-engine-work-item-poller.md](./control-plane-engine-work-item-poller.md) —
   `createWorkItemPoller`, work item change detection.
-- [control-plane-engine-pr-poller.md](./control-plane-engine-pr-poller.md) — `createRevisionPoller`,
-  revision and pipeline change detection.
+- [control-plane-engine-revision-poller.md](./control-plane-engine-revision-poller.md) —
+  `createRevisionPoller`, revision and pipeline change detection.
 - [control-plane-engine-spec-poller.md](./control-plane-engine-spec-poller.md) — `createSpecPoller`,
   spec file change detection.
 - [control-plane-engine-handlers.md](./control-plane-engine-handlers.md) — `createHandlers`, seven

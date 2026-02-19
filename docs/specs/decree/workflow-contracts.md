@@ -27,11 +27,11 @@ agent specs — this document does not redefine them.
 
 ## Specification
 
-### Agent Result Types
+### Structured Output Index
 
-Agents produce structured output validated by the runtime adapter. Each role has a distinct result
-type — the engine processes these artifacts and does not rely on agents having performed side
-effects.
+Cross-reference index for agent result types. Each role produces a distinct result type validated by
+the runtime adapter — the engine processes these artifacts and does not rely on agents having
+performed side effects.
 
 | Role        | Result Type         | Defined In                                                                                |
 | ----------- | ------------------- | ----------------------------------------------------------------------------------------- |
@@ -71,7 +71,7 @@ Files/modules this task may touch:
 
 Files/modules explicitly excluded:
 
-- path/to/other.ts (owned by #<work-item-id>)
+- path/to/other.ts (owned by <tempID or work-item-id>)
 
 ## Acceptance Criteria
 
@@ -132,9 +132,10 @@ Labels at creation (included in `PlannedWorkItem.labels`):
 - **Type:** `task:refinement`
 - **Status:** `status:pending`
 - **Priority:** One of `priority:high` (default — blocks task creation), `priority:medium` (only if
-  the ambiguous section does not block critical-path work). `priority:low` is not used for
-  refinement items — refinements by definition block task creation and warrant at least medium
-  priority.
+  the ambiguous section does not block critical-path work).
+
+> **Rationale:** `priority:low` is not used for refinement items — refinements by definition block
+> task creation and warrant at least medium priority.
 
 ### Scope Enforcement Rules
 
@@ -149,8 +150,8 @@ enforces them during implementation) and the Reviewer (which audits compliance d
 
 3. **Incidental changes:** Files outside primary scope that were modified as a direct consequence of
    in-scope work. A change qualifies as incidental when all of the following are true:
-   - It is behavior-preserving (no new features, no control-flow changes, no default value changes,
-     no externally observable semantic changes).
+   - It is behavior-preserving (no new features, no control-flow changes, no externally observable
+     semantic changes).
    - It is directly motivated by the in-scope change (e.g., required for compilation, shared helper
      extraction, type updates).
    - It is narrowly scoped and limited to what is necessary.
@@ -173,6 +174,12 @@ enforces them during implementation) and the Reviewer (which audits compliance d
    `blocked` outcome. See
    [agent-implementor.md: Scope Enforcement](./agent-implementor.md#scope-enforcement).
 
+5. **Owner-authorized scope extension** (resume scenarios only): When a human reviewer explicitly
+   authorizes changes to files outside primary scope in their review comments (e.g., "also fix X in
+   file Y"), the agent treats those files as authorized scope for that revision. The agent notes the
+   authorization in the implementation summary for traceability. The Reviewer treats
+   owner-authorized files as effective primary scope — no scope warning is recorded.
+
 When a file outside scope needs non-incidental changes:
 
 - **Implementor:** Produces a `blocked` outcome if it blocks progress, or notes the scope conflict
@@ -193,8 +200,10 @@ When a file outside scope needs non-incidental changes:
 - [ ] Given a scope enforcement decision, when a change qualifies under all three incidental-change
       criteria, then it is permitted without listing the file in "In Scope".
 - [ ] Given a scope enforcement decision, when a change fails any one of the three incidental-change
-      criteria, then the Implementor produces a `blocked` outcome or notes the conflict in the
-      summary (not a silent modification).
+      criteria and the change blocks progress, then the Implementor produces a `blocked` outcome.
+- [ ] Given a scope enforcement decision, when a change fails any one of the three incidental-change
+      criteria and the change does not block progress, then the Implementor notes the conflict in
+      the summary and continues (not a silent modification).
 - [ ] Given a work item whose In Scope list names a file that does not contain the expected code,
       when the correct target is identifiable from reading the codebase and the task intent is
       unambiguous, then the agent treats the correct file as effective primary scope and documents
@@ -207,11 +216,6 @@ When a file outside scope needs non-incidental changes:
 
 - [workflow.md](./workflow.md) — status labels, label taxonomy, lifecycle phases, and quality gates
   referenced by templates
-- [agent-planner.md](./agent-planner.md) — consumes Task Issue Template and Refinement Issue
-  Template for `PlannedWorkItem.body` formatting
-- [agent-implementor.md](./agent-implementor.md) — consumes scope enforcement rules during
-  implementation
-- [agent-reviewer.md](./agent-reviewer.md) — consumes scope enforcement rules during review
 - [domain-model.md](./domain-model.md) — `PlannerResult`, `ImplementorResult`, `ReviewerResult`,
   `AgentReview` type definitions
 - [script-label-setup.md](./script-label-setup.md) — label definitions (names, descriptions, colors)
@@ -219,9 +223,8 @@ When a file outside scope needs non-incidental changes:
 
 ## References
 
-- `docs/specs/decree/domain-model.md` — Agent Results (structured output type definitions)
-- `docs/specs/decree/workflow.md`
-- `docs/specs/decree/agent-planner.md`
-- `docs/specs/decree/agent-implementor.md`
-- `docs/specs/decree/agent-reviewer.md`
-- `docs/specs/decree/script-label-setup.md`
+- [agent-planner.md](./agent-planner.md) — consumes Task Issue Template and Refinement Issue
+  Template for `PlannedWorkItem.body` formatting
+- [agent-implementor.md](./agent-implementor.md) — consumes scope enforcement rules during
+  implementation
+- [agent-reviewer.md](./agent-reviewer.md) — consumes scope enforcement rules during review

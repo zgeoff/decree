@@ -37,7 +37,7 @@ interface EngineState {
 ```
 
 Domain types (`WorkItem`, `Revision`, `Spec`) are defined in
-[domain-model.md: Domain Model](./domain-model.md#domain-model).
+[domain-model.md: Specification](./domain-model.md#specification).
 
 ### AgentRun Variants
 
@@ -82,20 +82,8 @@ type AgentRun = PlannerRun | ImplementorRun | ReviewerRun;
 
 ### AgentRunStatus
 
-```ts
-type AgentRunStatus = "requested" | "running" | "completed" | "failed" | "timed-out" | "cancelled";
-```
-
-**Transition table:**
-
-| From        | Allowed transitions                             |
-| ----------- | ----------------------------------------------- |
-| `requested` | `running`, `cancelled`                          |
-| `running`   | `completed`, `failed`, `timed-out`, `cancelled` |
-| `completed` | _(terminal)_                                    |
-| `failed`    | _(terminal)_                                    |
-| `timed-out` | _(terminal)_                                    |
-| `cancelled` | _(terminal)_                                    |
+See [Domain Model: Agent Run Lifecycle](./domain-model.md#agent-run-lifecycle) for the status enum
+and transition table.
 
 State update functions validate transitions before applying them. Invalid transitions are logged and
 rejected — the store state is not modified.
@@ -145,8 +133,12 @@ const INITIAL_STATE: EngineState = {
 The processing loop calls `applyStateUpdate` for every event before running handlers.
 
 ```ts
-function applyStateUpdate(store: StoreApi<EngineState>, event: EngineEvent): void;
+function applyStateUpdate(store: StoreApi<EngineState>, event: EngineEvent, logger: Logger): void;
 ```
+
+The `logger` parameter is used to log warnings when an invalid state transition is attempted (e.g.,
+a `sessionID` not found in `agentRuns` or a disallowed status transition). The warning is logged and
+the update is rejected — the store state is not modified.
 
 The dispatch is exhaustive — every `EngineEvent` variant has a corresponding entry. Adding a new
 event type without a dispatch entry is a compile error.
@@ -180,18 +172,18 @@ event type without a dispatch entry is a compile error.
 
 **`applyWorkItemChanged(store, event)`:**
 
-1. If `event.newStatus` is `null` (removal), delete `event.workItemID` from `workItems`.
-2. Otherwise, set `workItems[event.workItemID]` to `event.workItem`.
+1. If `event.newStatus` is `null` (removal), call `workItems.delete(event.workItemID)`.
+2. Otherwise, call `workItems.set(event.workItemID, event.workItem)`.
 
 **`applyRevisionChanged(store, event)`:**
 
-1. If `event.newPipelineStatus` is `null` (removal), delete `event.revisionID` from `revisions`.
-2. Otherwise, set `revisions[event.revisionID]` to `event.revision`.
+1. If `event.newPipelineStatus` is `null` (removal), call `revisions.delete(event.revisionID)`.
+2. Otherwise, call `revisions.set(event.revisionID, event.revision)`.
 
 **`applySpecChanged(store, event)`:**
 
-1. Set `specs[event.filePath]` to
-   `{ filePath: event.filePath, blobSHA: event.blobSHA, frontmatterStatus: event.frontmatterStatus }`.
+1. Call
+   `specs.set(event.filePath, { filePath: event.filePath, blobSHA: event.blobSHA, frontmatterStatus: event.frontmatterStatus })`.
 
 #### Agent Lifecycle Update Functions
 
@@ -199,82 +191,50 @@ All agent lifecycle update functions that transition an existing run validate th
 against the transition table before applying. If the `sessionID` is not found in `agentRuns` or the
 transition is invalid, the update is rejected and logged — the store state is not modified.
 
-**`applyPlannerRequested(store, event)`:**
+The three roles (planner, implementor, reviewer) follow an identical lifecycle pattern. The table
+below summarizes each function's behavior; differences are noted in the **Additional Side Effects**
+column.
 
-1. Create a `PlannerRun` entry in `agentRuns` keyed by `event.sessionID`:
-   `{ role: 'planner', sessionID: event.sessionID, status: 'requested', specPaths: event.specPaths, logFilePath: null, error: null, startedAt: <current ISO 8601 timestamp> }`.
+| Function                    | Role          | Status Transition                        | Additional Side Effects                                             |
+| --------------------------- | ------------- | ---------------------------------------- | ------------------------------------------------------------------- |
+| `applyPlannerRequested`     | `planner`     | _(create)_ → `requested`                 | Creates `PlannerRun` with `specPaths` from event                    |
+| `applyPlannerStarted`       | `planner`     | `requested` → `running`                  | Sets `logFilePath`                                                  |
+| `applyPlannerCompleted`     | `planner`     | `running` → `completed`                  | Sets `logFilePath`; updates `lastPlannedSHAs` (see below)           |
+| `applyPlannerFailed`        | `planner`     | current → terminal (derived from reason) | Sets `logFilePath`, `error`; does **not** update `lastPlannedSHAs`  |
+| `applyImplementorRequested` | `implementor` | _(create)_ → `requested`                 | Creates `ImplementorRun` with `workItemID`, `branchName` from event |
+| `applyImplementorStarted`   | `implementor` | `requested` → `running`                  | Sets `logFilePath`                                                  |
+| `applyImplementorCompleted` | `implementor` | `running` → `completed`                  | Sets `logFilePath`                                                  |
+| `applyImplementorFailed`    | `implementor` | current → terminal (derived from reason) | Sets `logFilePath`, `error`                                         |
+| `applyReviewerRequested`    | `reviewer`    | _(create)_ → `requested`                 | Creates `ReviewerRun` with `workItemID`, `revisionID` from event    |
+| `applyReviewerStarted`      | `reviewer`    | `requested` → `running`                  | Sets `logFilePath`                                                  |
+| `applyReviewerCompleted`    | `reviewer`    | `running` → `completed`                  | Sets `logFilePath`                                                  |
+| `applyReviewerFailed`       | `reviewer`    | current → terminal (derived from reason) | Sets `logFilePath`, `error`                                         |
 
-**`applyPlannerStarted(store, event)`:**
+**Common patterns:**
 
-1. Look up the run by `event.sessionID`. Validate transition from current status to `running`.
-2. Set `status` to `'running'` and `logFilePath` to `event.logFilePath`.
+- **`*Requested`** functions create a new `AgentRun` entry in `agentRuns` keyed by
+  `event.sessionID`, with `status: 'requested'`, `logFilePath: null`, `error: null`, and `startedAt`
+  set to the current ISO 8601 timestamp. Role-specific fields are populated from the event (see
+  AgentRun Variants above).
+- **`*Started`** functions look up the run by `event.sessionID`, validate the transition to
+  `running`, and set `logFilePath`.
+- **`*Completed`** functions look up the run, validate the transition to `completed`, and set
+  `logFilePath`.
+- **`*Failed`** functions look up the run, derive the terminal status from `event.reason` (`error` →
+  `failed`, `timeout` → `timed-out`, `cancelled` → `cancelled`), validate the transition, and set
+  `logFilePath` and `error`.
 
-**`applyPlannerCompleted(store, event)`:**
+**`applyPlannerCompleted` — `lastPlannedSHAs` update:**
 
-1. Look up the run by `event.sessionID`. Validate transition from current status to `completed`.
-2. Set `status` to `'completed'` and `logFilePath` to `event.logFilePath`.
-3. For each spec path in the run's `specPaths`, look up the spec in `specs` by file path. If found,
-   set `lastPlannedSHAs[filePath]` to the spec's current `blobSHA`. If the spec is not in the
-   `specs` map, skip it — do not create an entry in `lastPlannedSHAs`.
+For each spec path in the run's `specPaths`, look up the spec in `specs` by file path. If found, set
+`lastPlannedSHAs.set(filePath, spec.blobSHA)`. If the spec is not in the `specs` map, skip it — do
+not create an entry in `lastPlannedSHAs`.
 
 > **Rationale:** Recording planned SHAs at completion time (using current spec blobSHAs from the
 > store) prevents re-dispatch for specs that haven't changed since they were last planned. The
 > planning handler compares incoming `SpecChanged` blobSHAs against these stored values.
-
-**`applyPlannerFailed(store, event)`:**
-
-1. Look up the run by `event.sessionID`. Derive the terminal status from `event.reason`: `error` →
-   `failed`, `timeout` → `timed-out`, `cancelled` → `cancelled`. Validate transition from current
-   status to the derived terminal status.
-2. Set `status` to the derived terminal status, `logFilePath` to `event.logFilePath`, and `error` to
-   `event.error`.
-
-> **Rationale:** `lastPlannedSHAs` is not updated on failure, ensuring the next poll cycle
-> re-detects the approved specs and re-triggers planning.
-
-**`applyImplementorRequested(store, event)`:**
-
-1. Create an `ImplementorRun` entry in `agentRuns` keyed by `event.sessionID`:
-   `{ role: 'implementor', sessionID: event.sessionID, status: 'requested', workItemID: event.workItemID, branchName: event.branchName, logFilePath: null, error: null, startedAt: <current ISO 8601 timestamp> }`.
-
-**`applyImplementorStarted(store, event)`:**
-
-1. Look up the run by `event.sessionID`. Validate transition to `running`.
-2. Set `status` to `'running'` and `logFilePath` to `event.logFilePath`.
-
-**`applyImplementorCompleted(store, event)`:**
-
-1. Look up the run by `event.sessionID`. Validate transition to `completed`.
-2. Set `status` to `'completed'` and `logFilePath` to `event.logFilePath`.
-
-**`applyImplementorFailed(store, event)`:**
-
-1. Look up the run by `event.sessionID`. Derive the terminal status from `event.reason` (same
-   mapping as `applyPlannerFailed`). Validate transition to the derived terminal status.
-2. Set `status` to the derived terminal status, `logFilePath` to `event.logFilePath`, and `error` to
-   `event.error`.
-
-**`applyReviewerRequested(store, event)`:**
-
-1. Create a `ReviewerRun` entry in `agentRuns` keyed by `event.sessionID`:
-   `{ role: 'reviewer', sessionID: event.sessionID, status: 'requested', workItemID: event.workItemID, revisionID: event.revisionID, logFilePath: null, error: null, startedAt: <current ISO 8601 timestamp> }`.
-
-**`applyReviewerStarted(store, event)`:**
-
-1. Look up the run by `event.sessionID`. Validate transition to `running`.
-2. Set `status` to `'running'` and `logFilePath` to `event.logFilePath`.
-
-**`applyReviewerCompleted(store, event)`:**
-
-1. Look up the run by `event.sessionID`. Validate transition to `completed`.
-2. Set `status` to `'completed'` and `logFilePath` to `event.logFilePath`.
-
-**`applyReviewerFailed(store, event)`:**
-
-1. Look up the run by `event.sessionID`. Derive the terminal status from `event.reason` (same
-   mapping as `applyPlannerFailed`). Validate transition to the derived terminal status.
-2. Set `status` to the derived terminal status, `logFilePath` to `event.logFilePath`, and `error` to
-   `event.error`.
+> `lastPlannedSHAs` is not updated on failure, ensuring the next poll cycle re-detects the approved
+> specs and re-triggers planning.
 
 #### Error Update Functions
 

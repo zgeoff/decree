@@ -41,9 +41,10 @@ interface ClaudeAdapterConfig extends RuntimeAdapterConfig {
   defaultBranch: string; // base branch for worktree creation and patch extraction (e.g., 'main')
   contextPaths: string[]; // paths relative to repoRoot (see Project Context Injection)
   bashValidatorHook: BashValidatorHook; // PreToolUse hook for Bash command validation
+  logger: Logger; // adapter-internal logging (session lifecycle, errors, diagnostics)
 }
 
-// createClaudeAdapter(config: ClaudeAdapterConfig, deps: RuntimeAdapterDeps): RuntimeAdapter
+createClaudeAdapter(config: ClaudeAdapterConfig, deps: RuntimeAdapterDeps): RuntimeAdapter
 ```
 
 The factory returns a `RuntimeAdapter`. It loads agent definitions and project context lazily on
@@ -117,7 +118,8 @@ The adapter creates a worktree for Implementor sessions. The `branchName` is pro
 `ImplementorStartParams`.
 
 1. If a worktree already exists at `.worktrees/<branchName>` (stale from a previous interrupted
-   run), remove it via `git worktree remove --force`.
+   run), remove it via `git worktree remove --force`. If removal of the stale worktree fails, the
+   `startAgent` promise rejects with the underlying error.
 2. Create the worktree with a fresh branch:
    `git worktree add .worktrees/<branchName> -B <branchName> <defaultBranch>` (where `defaultBranch`
    comes from the engine config).
@@ -697,14 +699,12 @@ engine/runtime-adapter/
 
 ### Output Stream
 
-- [ ] Given a running agent session producing assistant messages with text content, when the output
-      iterable is consumed, then it yields plain text strings.
-- [ ] Given a running agent session producing tool use and system messages, when the output iterable
-      is consumed, then those messages are not surfaced (only text content is yielded).
-- [ ] Given an agent session completes, when the output iterable is consumed, then the iterable
-      completes (no more values yielded).
+- [ ] Given a running agent session producing SDK `tool_use` and `system` messages, when the output
+      iterable is consumed, then those messages are not surfaced (only text content is yielded).
+- [ ] Given an agent session completes normally, when the output iterable is consumed, then the
+      iterable completes (no hanging iterators).
 - [ ] Given an agent session is cancelled, when the output iterable is being consumed, then the
-      iterable completes.
+      iterable completes promptly after cancellation.
 
 ### Duration Timeout
 

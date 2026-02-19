@@ -43,12 +43,8 @@ the engine populates the initial revision set.
 simultaneously. This is intentional — on startup (or restart), the engine should bring the system to
 the correct state via normal event processing.
 
-**First-cycle execution:** `Engine.start()` runs the first poll cycle of each poller as a direct
-invocation, not via the interval timer. It awaits all first cycles before resolving. Interval-based
-polling begins after the first cycles complete.
-
-> **Rationale:** This ensures the state store is populated with the initial revision set before
-> `start()` resolves.
+**First-cycle execution:** Follows the standard poller lifecycle. See
+[Engine: Poller Lifecycle](./control-plane-engine.md#poller-lifecycle).
 
 ### Diff Logic
 
@@ -101,20 +97,15 @@ RevisionChanged {
 }
 ```
 
-> **Rationale:** Symmetric with WorkItem removal (`newStatus: null`). Without removal events, closed
-> or merged revisions would accumulate in `EngineState.revisions` indefinitely within a session. The
-> store is rebuilt on restart via the initial poll burst, but within a long-running session stale
-> entries would grow unbounded. Emitting removal events lets the state update clean them out. The
-> cost is minimal — one extra diff case using the same pattern as the WorkItem poller.
+> **Rationale:** Without removal events, closed or merged revisions would accumulate in
+> `EngineState.revisions` indefinitely within a session. The store is rebuilt on restart via the
+> initial poll burst, but within a long-running session stale entries would grow unbounded. Emitting
+> removal events lets the state update clean them out.
 
 ### Error Handling
 
-If `reader.listRevisions()` fails (after provider-internal retries are exhausted), the poll cycle is
-skipped — no events are emitted. The error is logged. The next interval-triggered poll cycle
-proceeds normally.
-
-> **Rationale:** Provider-internal retry handles transient failures. If the call still fails, the
-> poller skips the cycle rather than emitting events based on stale or partial data.
+Follows the standard poller error handling protocol. See
+[Engine: Poller Lifecycle](./control-plane-engine.md#poller-lifecycle).
 
 ### Type Definitions
 
@@ -167,6 +158,8 @@ engine/pollers/
 - [ ] Given a revision's `pipeline` is `null` in both the provider result and the store, when the
       poller diffs, then both `oldPipelineStatus` and `newPipelineStatus` are `null` in the emitted
       event.
+- [ ] Given `stop()` is called while a poll is in-flight, when the poll completes, then no further
+      polls are scheduled.
 
 ## Dependencies
 

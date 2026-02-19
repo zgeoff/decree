@@ -30,7 +30,7 @@ leak past the provider — all consumers operate on domain types only.
 ### Provider Interfaces
 
 Five interfaces define the provider contract. They are provider-agnostic — they reference only
-domain types defined in [domain-model.md: Domain Model](./domain-model.md#domain-model).
+domain types defined in [domain-model.md: Specification](./domain-model.md#specification).
 
 #### WorkProviderReader
 
@@ -81,7 +81,9 @@ interface RevisionProviderReader {
 
 - `listRevisions` — returns all open revisions (including drafts) with pipeline status and linkage
   populated.
-- `getRevision` — returns a single revision by id. Returns `null` if not found.
+- `getRevision` — returns a single revision by id. Returns `null` if not found. On single-fetch,
+  `pipeline` and `reviewID` are always `null` — CI status and bot review resolution are only
+  performed by `listRevisions`.
 - `getRevisionFiles` — returns the changed files for a revision (on-demand detail fetch).
 - `getReviewHistory` — returns all reviews and inline comments for a revision. Maps GitHub review
   data to the domain `ReviewHistory` type defined in
@@ -137,7 +139,7 @@ included — consumers see the path and status, but no diff content.
 ### createGitHubProvider
 
 ```ts
-function createGitHubProvider(config: GitHubProviderConfig): GitHubProvider;
+async function createGitHubProvider(config: GitHubProviderConfig): Promise<GitHubProvider>;
 
 interface GitHubProviderConfig {
   appID: number;
@@ -161,9 +163,9 @@ interface GitHubProvider {
 The factory creates a single Octokit instance (with `@octokit/auth-app` as the authentication
 strategy) and constructs all five interface objects sharing it.
 
-At creation time, the factory resolves the authenticated app's bot username (`{appSlug}[bot]`) via
-the GitHub App API (`GET /app`). This username is used to identify engine-posted reviews when
-populating `Revision.reviewID`.
+The factory is `async` because it resolves the authenticated app's bot username (`{appSlug}[bot]`)
+via the GitHub App API (`GET /app`) at construction time. This username is used to identify
+engine-posted reviews when populating `Revision.reviewID`.
 
 > **Rationale:** A single Octokit instance ensures consistent authentication and rate limit
 > budgeting across all provider operations.
@@ -246,7 +248,7 @@ Reviews with `state: 'PENDING'` are excluded — only submitted reviews are retu
 | `author`                  | `comment.user.login ?? ''` |
 | `body`                    | `comment.body`             |
 
-**`pipeline` caching:** The GitHub provider may cache the last-seen head SHA and pipeline status per
+**`pipeline` caching:** The GitHub provider caches the last-seen head SHA and pipeline status per
 revision internally to skip redundant CI fetches when the SHA is unchanged and the pipeline status
 is `success`.
 
@@ -266,7 +268,7 @@ by joining the configured `specsDir` with the tree entry's relative path.
 
 Files without parseable YAML frontmatter are included with `frontmatterStatus: 'draft'`.
 
-**Tree SHA optimization:** The provider may cache the tree SHA of the specs directory internally. If
+**Tree SHA optimization:** The provider caches the tree SHA of the specs directory internally. If
 the tree SHA is unchanged from the last call, `listSpecs` returns the previous result without
 re-fetching individual file content.
 
@@ -383,11 +385,8 @@ blank line. If `blockedBy` is empty, no comment is appended.
 populates `WorkItem.blockedBy` with the extracted issue numbers as strings (without `#` prefix). If
 no metadata comment is present, `blockedBy` is `[]`.
 
-**Update behavior** (`updateWorkItem`): When `body` is non-null, the provider replaces only the
-content portion of the issue body while preserving the existing dependency metadata comment. Steps:
-(1) fetch the current body, (2) extract the existing metadata comment (if any), (3) write the new
-body with the existing metadata re-appended. When `body` is `null`, the body (including metadata) is
-left unchanged.
+**Update behavior** (`updateWorkItem`): Body updates preserve existing dependency metadata. See
+[updateWorkItem](#updateworkitem) for the full step sequence.
 
 **Body access** (`getWorkItemBody`): Strips the metadata comment before returning the body. The
 caller receives clean content without provider-internal metadata.
@@ -424,9 +423,9 @@ At the provider boundary, nullable GitHub API fields are coerced to non-nullable
 1. If `body` is non-null: a. Fetch the issue's current body. b. Extract the existing dependency
    metadata comment (if any). c. Update the issue body to: new body + existing metadata comment
    (re-appended after a blank line).
-2. If `labels` is non-null: a. Replace all non-reserved labels on the issue with the provided
-   labels. b. Reserved labels (`task:*`, `status:*`) are preserved — the provider does not remove or
-   overwrite them via `updateWorkItem`.
+2. If `labels` is non-null: a. Remove all existing non-reserved labels from the issue, then apply
+   the provided labels. b. Reserved labels (`task:*`, `status:*`) are preserved — the provider does
+   not remove or overwrite them via `updateWorkItem`.
 
 > **Rationale:** Preserving dependency metadata across body updates prevents silent data loss.
 > Preserving reserved labels prevents `updateWorkItem` from interfering with status transitions and
@@ -499,9 +498,6 @@ Posts a standalone comment (not a review) on the PR via `issues.createComment`.
 
 ### Retry Strategy
 
-All provider methods retry transient failures internally. Callers never see transient errors — calls
-either succeed or fail permanently after retries are exhausted.
-
 | Parameter              | Value                             |
 | ---------------------- | --------------------------------- |
 | Retryable status codes | `429`, `500`, `502`, `503`, `504` |
@@ -517,13 +513,14 @@ Non-retryable errors (4xx other than 429) propagate immediately.
 
 ### Error Behavior for Detail Fetches
 
-Detail-fetch methods (`getWorkItem`, `getWorkItemBody`, `getRevision`, `getRevisionFiles`) operate
-on a single resource by ID. If the resource does not exist, the GitHub API returns a `404`.
+Detail-fetch methods (`getWorkItem`, `getWorkItemBody`, `getRevision`, `getRevisionFiles`,
+`getReviewHistory`) operate on a single resource by ID. If the resource does not exist, the GitHub
+API returns a `404`.
 
 - `getWorkItem` and `getRevision` return `null` on `404` (as declared in their return types).
-- `getWorkItemBody` and `getRevisionFiles` throw on `404` — callers are expected to verify the
-  resource exists before calling these methods. The `404` propagates as a non-retryable error per
-  the [Retry Strategy](#retry-strategy).
+- `getWorkItemBody`, `getRevisionFiles`, and `getReviewHistory` throw on `404` — callers are
+  expected to verify the resource exists before calling these methods. The `404` propagates as a
+  non-retryable error per the [Retry Strategy](#retry-strategy).
 
 For `listSpecs`, if any individual file content fetch fails after retries are exhausted, the entire
 `listSpecs` call fails — there is no partial-success model.
@@ -730,8 +727,9 @@ engine/github-provider/
 ## Known Limitations
 
 - **Pagination capped at 100 items per call.** All list endpoints (`issues.listForRepo`,
-  `pulls.list`, `pulls.listFiles`, `pulls.listReviews`) use `per_page: 100` without pagination.
-  Repositories exceeding this limit will have results silently truncated.
+  `pulls.list`, `pulls.listFiles`, `pulls.listReviews`, `checks.listForRef`,
+  `pulls.listReviewComments`) use `per_page: 100` without pagination. Repositories exceeding this
+  limit will have results silently truncated.
 - **`linkedRevision` cross-reference requires PR data.** `listWorkItems` internally fetches the PR
   list to resolve `linkedRevision`. This adds API calls beyond what the issue list alone requires.
 - **`updateReview` replaces rather than patches.** Due to GitHub API limitations, `updateReview`

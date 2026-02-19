@@ -47,9 +47,10 @@ invokes it before each Bash tool call, passing JSON on stdin:
 
 The script extracts the command from `tool_input.command` using `jq`. The `jq` invocation must be
 error-trapped so that a `jq` failure (malformed JSON, missing `jq` binary) exits 1, not whatever
-exit code `jq` returns. This is required because `jq` can exit 2 on usage errors, which would be
-misinterpreted as an intentional block. If the field is missing or empty, the script exits 0
-(allow).
+exit code `jq` returns. If the field is missing or empty, the script exits 0 (allow).
+
+> **Rationale:** `jq` can exit 2 on usage errors, which would be misinterpreted as an intentional
+> block.
 
 ### Exit Codes
 
@@ -58,9 +59,6 @@ misinterpreted as an intentional block. If the field is missing or empty, the sc
 | `0`  | Allow        | Command proceeds to execution                                                                                |
 | `1`  | Script error | Validator itself failed (e.g., `jq` not installed, malformed input). Must NOT be used for intentional blocks |
 | `2`  | Block        | Command is rejected. Error message on stderr is fed back to the agent                                        |
-
-The script must not exit 2 for internal errors. Exit 2 is reserved exclusively for commands that
-fail validation.
 
 ### Validation Logic
 
@@ -104,19 +102,6 @@ net that `bypassPermissions` alone does not.
 The validator has a BATS test suite at `scripts/workflow/validate-bash.test.sh`. The test file
 exercises every acceptance criterion in this spec and the core spec. See
 [Bash Testing](../_repo/bash-testing.md) for BATS installation and test runner details.
-
-The test file defines a `run_validator` helper function that constructs the JSON envelope expected
-by the hook contract and pipes it to the validator on stdin. The helper accepts a raw command
-string, wraps it in `{"tool_name":"Bash","tool_input":{"command":"<command>"}}` using `jq --arg` for
-safe JSON encoding (handles quotes, backslashes, newlines), and invokes the validator. Tests assert
-against `$status` (exit code) and `$output` (combined stdout/stderr captured by BATS `run`). This is
-sufficient for verifying error message content because the validator writes nothing to stdout — all
-block messages go to stderr, and allowed commands produce no output at all.
-
-Each acceptance criterion maps to one or more `@test` blocks. Tests are grouped by comment headers
-matching the acceptance criteria categories. The "Script Errors" tests that verify behavior when
-`jq` is unavailable simulate the missing binary by temporarily overriding `PATH` to exclude `jq`
-within the test.
 
 ## Acceptance Criteria
 
