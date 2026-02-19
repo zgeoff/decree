@@ -70,7 +70,7 @@ yarn lint           # Lint all packages
 yarn format         # Format code with Biome
 yarn format:check   # Check formatting without decreeing
 yarn check          # Lint, format, typecheck, test, and shell tests (CI validation)
-yarn check:decreee    # Same as check but auto-fixes format and lint issues first
+yarn check:write    # Same as check but auto-fixes format and lint issues first
 yarn typecheck      # TypeScript type checking
 ```
 
