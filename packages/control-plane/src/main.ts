@@ -1,15 +1,11 @@
-import { loadConfig } from './engine/config/load-config.ts';
-import { createEngine } from './engine/create-engine.ts';
-import { renderApp } from './tui/index.tsx';
-
+// TODO: Wire v2 engine (createEngineV2) with config loader (loadConfig).
+// The old createEngine returns the v1 Engine interface, but the TUI now expects
+// the v2 Engine interface. A config adapter bridging ResolvedEngineConfig to
+// v2 EngineConfig is needed.
 async function main(): Promise<void> {
-  const config = await loadConfig();
-  const engine = createEngine(config);
-  const { waitUntilExit } = renderApp({
-    engine,
-    repository: config.repository,
-  });
-  await waitUntilExit();
+  // Not yet wired — see TODO above
 }
+
+export {};
 
 await main();

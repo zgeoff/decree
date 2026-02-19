@@ -292,16 +292,17 @@ interface EngineConfig {
 
 The engine's configuration contains only engine-owned concerns: polling intervals, shutdown timeout,
 and log level. All implementation-specific configuration — GitHub credentials, repository path,
-runtime adapter settings, agent names, logging directories — is the caller's responsibility. The
-caller constructs providers with their implementation-specific config and passes the resulting
-interfaces to the engine.
+runtime adapter settings, agent names, logging directories — belongs in the config file
+(`control-plane.config.ts`), which constructs providers and adapter factories and passes them as
+pre-built interfaces. See [control-plane.md: Configuration](./control-plane.md#configuration) for
+the config file contract.
 
 `provider` carries five interfaces that the engine threads to pollers (readers) and the
 CommandExecutor (writers). `createRuntimeAdapters` is a factory function that receives
 `RuntimeAdapterDeps` (defined in
 [control-plane-engine-runtime-adapter.md](./control-plane-engine-runtime-adapter.md)) and returns
 per-role adapters. The engine calls this factory during construction, after the state store exists,
-providing `getState`, provider readers, and `getReviewHistory`. The caller's factory closure
+providing `getState`, provider readers, and `getReviewHistory`. The config file's factory closure
 captures adapter-specific config (e.g. `ClaudeAdapterConfig`). Both `provider` and
 `createRuntimeAdapters` are required — the engine cannot operate without them.
 

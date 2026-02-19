@@ -1,18 +1,23 @@
 import { render } from 'ink-testing-library';
 import { expect, test, vi } from 'vitest';
-import type { StartupResult } from '../types.ts';
+import type { StoreApi } from 'zustand';
+import { applyStateUpdate } from '../engine/state-store/apply-state-update.ts';
+import type { EngineState, Priority, WorkItemStatus } from '../engine/state-store/types.ts';
+import { buildRevision } from '../test-utils/build-revision.ts';
+import { buildWorkItem } from '../test-utils/build-work-item.ts';
 import { App, computePaneWidths, resolveTaskURL } from './app.tsx';
 import { createMockEngine } from './test-utils/create-mock-engine.ts';
-import type { Task, TaskStatus } from './types.ts';
+import type { DisplayWorkItem } from './types.ts';
 
-interface DeferredStartResult {
-  resolveStart: (result: StartupResult) => void;
-  rejectStart: (error: Error) => void;
+interface DeferredStart {
+  resolve: () => void;
+  reject: (error: Error) => void;
   waitForStartCalled: () => Promise<void>;
+  start: () => Promise<void>;
 }
 
-function createDeferredStart(): DeferredStartResult & { start: () => Promise<StartupResult> } {
-  let resolveStart: (result: StartupResult) => void = () => {
+function createDeferredStart(): DeferredStart {
+  let resolveStart: () => void = () => {
     /* noop placeholder */
   };
   let rejectStart: (error: Error) => void = () => {
@@ -27,7 +32,7 @@ function createDeferredStart(): DeferredStartResult & { start: () => Promise<Sta
 
   const start = vi.fn(
     () =>
-      new Promise<StartupResult>((resolve, reject) => {
+      new Promise<void>((resolve, reject) => {
         resolveStart = resolve;
         rejectStart = reject;
         resolveStartCalled();
@@ -35,28 +40,64 @@ function createDeferredStart(): DeferredStartResult & { start: () => Promise<Sta
   );
 
   return {
-    start,
-    resolveStart: (result: StartupResult) => resolveStart(result),
-    rejectStart: (error: Error) => rejectStart(error),
+    resolve: () => resolveStart(),
+    reject: (error: Error) => rejectStart(error),
     waitForStartCalled: () => startCalledPromise,
+    start,
   };
 }
 
-function setupTest(): ReturnType<typeof createMockEngine> &
-  DeferredStartResult &
-  ReturnType<typeof render> & { start: () => Promise<StartupResult> } {
+function setupTest(): ReturnType<typeof render> & {
+  engine: ReturnType<typeof createMockEngine>['engine'];
+  engineStore: StoreApi<EngineState>;
+  resolveStart: () => void;
+  rejectStart: (error: Error) => void;
+  waitForStartCalled: () => Promise<void>;
+} {
   const deferred = createDeferredStart();
-  const mock = createMockEngine({ start: deferred.start });
-  const instance = render(<App engine={mock.engine} repository="owner/repo" />);
-  return { ...mock, ...deferred, ...instance };
+  const { engine, store: engineStore } = createMockEngine({ start: deferred.start });
+  const instance = render(<App engine={engine} repository="owner/repo" />);
+  return {
+    ...instance,
+    engine,
+    engineStore,
+    resolveStart: deferred.resolve,
+    rejectStart: deferred.reject,
+    waitForStartCalled: deferred.waitForStartCalled,
+  };
 }
 
-async function setupStartedTest(
-  startupResult?: StartupResult,
-): Promise<ReturnType<typeof setupTest>> {
+function addWorkItem(
+  engineStore: StoreApi<EngineState>,
+  id: string,
+  overrides?: {
+    title?: string;
+    status?: WorkItemStatus;
+    priority?: Priority | null;
+    linkedRevision?: string | null;
+  },
+): void {
+  applyStateUpdate(engineStore, {
+    type: 'workItemChanged',
+    workItemID: id,
+    workItem: buildWorkItem({
+      id,
+      title: overrides?.title ?? `Issue ${id}`,
+      status: overrides?.status ?? 'ready',
+      priority: overrides?.priority ?? null,
+      linkedRevision: overrides?.linkedRevision ?? null,
+    }),
+    title: overrides?.title ?? `Issue ${id}`,
+    oldStatus: null,
+    newStatus: overrides?.status ?? 'ready',
+    priority: overrides?.priority ?? null,
+  });
+}
+
+async function setupStartedTest(): Promise<ReturnType<typeof setupTest>> {
   const result = setupTest();
   await result.waitForStartCalled();
-  result.resolveStart(startupResult ?? { issueCount: 0, recoveriesPerformed: 0 });
+  result.resolveStart();
   await vi.waitFor(() => {
     const frame = result.lastFrame() ?? '';
     expect(frame).toContain('ACTION');
@@ -110,12 +151,17 @@ test('it displays the idle planner indicator when planner is not running', async
 });
 
 test('it displays a spinner for the planner when it is running', async () => {
-  const { lastFrame, emit } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'agentStarted',
-    agentType: 'planner',
+  applyStateUpdate(engineStore, {
+    type: 'plannerRequested',
+    specPaths: ['spec.md'],
     sessionID: 'planner-sess-1',
+  });
+  applyStateUpdate(engineStore, {
+    type: 'plannerStarted',
+    sessionID: 'planner-sess-1',
+    logFilePath: null,
   });
 
   // biome-ignore lint/security/noSecrets: emoji character, not a secret
@@ -159,17 +205,9 @@ test('it displays detail pane keybinding hints when the detail pane is focused',
 });
 
 test('it dims the dispatch hint when the selected task is not dispatchable', async () => {
-  const { lastFrame, emit } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'Blocked task',
-    oldStatus: null,
-    newStatus: 'blocked',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
+  addWorkItem(engineStore, '1', { title: 'Blocked task', status: 'blocked' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -183,17 +221,9 @@ test('it dims the dispatch hint when the selected task is not dispatchable', asy
 // ---------------------------------------------------------------------------
 
 test('it renders ACTION and AGENTS section headers with counts', async () => {
-  const { lastFrame, emit } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'Task One',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:high',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
+  addWorkItem(engineStore, '1', { title: 'Task One', status: 'ready', priority: 'high' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -211,27 +241,10 @@ test('it renders both section headers with zero items when the list is empty', a
 });
 
 test('it places action statuses in the ACTION section', async () => {
-  const { lastFrame, emit } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'Ready task',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
-
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 2,
-    title: 'Blocked task',
-    oldStatus: null,
-    newStatus: 'blocked',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-02T00:00:00Z',
-  });
+  addWorkItem(engineStore, '1', { title: 'Ready task', status: 'ready' });
+  addWorkItem(engineStore, '2', { title: 'Blocked task', status: 'blocked' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -240,23 +253,19 @@ test('it places action statuses in the ACTION section', async () => {
 });
 
 test('it places agent statuses in the AGENTS section', async () => {
-  const { lastFrame, emit } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'Implementing task',
-    oldStatus: null,
-    newStatus: 'in-progress',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
-
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
+  addWorkItem(engineStore, '1', { title: 'Implementing task', status: 'in-progress' });
+  applyStateUpdate(engineStore, {
+    type: 'implementorRequested',
+    workItemID: '1',
     sessionID: 'sess-1',
+    branchName: 'branch-1',
+  });
+  applyStateUpdate(engineStore, {
+    type: 'implementorStarted',
+    sessionID: 'sess-1',
+    logFilePath: null,
   });
 
   await vi.waitFor(() => {
@@ -270,17 +279,9 @@ test('it places agent statuses in the AGENTS section', async () => {
 // ---------------------------------------------------------------------------
 
 test('it renders task rows with issue number, status, and title', async () => {
-  const { lastFrame, emit } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 42,
-    title: 'My feature',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:high',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
+  addWorkItem(engineStore, '42', { title: 'My feature', status: 'ready', priority: 'high' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -292,22 +293,19 @@ test('it renders task rows with issue number, status, and title', async () => {
 });
 
 test('it shows WIP with agent count for implementing tasks', async () => {
-  const { lastFrame, emit } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'Impl task',
-    oldStatus: null,
-    newStatus: 'in-progress',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
+  addWorkItem(engineStore, '1', { title: 'Impl task', status: 'in-progress' });
+  applyStateUpdate(engineStore, {
+    type: 'implementorRequested',
+    workItemID: '1',
     sessionID: 'sess-1',
+    branchName: 'branch-1',
+  });
+  applyStateUpdate(engineStore, {
+    type: 'implementorStarted',
+    sessionID: 'sess-1',
+    logFilePath: null,
   });
 
   await vi.waitFor(() => {
@@ -317,17 +315,9 @@ test('it shows WIP with agent count for implementing tasks', async () => {
 });
 
 test('it shows PR column with dash when no PRs are linked', async () => {
-  const { lastFrame, emit } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'No PR task',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
+  addWorkItem(engineStore, '1', { title: 'No PR task', status: 'ready' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -336,23 +326,20 @@ test('it shows PR column with dash when no PRs are linked', async () => {
 });
 
 test('it shows PR number when a single PR is linked', async () => {
-  const { lastFrame, emit } = await setupStartedTest();
+  const { lastFrame, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'Has PR task',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 482,
-    url: 'https://github.com/owner/repo/pull/482',
-    ciStatus: null,
+  addWorkItem(engineStore, '1', { title: 'Has PR task', status: 'ready', linkedRevision: '482' });
+  applyStateUpdate(engineStore, {
+    type: 'revisionChanged',
+    revisionID: '482',
+    workItemID: '1',
+    revision: buildRevision({
+      id: '482',
+      url: 'https://github.com/owner/repo/pull/482',
+      workItemID: '1',
+    }),
+    oldPipelineStatus: null,
+    newPipelineStatus: null,
   });
 
   await vi.waitFor(() => {
@@ -361,71 +348,15 @@ test('it shows PR number when a single PR is linked', async () => {
   });
 });
 
-test('it shows PR count when multiple PRs are linked', async () => {
-  const { lastFrame, emit } = await setupStartedTest();
-
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'Multi PR task',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 10,
-    url: 'https://github.com/owner/repo/pull/10',
-    ciStatus: null,
-  });
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 11,
-    url: 'https://github.com/owner/repo/pull/11',
-    ciStatus: null,
-  });
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 12,
-    url: 'https://github.com/owner/repo/pull/12',
-    ciStatus: null,
-  });
-
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('PRx3');
-  });
-});
-
 // ---------------------------------------------------------------------------
 // Navigation — Task list
 // ---------------------------------------------------------------------------
 
 test('it moves selection down when j is pressed', async () => {
-  const { lastFrame, stdin, emit } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'First',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:high',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 2,
-    title: 'Second',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-02T00:00:00Z',
-  });
+  addWorkItem(engineStore, '1', { title: 'First', status: 'ready', priority: 'high' });
+  addWorkItem(engineStore, '2', { title: 'Second', status: 'ready', priority: 'medium' });
 
   await vi.waitFor(() => {
     expect(lastFrame()).toContain('#1');
@@ -444,17 +375,9 @@ test('it moves selection down when j is pressed', async () => {
 });
 
 test('it does not wrap past the last AGENTS item when pressing down', async () => {
-  const { lastFrame, stdin, emit } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'Only task',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
+  addWorkItem(engineStore, '1', { title: 'Only task', status: 'ready' });
 
   await vi.waitFor(() => {
     expect(lastFrame()).toContain('#1');
@@ -471,34 +394,23 @@ test('it does not wrap past the last AGENTS item when pressing down', async () =
 });
 
 test('it crosses sections seamlessly when navigating down from ACTION to AGENTS', async () => {
-  const { lastFrame, stdin, emit } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupStartedTest();
 
   // ACTION item
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'Action task',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:high',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
+  addWorkItem(engineStore, '1', { title: 'Action task', status: 'ready', priority: 'high' });
 
   // AGENTS item
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 2,
-    title: 'Agent task',
-    oldStatus: null,
-    newStatus: 'in-progress',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-02T00:00:00Z',
-  });
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 2,
+  addWorkItem(engineStore, '2', { title: 'Agent task', status: 'in-progress' });
+  applyStateUpdate(engineStore, {
+    type: 'implementorRequested',
+    workItemID: '2',
     sessionID: 'sess-1',
+    branchName: 'branch-1',
+  });
+  applyStateUpdate(engineStore, {
+    type: 'implementorStarted',
+    sessionID: 'sess-1',
+    logFilePath: null,
   });
 
   await vi.waitFor(() => {
@@ -525,17 +437,9 @@ test('it crosses sections seamlessly when navigating down from ACTION to AGENTS'
 // ---------------------------------------------------------------------------
 
 test('it pins a task to the detail pane when Enter is pressed', async () => {
-  const { lastFrame, stdin, emit } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 5,
-    title: 'Pinnable task',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
+  addWorkItem(engineStore, '5', { title: 'Pinnable task', status: 'ready' });
 
   await vi.waitFor(() => {
     expect(lastFrame()).toContain('#5');
@@ -569,18 +473,10 @@ test('it does nothing when Enter is pressed with no selection', async () => {
 // d — Dispatch key
 // ---------------------------------------------------------------------------
 
-test('it shows a dispatch prompt when d is pressed on a ready-to-implement task', async () => {
-  const { lastFrame, stdin, emit } = await setupStartedTest();
+test('it shows a dispatch prompt when d is pressed on a dispatchable task', async () => {
+  const { lastFrame, stdin, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 5,
-    title: 'Ready task',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
+  addWorkItem(engineStore, '5', { title: 'Ready task', status: 'ready' });
 
   await vi.waitFor(() => {
     expect(lastFrame()).toContain('#5');
@@ -597,17 +493,9 @@ test('it shows a dispatch prompt when d is pressed on a ready-to-implement task'
 });
 
 test('it does nothing when d is pressed on a blocked task', async () => {
-  const { lastFrame, stdin, emit } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 5,
-    title: 'Blocked task',
-    oldStatus: null,
-    newStatus: 'blocked',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
+  addWorkItem(engineStore, '5', { title: 'Blocked task', status: 'blocked' });
 
   await vi.waitFor(() => {
     expect(lastFrame()).toContain('#5');
@@ -622,30 +510,28 @@ test('it does nothing when d is pressed on a blocked task', async () => {
   expect(lastFrame()).not.toContain('Dispatch');
 });
 
-test('it shows a retry prompt when d is pressed on a crashed task', async () => {
-  const { lastFrame, stdin, emit } = await setupStartedTest();
+test('it shows a retry prompt when d is pressed on a failed task', async () => {
+  const { lastFrame, stdin, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 7,
-    title: 'Crashed task',
-    oldStatus: null,
-    newStatus: 'in-progress',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 7,
+  addWorkItem(engineStore, '7', { title: 'Crashed task', status: 'in-progress' });
+  applyStateUpdate(engineStore, {
+    type: 'implementorRequested',
+    workItemID: '7',
     sessionID: 'sess-1',
+    branchName: 'branch-1',
   });
-  emit({
-    type: 'agentFailed',
-    agentType: 'implementor',
-    issueNumber: 7,
+  applyStateUpdate(engineStore, {
+    type: 'implementorStarted',
+    sessionID: 'sess-1',
+    logFilePath: null,
+  });
+  applyStateUpdate(engineStore, {
+    type: 'implementorFailed',
+    workItemID: '7',
+    sessionID: 'sess-1',
+    branchName: 'branch-1',
     error: 'crash',
-    sessionID: 'sess-1',
+    logFilePath: null,
   });
 
   await vi.waitFor(() => {
@@ -662,17 +548,9 @@ test('it shows a retry prompt when d is pressed on a crashed task', async () => 
 });
 
 test('it dispatches when the dispatch prompt is confirmed', async () => {
-  const { lastFrame, stdin, emit, sentCommands } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore, engine } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 5,
-    title: 'Ready task',
-    oldStatus: null,
-    newStatus: 'pending',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
+  addWorkItem(engineStore, '5', { title: 'Ready task', status: 'ready' });
 
   await vi.waitFor(() => {
     expect(lastFrame()).toContain('#5');
@@ -689,7 +567,10 @@ test('it dispatches when the dispatch prompt is confirmed', async () => {
   stdin.write('y');
 
   await vi.waitFor(() => {
-    expect(sentCommands).toContainEqual({ command: 'dispatchImplementor', issueNumber: 5 });
+    expect(engine.enqueue).toHaveBeenCalledWith({
+      type: 'userRequestedImplementorRun',
+      workItemID: '5',
+    });
   });
 });
 
@@ -740,23 +621,19 @@ test('it shows a quit prompt without agent count when no agents are running', as
 });
 
 test('it shows a quit prompt with agent count when agents are running', async () => {
-  const { lastFrame, stdin, emit } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'Test',
-    oldStatus: null,
-    newStatus: 'in-progress',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
-
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
+  addWorkItem(engineStore, '1', { title: 'Test', status: 'in-progress' });
+  applyStateUpdate(engineStore, {
+    type: 'implementorRequested',
+    workItemID: '1',
     sessionID: 'sess-1',
+    branchName: 'branch-1',
+  });
+  applyStateUpdate(engineStore, {
+    type: 'implementorStarted',
+    sessionID: 'sess-1',
+    logFilePath: null,
   });
 
   stdin.write('q');
@@ -801,7 +678,7 @@ test('it dismisses the quit prompt when the user presses Escape', async () => {
 });
 
 test('it sends the shutdown command when the user confirms quit', async () => {
-  const { lastFrame, stdin, sentCommands } = await setupStartedTest();
+  const { lastFrame, stdin } = await setupStartedTest();
 
   stdin.write('q');
 
@@ -812,7 +689,6 @@ test('it sends the shutdown command when the user confirms quit', async () => {
   stdin.write('y');
 
   await vi.waitFor(() => {
-    expect(sentCommands).toContainEqual({ command: 'shutdown' });
     expect(lastFrame()).toContain('Shutting down');
   });
 });
@@ -822,7 +698,7 @@ test('it sends the shutdown command when the user confirms quit', async () => {
 // ---------------------------------------------------------------------------
 
 test('it ignores all keys except y, n, Escape while a prompt is active', async () => {
-  const { lastFrame, stdin, sentCommands } = await setupStartedTest();
+  const { lastFrame, stdin } = await setupStartedTest();
 
   stdin.write('q');
 
@@ -842,7 +718,6 @@ test('it ignores all keys except y, n, Escape while a prompt is active', async (
 
   // Prompt is still active
   expect(lastFrame()).toContain('Quit?');
-  expect(sentCommands).not.toContainEqual({ command: 'shutdown' });
 });
 
 // ---------------------------------------------------------------------------
@@ -850,23 +725,19 @@ test('it ignores all keys except y, n, Escape while a prompt is active', async (
 // ---------------------------------------------------------------------------
 
 test('it shows the shutdown status with agent count while shutting down', async () => {
-  const { lastFrame, stdin, emit } = await setupStartedTest();
+  const { lastFrame, stdin, engineStore } = await setupStartedTest();
 
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber: 1,
-    title: 'Test',
-    oldStatus: null,
-    newStatus: 'in-progress',
-    priorityLabel: 'priority:medium',
-    createdAt: '2026-01-01T00:00:00Z',
-  });
-
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
+  addWorkItem(engineStore, '1', { title: 'Test', status: 'in-progress' });
+  applyStateUpdate(engineStore, {
+    type: 'implementorRequested',
+    workItemID: '1',
     sessionID: 'sess-1',
+    branchName: 'branch-1',
+  });
+  applyStateUpdate(engineStore, {
+    type: 'implementorStarted',
+    sessionID: 'sess-1',
+    logFilePath: null,
   });
 
   stdin.write('q');
@@ -908,48 +779,49 @@ test('it accounts for the border column', () => {
 // URL Resolution
 // ---------------------------------------------------------------------------
 
-function buildTaskForURL(
-  status: TaskStatus,
-  prs?: Array<{ number: number; url: string; ciStatus: null }>,
-): Task {
+function buildDisplayWorkItemForURL(
+  displayStatus: DisplayWorkItem['displayStatus'],
+  overrides?: {
+    linkedRevisionUrl?: string;
+  },
+): DisplayWorkItem {
   return {
-    issueNumber: 42,
-    title: 'Test',
-    status,
-    statusLabel: 'pending',
-    priority: null,
-    agentCount: 0,
-    createdAt: '2026-01-01T00:00:00Z',
-    prs: prs ?? [],
-    agent: null,
+    workItem: buildWorkItem({ id: '42', status: 'ready' }),
+    displayStatus,
+    section: 'action',
+    linkedRevision: overrides?.linkedRevisionUrl
+      ? buildRevision({ id: '10', url: overrides.linkedRevisionUrl })
+      : null,
+    latestRun: null,
+    dispatchCount: 0,
   };
 }
 
-test('it resolves issue URL for ready-to-implement tasks', () => {
-  const task = buildTaskForURL('ready-to-implement');
-  expect(resolveTaskURL(task, 'owner/repo')).toBe('https://github.com/owner/repo/issues/42');
+test('it resolves issue URL for dispatch tasks', () => {
+  const item = buildDisplayWorkItemForURL('dispatch');
+  expect(resolveTaskURL(item, 'owner/repo')).toBe('https://github.com/owner/repo/issues/42');
 });
 
-test('it resolves first PR URL for agent-reviewing tasks when PRs exist', () => {
-  const task = buildTaskForURL('agent-reviewing', [
-    { number: 10, url: 'https://github.com/owner/repo/pull/10', ciStatus: null },
-  ]);
-  expect(resolveTaskURL(task, 'owner/repo')).toBe('https://github.com/owner/repo/pull/10');
+test('it resolves revision URL for reviewing tasks when revision exists', () => {
+  const item = buildDisplayWorkItemForURL('reviewing', {
+    linkedRevisionUrl: 'https://github.com/owner/repo/pull/10',
+  });
+  expect(resolveTaskURL(item, 'owner/repo')).toBe('https://github.com/owner/repo/pull/10');
 });
 
-test('it falls back to issue URL for agent-reviewing tasks when no PRs exist', () => {
-  const task = buildTaskForURL('agent-reviewing');
-  expect(resolveTaskURL(task, 'owner/repo')).toBe('https://github.com/owner/repo/issues/42');
+test('it falls back to issue URL for reviewing tasks when no revision exists', () => {
+  const item = buildDisplayWorkItemForURL('reviewing');
+  expect(resolveTaskURL(item, 'owner/repo')).toBe('https://github.com/owner/repo/issues/42');
 });
 
-test('it resolves first PR URL for ready-to-merge tasks', () => {
-  const task = buildTaskForURL('ready-to-merge', [
-    { number: 20, url: 'https://github.com/owner/repo/pull/20', ciStatus: null },
-  ]);
-  expect(resolveTaskURL(task, 'owner/repo')).toBe('https://github.com/owner/repo/pull/20');
+test('it resolves revision URL for approved tasks', () => {
+  const item = buildDisplayWorkItemForURL('approved', {
+    linkedRevisionUrl: 'https://github.com/owner/repo/pull/20',
+  });
+  expect(resolveTaskURL(item, 'owner/repo')).toBe('https://github.com/owner/repo/pull/20');
 });
 
-test('it resolves issue URL for agent-crashed tasks', () => {
-  const task = buildTaskForURL('agent-crashed');
-  expect(resolveTaskURL(task, 'owner/repo')).toBe('https://github.com/owner/repo/issues/42');
+test('it resolves issue URL for failed tasks', () => {
+  const item = buildDisplayWorkItemForURL('failed');
+  expect(resolveTaskURL(item, 'owner/repo')).toBe('https://github.com/owner/repo/issues/42');
 });

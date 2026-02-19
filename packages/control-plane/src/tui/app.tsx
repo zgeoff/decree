@@ -5,26 +5,29 @@ import type { ReactNode } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { match } from 'ts-pattern';
 import { useStore } from 'zustand';
-import type { Engine } from '../types.ts';
+import type { Engine } from '../engine/v2-engine/types.ts';
 import { ConfirmationPrompt } from './components/confirmation-prompt.tsx';
 import { DetailPane } from './components/detail-pane.tsx';
 import { computeSectionCapacities, getVisibleTasks, IssueList } from './components/issue-list.tsx';
 import { useEngine } from './hooks.ts';
-import { selectRunningAgentCount, selectSortedTasks } from './store.ts';
-import type { Task, TaskStatus } from './types.ts';
+import { getDisplayWorkItems } from './selectors/get-display-work-items.ts';
+import { getPlannerDisplayStatus } from './selectors/get-planner-display-status.ts';
+import { getRunningAgentCount } from './selectors/get-running-agent-count.ts';
+import { getSortedWorkItems } from './selectors/get-sorted-work-items.ts';
+import type { DisplayStatus, DisplayWorkItem } from './types.ts';
 
 export interface AppProps {
   engine: Engine;
   repository: string;
 }
 
-type FocusedPane = 'taskList' | 'detailPane';
+type FocusedPane = 'workItemList' | 'detailPane';
 
 type PromptState =
   | { type: 'none' }
   | { type: 'quit' }
-  | { type: 'dispatch'; issueNumber: number }
-  | { type: 'retry'; issueNumber: number; agentType: 'implementor' | 'reviewer' };
+  | { type: 'dispatch'; workItemID: string }
+  | { type: 'retry'; workItemID: string; agentRole: 'implementor' | 'reviewer' };
 
 const DEFAULT_TERMINAL_WIDTH = 80;
 const DEFAULT_TERMINAL_HEIGHT = 24;
@@ -47,30 +50,32 @@ const SPINNER_FRAMES: readonly string[] = [
 ];
 const SPINNER_INTERVAL_MS = 80;
 
-const DISPATCHABLE_STATUSES: ReadonlySet<TaskStatus> = new Set([
-  'ready-to-implement',
-  'agent-crashed',
-]);
+const DISPATCHABLE_STATUSES: ReadonlySet<DisplayStatus> = new Set(['dispatch', 'failed']);
 
 export function App(props: AppProps): ReactNode {
-  const engineStore = useEngine({ engine: props.engine });
+  const tuiStore = useEngine({ engine: props.engine });
   const [started, setStarted] = useState(false);
   const [startupError, setStartupError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState<PromptState>({ type: 'none' });
   const [spinnerFrame, setSpinnerFrame] = useState(0);
 
-  const focusedPane = useStore(engineStore, (s) => s.focusedPane);
-  const shuttingDown = useStore(engineStore, (s) => s.shuttingDown);
-  const runningAgentCount = useStore(engineStore, selectRunningAgentCount);
-  const plannerStatus = useStore(engineStore, (s) => s.plannerStatus);
-  const cycleFocus = useStore(engineStore, (s) => s.cycleFocus);
-  const shutdown = useStore(engineStore, (s) => s.shutdown);
-  const tasks = useStore(engineStore, (s) => s.tasks);
-  const selectedIssue = useStore(engineStore, (s) => s.selectedIssue);
-  const pinnedTask = useStore(engineStore, (s) => s.pinnedTask);
-  const selectIssue = useStore(engineStore, (s) => s.selectIssue);
-  const pinTask = useStore(engineStore, (s) => s.pinTask);
-  const dispatchAction = useStore(engineStore, (s) => s.dispatch);
+  // Engine state (subscribe to raw state, derive in render)
+  const engineState = useStore(props.engine.store);
+  const runningAgentCount = getRunningAgentCount(engineState);
+  const plannerStatus = getPlannerDisplayStatus(engineState);
+  const sortedWorkItems = getSortedWorkItems(engineState);
+  const displayWorkItems = getDisplayWorkItems(engineState);
+
+  // TUI state
+  const focusedPane = useStore(tuiStore, (s) => s.focusedPane);
+  const shuttingDown = useStore(tuiStore, (s) => s.shuttingDown);
+  const cycleFocus = useStore(tuiStore, (s) => s.cycleFocus);
+  const shutdown = useStore(tuiStore, (s) => s.shutdown);
+  const selectedWorkItem = useStore(tuiStore, (s) => s.selectedWorkItem);
+  const pinnedWorkItem = useStore(tuiStore, (s) => s.pinnedWorkItem);
+  const selectWorkItem = useStore(tuiStore, (s) => s.selectWorkItem);
+  const pinWorkItem = useStore(tuiStore, (s) => s.pinWorkItem);
+  const dispatchImplementor = useStore(tuiStore, (s) => s.dispatchImplementor);
 
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -80,12 +85,17 @@ export function App(props: AppProps): ReactNode {
   const paneWidths = computePaneWidths(terminalWidth);
   const contentHeight = terminalHeight - HEADER_ROWS - FOOTER_ROWS;
 
-  const sortedTasks = selectSortedTasks(tasks);
   const { actionCapacity, agentsCapacity } = computeSectionCapacities(contentHeight);
-  const visibleTasks = getVisibleTasks(sortedTasks, actionCapacity, agentsCapacity);
+  const visibleTasks = getVisibleTasks(sortedWorkItems, actionCapacity, agentsCapacity);
 
-  const selectedTask = selectedIssue !== null ? (tasks.get(selectedIssue) ?? null) : null;
-  const pinnedTaskObj = pinnedTask !== null ? (tasks.get(pinnedTask) ?? null) : null;
+  const selectedItem =
+    selectedWorkItem !== null
+      ? (displayWorkItems.find((item) => item.workItem.id === selectedWorkItem) ?? null)
+      : null;
+  const pinnedItem =
+    pinnedWorkItem !== null
+      ? (displayWorkItems.find((item) => item.workItem.id === pinnedWorkItem) ?? null)
+      : null;
 
   const promptRef = useRef(prompt);
   promptRef.current = prompt;
@@ -130,11 +140,11 @@ export function App(props: AppProps): ReactNode {
   }, [shuttingDown, runningAgentCount, exit]);
 
   const handleOpenURL = useCallback(
-    (task: Task | null) => {
-      if (!task) {
+    (item: DisplayWorkItem | null) => {
+      if (!item) {
         return;
       }
-      const url = resolveTaskURL(task, props.repository);
+      const url = resolveTaskURL(item, props.repository);
       if (url) {
         openUrl(url);
       }
@@ -143,11 +153,11 @@ export function App(props: AppProps): ReactNode {
   );
 
   const handleCopyURL = useCallback(
-    (task: Task | null) => {
-      if (!task) {
+    (item: DisplayWorkItem | null) => {
+      if (!item) {
         return;
       }
-      const url = resolveTaskURL(task, props.repository);
+      const url = resolveTaskURL(item, props.repository);
       if (url) {
         copyToClipboard(url);
       }
@@ -159,14 +169,14 @@ export function App(props: AppProps): ReactNode {
   const visibleTasksRef = useRef(visibleTasks);
   visibleTasksRef.current = visibleTasks;
 
-  const selectedIssueRef = useRef(selectedIssue);
-  selectedIssueRef.current = selectedIssue;
+  const selectedWorkItemRef = useRef(selectedWorkItem);
+  selectedWorkItemRef.current = selectedWorkItem;
 
-  const selectedTaskRef = useRef(selectedTask);
-  selectedTaskRef.current = selectedTask;
+  const selectedItemRef = useRef(selectedItem);
+  selectedItemRef.current = selectedItem;
 
-  const pinnedTaskObjRef = useRef(pinnedTaskObj);
-  pinnedTaskObjRef.current = pinnedTaskObj;
+  const pinnedItemRef = useRef(pinnedItem);
+  pinnedItemRef.current = pinnedItem;
 
   useInput((input, key) => {
     if (startupErrorRef.current) {
@@ -200,27 +210,27 @@ export function App(props: AppProps): ReactNode {
       return;
     }
     if (input === 'o') {
-      const target = resolveTargetTask();
+      const target = resolveTargetItem();
       handleOpenURL(target);
       return;
     }
     if (input === 'c') {
-      const target = resolveTargetTask();
+      const target = resolveTargetItem();
       handleCopyURL(target);
       return;
     }
 
     // Task list keys
-    if (focusedPaneRef.current === 'taskList') {
+    if (focusedPaneRef.current === 'workItemList') {
       handleTaskListInput(input, key);
     }
   });
 
-  function resolveTargetTask(): Task | null {
+  function resolveTargetItem(): DisplayWorkItem | null {
     if (focusedPaneRef.current === 'detailPane') {
-      return pinnedTaskObjRef.current;
+      return pinnedItemRef.current;
     }
-    return selectedTaskRef.current;
+    return selectedItemRef.current;
   }
 
   function handleTaskListInput(
@@ -236,9 +246,9 @@ export function App(props: AppProps): ReactNode {
       return;
     }
     if (key.return) {
-      const current = selectedIssueRef.current;
+      const current = selectedWorkItemRef.current;
       if (current !== null) {
-        pinTask(current);
+        pinWorkItem(current);
       }
       return;
     }
@@ -248,90 +258,89 @@ export function App(props: AppProps): ReactNode {
   }
 
   function navigateDown(): void {
-    const currentVisibleTasks = visibleTasksRef.current;
-    const currentSelected = selectedIssueRef.current;
-    if (currentVisibleTasks.length === 0) {
+    const currentVisible = visibleTasksRef.current;
+    const currentSelected = selectedWorkItemRef.current;
+    if (currentVisible.length === 0) {
       return;
     }
     if (currentSelected === null) {
-      const first = currentVisibleTasks[0];
+      const first = currentVisible[0];
       if (first) {
-        selectIssue(first.task.issueNumber);
+        selectWorkItem(first.workItem.id);
       }
       return;
     }
-    const currentIndex = currentVisibleTasks.findIndex(
-      (st) => st.task.issueNumber === currentSelected,
-    );
+    const currentIndex = currentVisible.findIndex((item) => item.workItem.id === currentSelected);
     if (currentIndex < 0) {
-      const first = currentVisibleTasks[0];
+      const first = currentVisible[0];
       if (first) {
-        selectIssue(first.task.issueNumber);
+        selectWorkItem(first.workItem.id);
       }
       return;
     }
-    if (currentIndex < currentVisibleTasks.length - 1) {
-      const next = currentVisibleTasks[currentIndex + 1];
+    if (currentIndex < currentVisible.length - 1) {
+      const next = currentVisible[currentIndex + 1];
       if (next) {
-        selectIssue(next.task.issueNumber);
+        selectWorkItem(next.workItem.id);
       }
     }
   }
 
   function navigateUp(): void {
-    const currentVisibleTasks = visibleTasksRef.current;
-    const currentSelected = selectedIssueRef.current;
-    if (currentVisibleTasks.length === 0) {
+    const currentVisible = visibleTasksRef.current;
+    const currentSelected = selectedWorkItemRef.current;
+    if (currentVisible.length === 0) {
       return;
     }
     if (currentSelected === null) {
-      const first = currentVisibleTasks[0];
+      const first = currentVisible[0];
       if (first) {
-        selectIssue(first.task.issueNumber);
+        selectWorkItem(first.workItem.id);
       }
       return;
     }
-    const currentIndex = currentVisibleTasks.findIndex(
-      (st) => st.task.issueNumber === currentSelected,
-    );
+    const currentIndex = currentVisible.findIndex((item) => item.workItem.id === currentSelected);
     if (currentIndex < 0) {
-      const first = currentVisibleTasks[0];
+      const first = currentVisible[0];
       if (first) {
-        selectIssue(first.task.issueNumber);
+        selectWorkItem(first.workItem.id);
       }
       return;
     }
     if (currentIndex > 0) {
-      const prev = currentVisibleTasks[currentIndex - 1];
+      const prev = currentVisible[currentIndex - 1];
       if (prev) {
-        selectIssue(prev.task.issueNumber);
+        selectWorkItem(prev.workItem.id);
       }
     }
   }
 
   function handleDispatchKey(): void {
-    const currentTask = selectedTaskRef.current;
-    if (!currentTask) {
+    const currentItem = selectedItemRef.current;
+    if (!currentItem) {
       return;
     }
-    if (!DISPATCHABLE_STATUSES.has(currentTask.status)) {
+    if (!DISPATCHABLE_STATUSES.has(currentItem.displayStatus)) {
       return;
     }
-    if (currentTask.status === 'agent-crashed' && currentTask.agent) {
-      const agentType = currentTask.agent.type;
-      setPrompt({ type: 'retry', issueNumber: currentTask.issueNumber, agentType });
+    if (currentItem.displayStatus === 'failed' && currentItem.latestRun) {
+      const agentRole =
+        currentItem.latestRun.role === 'reviewer'
+          ? ('reviewer' as const)
+          : ('implementor' as const);
+      setPrompt({ type: 'retry', workItemID: currentItem.workItem.id, agentRole });
       return;
     }
-    setPrompt({ type: 'dispatch', issueNumber: currentTask.issueNumber });
+    setPrompt({ type: 'dispatch', workItemID: currentItem.workItem.id });
   }
 
   function confirmPrompt(currentPrompt: PromptState): void {
     match(currentPrompt)
       .with({ type: 'dispatch' }, (p) => {
-        dispatchAction(p.issueNumber);
+        dispatchImplementor(p.workItemID);
       })
       .with({ type: 'retry' }, (p) => {
-        dispatchAction(p.issueNumber);
+        dispatchImplementor(p.workItemID);
       })
       .with({ type: 'quit' }, () => {
         shutdown();
@@ -388,7 +397,7 @@ export function App(props: AppProps): ReactNode {
   }
 
   const promptMessage = buildPromptMessage(prompt, runningAgentCount);
-  const dispatchDimmed = !(selectedTask && DISPATCHABLE_STATUSES.has(selectedTask.status));
+  const dispatchDimmed = !(selectedItem && DISPATCHABLE_STATUSES.has(selectedItem.displayStatus));
 
   return (
     <Box width={terminalWidth} height={terminalHeight} flexDirection="column">
@@ -399,11 +408,21 @@ export function App(props: AppProps): ReactNode {
       />
       <Box flexDirection="row" height={contentHeight}>
         <Box width={paneWidths[0]} height={contentHeight} flexDirection="column">
-          <IssueList store={engineStore} paneWidth={paneWidths[0]} paneHeight={contentHeight} />
+          <IssueList
+            engineStore={props.engine.store}
+            tuiStore={tuiStore}
+            paneWidth={paneWidths[0]}
+            paneHeight={contentHeight}
+          />
         </Box>
         <Text>│</Text>
         <Box width={paneWidths[1]} height={contentHeight} flexDirection="column">
-          <DetailPane store={engineStore} paneWidth={paneWidths[1]} paneHeight={contentHeight} />
+          <DetailPane
+            engineStore={props.engine.store}
+            tuiStore={tuiStore}
+            paneWidth={paneWidths[1]}
+            paneHeight={contentHeight}
+          />
         </Box>
       </Box>
       <FooterBar focusedPane={focusedPane} dispatchDimmed={dispatchDimmed} />
@@ -460,7 +479,7 @@ interface FooterBarProps {
 }
 
 function FooterBar(props: FooterBarProps): ReactNode {
-  if (props.focusedPane === 'taskList') {
+  if (props.focusedPane === 'workItemList') {
     return (
       <Box>
         <Text>
@@ -483,19 +502,18 @@ function FooterBar(props: FooterBarProps): ReactNode {
 // URL Resolution
 // ---------------------------------------------------------------------------
 
-export function resolveTaskURL(task: Task, repository: string): string | null {
-  const issueURL = `https://github.com/${repository}/issues/${task.issueNumber}`;
-  const firstPR = task.prs[0];
-  const firstPRURL = firstPR?.url || null;
+export function resolveTaskURL(item: DisplayWorkItem, repository: string): string | null {
+  const issueURL = `https://github.com/${repository}/issues/${item.workItem.id}`;
+  const revisionURL = item.linkedRevision?.url ?? null;
 
-  return match(task.status)
-    .with('ready-to-implement', () => issueURL)
+  return match(item.displayStatus)
+    .with('dispatch', 'pending', () => issueURL)
     .with('needs-refinement', () => issueURL)
     .with('blocked', () => issueURL)
-    .with('agent-crashed', () => issueURL)
-    .with('agent-implementing', () => firstPRURL ?? issueURL)
-    .with('agent-reviewing', () => firstPRURL ?? issueURL)
-    .with('ready-to-merge', () => firstPRURL ?? issueURL)
+    .with('failed', () => issueURL)
+    .with('implementing', () => revisionURL ?? issueURL)
+    .with('reviewing', () => revisionURL ?? issueURL)
+    .with('approved', () => revisionURL ?? issueURL)
     .exhaustive();
 }
 
@@ -505,10 +523,10 @@ export function resolveTaskURL(task: Task, repository: string): string | null {
 
 function buildPromptMessage(prompt: PromptState, runningAgentCount: number): string | null {
   return match(prompt)
-    .with({ type: 'dispatch' }, (p) => `Dispatch Implementor for #${p.issueNumber}?`)
+    .with({ type: 'dispatch' }, (p) => `Dispatch Implementor for #${p.workItemID}?`)
     .with({ type: 'retry' }, (p) => {
-      const label = p.agentType === 'implementor' ? 'Implementor' : 'Reviewer';
-      return `Retry ${label} for #${p.issueNumber}?`;
+      const label = p.agentRole === 'implementor' ? 'Implementor' : 'Reviewer';
+      return `Retry ${label} for #${p.workItemID}?`;
     })
     .with({ type: 'quit' }, () => {
       if (runningAgentCount > 0) {

@@ -3,17 +3,21 @@ import type { ReactNode } from 'react';
 import { match } from 'ts-pattern';
 import type { StoreApi } from 'zustand';
 import { useStore } from 'zustand';
-import { selectActionCount, selectAgentSectionCount, selectSortedTasks } from '../store.ts';
-import type { CIStatus, Priority, SortedTask, Task, TaskStatus, TUIStore } from '../types.ts';
+import type { EngineState, Priority } from '../../engine/state-store/types.ts';
+import { getActionCount } from '../selectors/get-action-count.ts';
+import { getAgentSectionCount } from '../selectors/get-agent-section-count.ts';
+import { getSortedWorkItems } from '../selectors/get-sorted-work-items.ts';
+import type { DisplayStatus, DisplayWorkItem, TUIActions, TUILocalState } from '../types.ts';
 
 export interface IssueListProps {
-  store: StoreApi<TUIStore>;
+  engineStore: StoreApi<EngineState>;
+  tuiStore: StoreApi<TUILocalState & TUIActions>;
   paneWidth: number;
   paneHeight: number;
 }
 
 interface SectionSlice {
-  items: SortedTask[];
+  items: DisplayWorkItem[];
   capacity: number;
   total: number;
 }
@@ -32,45 +36,41 @@ const MIN_SECTIONS = 2;
 
 const ELLIPSIS = '\u2026';
 
-const STATUS_DISPLAY: Record<TaskStatus, string> = {
-  'ready-to-merge': 'APPROVED',
-  'agent-crashed': 'FAILED',
+const STATUS_DISPLAY: Record<DisplayStatus, string> = {
+  approved: 'APPROVED',
+  failed: 'FAILED',
   blocked: 'BLOCKED',
   'needs-refinement': 'REFINE',
-  'ready-to-implement': 'DISPATCH',
-  'agent-implementing': 'WIP',
-  'agent-reviewing': 'REVIEW',
+  dispatch: 'DISPATCH',
+  pending: 'DISPATCH',
+  implementing: 'WIP',
+  reviewing: 'REVIEW',
 };
 
-const STATUS_ICON: Record<TaskStatus, string> = {
-  'ready-to-merge': '\u2714',
+const STATUS_ICON: Record<DisplayStatus, string> = {
+  approved: '\u2714',
   // biome-ignore lint/security/noSecrets: emoji character, not a secret
-  'agent-crashed': '\uD83D\uDCA5',
+  failed: '\uD83D\uDCA5',
   blocked: '\u26D4',
   'needs-refinement': '\uD83D\uDCDD',
-  'ready-to-implement': '\u25CF',
+  dispatch: '\u25CF',
+  pending: '\u25CF',
   // biome-ignore lint/security/noSecrets: emoji character, not a secret
-  'agent-implementing': '\uD83E\uDD16',
+  implementing: '\uD83E\uDD16',
   // biome-ignore lint/security/noSecrets: emoji character, not a secret
-  'agent-reviewing': '\uD83D\uDD0E',
-};
-
-const CI_STATUS_PRIORITY: Record<string, number> = {
-  failure: 3,
-  pending: 2,
-  success: 1,
+  reviewing: '\uD83D\uDD0E',
 };
 
 export function IssueList(props: IssueListProps): ReactNode {
-  const tasks = useStore(props.store, (s) => s.tasks);
-  const selectedIssue = useStore(props.store, (s) => s.selectedIssue);
-  const actionCount = useStore(props.store, selectActionCount);
-  const agentSectionCount = useStore(props.store, selectAgentSectionCount);
+  const engineState = useStore(props.engineStore);
+  const selectedWorkItem = useStore(props.tuiStore, (s) => s.selectedWorkItem);
 
-  const sortedTasks = selectSortedTasks(tasks);
+  const sortedWorkItems = getSortedWorkItems(engineState);
+  const actionCount = getActionCount(engineState);
+  const agentSectionCount = getAgentSectionCount(engineState);
 
-  const actionItems = sortedTasks.filter((st) => st.section === 'action');
-  const agentItems = sortedTasks.filter((st) => st.section === 'agents');
+  const actionItems = sortedWorkItems.filter((item) => item.section === 'action');
+  const agentItems = sortedWorkItems.filter((item) => item.section === 'agents');
 
   const contentHeight = props.paneHeight;
   const actionPaneHeight = Math.ceil(contentHeight / MIN_SECTIONS);
@@ -88,22 +88,22 @@ export function IssueList(props: IssueListProps): ReactNode {
     <Box flexDirection="column" height={contentHeight}>
       <Box flexDirection="column" height={actionPaneHeight}>
         <SectionHeader label="ACTION" slice={actionSlice} />
-        {actionSlice.items.map((st) => (
+        {actionSlice.items.map((item) => (
           <TaskRow
-            key={st.task.issueNumber}
-            task={st.task}
-            selected={st.task.issueNumber === selectedIssue}
+            key={item.workItem.id}
+            item={item}
+            selected={item.workItem.id === selectedWorkItem}
             titleWidth={titleWidth}
           />
         ))}
       </Box>
       <Box flexDirection="column" height={agentsPaneHeight}>
         <SectionHeader label="AGENTS" slice={agentsSlice} />
-        {agentsSlice.items.map((st) => (
+        {agentsSlice.items.map((item) => (
           <TaskRow
-            key={st.task.issueNumber}
-            task={st.task}
-            selected={st.task.issueNumber === selectedIssue}
+            key={item.workItem.id}
+            item={item}
+            selected={item.workItem.id === selectedWorkItem}
             titleWidth={titleWidth}
           />
         ))}
@@ -113,12 +113,12 @@ export function IssueList(props: IssueListProps): ReactNode {
 }
 
 export function getVisibleTasks(
-  sortedTasks: SortedTask[],
+  sortedItems: DisplayWorkItem[],
   actionCapacity: number,
   agentsCapacity: number,
-): SortedTask[] {
-  const actionItems = sortedTasks.filter((st) => st.section === 'action');
-  const agentItems = sortedTasks.filter((st) => st.section === 'agents');
+): DisplayWorkItem[] {
+  const actionItems = sortedItems.filter((item) => item.section === 'action');
+  const agentItems = sortedItems.filter((item) => item.section === 'agents');
   return [...actionItems.slice(0, actionCapacity), ...agentItems.slice(0, agentsCapacity)];
 }
 
@@ -163,17 +163,17 @@ function SectionHeader(props: SectionHeaderProps): ReactNode {
 // ---------------------------------------------------------------------------
 
 interface TaskRowProps {
-  task: Task;
+  item: DisplayWorkItem;
   selected: boolean;
   titleWidth: number;
 }
 
 function TaskRow(props: TaskRowProps): ReactNode {
-  const issueCol = renderIssueColumn(props.task);
-  const prCol = renderPRColumn(props.task);
-  const statusCol = renderStatusColumn(props.task);
-  const iconCol = renderIconColumn(props.task);
-  const titleCol = truncateText(props.task.title, props.titleWidth);
+  const issueCol = renderIssueColumn(props.item);
+  const prCol = renderPRColumn(props.item);
+  const statusCol = renderStatusColumn(props.item);
+  const iconCol = renderIconColumn(props.item);
+  const titleCol = truncateText(props.item.workItem.title, props.titleWidth);
 
   return (
     <Box paddingLeft={HORIZONTAL_PADDING}>
@@ -188,8 +188,8 @@ function TaskRow(props: TaskRowProps): ReactNode {
 // Column Renderers
 // ---------------------------------------------------------------------------
 
-function renderIssueColumn(task: Task): string {
-  const issueStr = `#${task.issueNumber}`;
+function renderIssueColumn(item: DisplayWorkItem): string {
+  const issueStr = `#${item.workItem.id}`;
   return padRight(issueStr, ISSUE_COL_WIDTH);
 }
 
@@ -204,57 +204,23 @@ export function getIssuePriorityColor(priority: Priority | null): string | undef
     .exhaustive();
 }
 
-function renderPRColumn(task: Task): string {
-  if (task.prs.length === 0) {
+function renderPRColumn(item: DisplayWorkItem): string {
+  if (item.linkedRevision === null) {
     return padRight('\u2014', PR_COL_WIDTH);
   }
-  if (task.prs.length === 1) {
-    const pr = task.prs[0];
-    if (pr) {
-      return padRight(`PR#${pr.number}`, PR_COL_WIDTH);
-    }
-  }
-  return padRight(`PRx${task.prs.length}`, PR_COL_WIDTH);
+  return padRight(`PR#${item.linkedRevision.id}`, PR_COL_WIDTH);
 }
 
-export function getWorstCIStatus(prs: Array<{ ciStatus: CIStatus | null }>): CIStatus | null {
-  let worst: CIStatus | null = null;
-  let worstPriority = 0;
-
-  for (const pr of prs) {
-    if (pr.ciStatus !== null) {
-      const priority = CI_STATUS_PRIORITY[pr.ciStatus] ?? 0;
-      if (priority > worstPriority) {
-        worstPriority = priority;
-        worst = pr.ciStatus;
-      }
-    }
+function renderStatusColumn(item: DisplayWorkItem): string {
+  if (item.displayStatus === 'implementing') {
+    return padRight(`WIP(${item.dispatchCount})`, STATUS_COL_WIDTH);
   }
-
-  return worst;
-}
-
-export function getCIStatusColor(ciStatus: CIStatus | null): string | undefined {
-  if (ciStatus === null) {
-    return 'dim';
-  }
-  return match(ciStatus)
-    .with('failure', () => 'red')
-    .with('pending', () => 'dim')
-    .with('success', () => 'green')
-    .exhaustive();
-}
-
-function renderStatusColumn(task: Task): string {
-  const display = STATUS_DISPLAY[task.status] ?? '';
-  if (task.status === 'agent-implementing') {
-    return padRight(`WIP(${task.agentCount})`, STATUS_COL_WIDTH);
-  }
+  const display = STATUS_DISPLAY[item.displayStatus] ?? '';
   return padRight(display, STATUS_COL_WIDTH);
 }
 
-function renderIconColumn(task: Task): string {
-  const icon = STATUS_ICON[task.status] ?? '';
+function renderIconColumn(item: DisplayWorkItem): string {
+  const icon = STATUS_ICON[item.displayStatus] ?? '';
   return padRight(icon, ICON_COL_WIDTH);
 }
 
@@ -262,7 +228,11 @@ function renderIconColumn(task: Task): string {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildSectionSlice(items: SortedTask[], capacity: number, total: number): SectionSlice {
+function buildSectionSlice(
+  items: DisplayWorkItem[],
+  capacity: number,
+  total: number,
+): SectionSlice {
   return {
     items: items.slice(0, capacity),
     capacity,

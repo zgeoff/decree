@@ -1,53 +1,67 @@
 import { render } from 'ink-testing-library';
 import { expect, test, vi } from 'vitest';
-import type { EngineEvent } from '../../types.ts';
+import type { StoreApi } from 'zustand';
+import { applyStateUpdate } from '../../engine/state-store/apply-state-update.ts';
+import type { EngineState, Priority, WorkItemStatus } from '../../engine/state-store/types.ts';
+import { buildRevision } from '../../test-utils/build-revision.ts';
+import { buildWorkItem } from '../../test-utils/build-work-item.ts';
 import { createTUIStore } from '../store.ts';
 import { createMockEngine } from '../test-utils/create-mock-engine.ts';
+import type { DisplayWorkItem } from '../types.ts';
 import {
   computeSectionCapacities,
-  getCIStatusColor,
   getIssuePriorityColor,
   getVisibleTasks,
-  getWorstCIStatus,
   IssueList,
 } from './issue-list.tsx';
 
 function setupTest(config?: { paneHeight?: number; paneWidth?: number }): ReturnType<
   typeof render
 > & {
-  store: ReturnType<typeof createTUIStore>;
-  emit: (event: EngineEvent) => void;
+  engineStore: StoreApi<EngineState>;
+  tuiStore: ReturnType<typeof createTUIStore>;
 } {
-  const { engine, emit } = createMockEngine();
-  const store = createTUIStore({ engine });
+  const { engine, store: engineStore } = createMockEngine();
+  const tuiStore = createTUIStore({ engine });
   const paneHeight = config?.paneHeight ?? 20;
   const paneWidth = config?.paneWidth ?? 60;
 
   const instance = render(
-    <IssueList store={store} paneWidth={paneWidth} paneHeight={paneHeight} />,
+    <IssueList
+      engineStore={engineStore}
+      tuiStore={tuiStore}
+      paneWidth={paneWidth}
+      paneHeight={paneHeight}
+    />,
   );
 
-  return { ...instance, store, emit };
+  return { ...instance, engineStore, tuiStore };
 }
 
-function addIssue(
-  emit: (event: EngineEvent) => void,
-  issueNumber: number,
+function addWorkItem(
+  engineStore: StoreApi<EngineState>,
+  id: string,
   overrides?: {
     title?: string;
-    status?: string;
-    priority?: string;
+    status?: WorkItemStatus;
+    priority?: Priority | null;
     createdAt?: string;
   },
 ): void {
-  emit({
-    type: 'issueStatusChanged',
-    issueNumber,
-    title: overrides?.title ?? `Issue ${issueNumber}`,
+  applyStateUpdate(engineStore, {
+    type: 'workItemChanged',
+    workItemID: id,
+    workItem: buildWorkItem({
+      id,
+      title: overrides?.title ?? `Issue ${id}`,
+      status: overrides?.status ?? 'pending',
+      priority: overrides?.priority ?? null,
+      createdAt: overrides?.createdAt ?? '2026-01-01T00:00:00Z',
+    }),
+    title: overrides?.title ?? `Issue ${id}`,
     oldStatus: null,
     newStatus: overrides?.status ?? 'pending',
-    priorityLabel: overrides?.priority ?? 'priority:medium',
-    createdAt: overrides?.createdAt ?? '2026-01-01T00:00:00Z',
+    priority: overrides?.priority ?? null,
   });
 }
 
@@ -64,10 +78,10 @@ test('it renders ACTION and AGENTS section headers even when empty', () => {
 });
 
 test('it shows the correct count in section headers', async () => {
-  const { lastFrame, emit } = setupTest();
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'pending' });
-  addIssue(emit, 2, { status: 'blocked' });
+  addWorkItem(engineStore, '1', { status: 'ready' });
+  addWorkItem(engineStore, '2', { status: 'blocked' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -77,14 +91,19 @@ test('it shows the correct count in section headers', async () => {
 });
 
 test('it shows AGENTS count when agent tasks exist', async () => {
-  const { lastFrame, emit } = setupTest();
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'in-progress' });
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
+  addWorkItem(engineStore, '1', { status: 'in-progress' });
+  applyStateUpdate(engineStore, {
+    type: 'implementorRequested',
+    workItemID: '1',
     sessionID: 'sess-1',
+    branchName: 'issue-1',
+  });
+  applyStateUpdate(engineStore, {
+    type: 'implementorStarted',
+    sessionID: 'sess-1',
+    logFilePath: null,
   });
 
   await vi.waitFor(() => {
@@ -98,10 +117,10 @@ test('it shows AGENTS count when agent tasks exist', async () => {
 // Row Format
 // ---------------------------------------------------------------------------
 
-test('it renders the issue number in the row', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it renders the work item id in the row', async () => {
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 42, { title: 'My feature' });
+  addWorkItem(engineStore, '42', { title: 'My feature' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -110,9 +129,9 @@ test('it renders the issue number in the row', async () => {
 });
 
 test('it renders the status label in the row', async () => {
-  const { lastFrame, emit } = setupTest();
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'pending' });
+  addWorkItem(engineStore, '1', { status: 'ready' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -121,9 +140,9 @@ test('it renders the status label in the row', async () => {
 });
 
 test('it renders APPROVED status for approved tasks', async () => {
-  const { lastFrame, emit } = setupTest();
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'approved' });
+  addWorkItem(engineStore, '1', { status: 'approved' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -132,21 +151,27 @@ test('it renders APPROVED status for approved tasks', async () => {
 });
 
 test('it renders FAILED status for crashed tasks', async () => {
-  const { lastFrame, emit } = setupTest();
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'in-progress' });
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
+  addWorkItem(engineStore, '1', { status: 'in-progress' });
+  applyStateUpdate(engineStore, {
+    type: 'implementorRequested',
+    workItemID: '1',
     sessionID: 'sess-1',
+    branchName: 'issue-1',
   });
-  emit({
-    type: 'agentFailed',
-    agentType: 'implementor',
-    issueNumber: 1,
-    error: 'boom',
+  applyStateUpdate(engineStore, {
+    type: 'implementorStarted',
     sessionID: 'sess-1',
+    logFilePath: null,
+  });
+  applyStateUpdate(engineStore, {
+    type: 'implementorFailed',
+    workItemID: '1',
+    sessionID: 'sess-1',
+    branchName: 'issue-1',
+    error: 'boom',
+    logFilePath: null,
   });
 
   await vi.waitFor(() => {
@@ -155,15 +180,20 @@ test('it renders FAILED status for crashed tasks', async () => {
   });
 });
 
-test('it renders WIP with agent count for implementing tasks', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it renders WIP with dispatch count for implementing tasks', async () => {
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'in-progress' });
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
+  addWorkItem(engineStore, '1', { status: 'in-progress' });
+  applyStateUpdate(engineStore, {
+    type: 'implementorRequested',
+    workItemID: '1',
     sessionID: 'sess-1',
+    branchName: 'issue-1',
+  });
+  applyStateUpdate(engineStore, {
+    type: 'implementorStarted',
+    sessionID: 'sess-1',
+    logFilePath: null,
   });
 
   await vi.waitFor(() => {
@@ -173,9 +203,9 @@ test('it renders WIP with agent count for implementing tasks', async () => {
 });
 
 test('it renders the title in the row', async () => {
-  const { lastFrame, emit } = setupTest();
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { title: 'Feature X' });
+  addWorkItem(engineStore, '1', { title: 'Feature X' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -187,10 +217,10 @@ test('it renders the title in the row', async () => {
 // PR Column
 // ---------------------------------------------------------------------------
 
-test('it shows a dash when no PRs are linked', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it shows a dash when no revision is linked', async () => {
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1);
+  addWorkItem(engineStore, '1');
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -198,17 +228,33 @@ test('it shows a dash when no PRs are linked', async () => {
   });
 });
 
-test('it shows PR number when one PR is linked', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it shows revision id when a revision is linked', async () => {
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1);
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 482,
-    url: 'https://github.com/owner/repo/pull/482',
-    ciStatus: null,
+  addWorkItem(engineStore, '1');
+
+  // Add a revision to the engine store
+  applyStateUpdate(engineStore, {
+    type: 'revisionChanged',
+    revisionID: '482',
+    workItemID: '1',
+    revision: buildRevision({
+      id: '482',
+      workItemID: '1',
+      url: 'https://github.com/owner/repo/pull/482',
+    }),
+    oldPipelineStatus: null,
+    newPipelineStatus: null,
   });
+
+  // Link the work item to the revision
+  const state = engineStore.getState();
+  const workItem = state.workItems.get('1');
+  if (workItem) {
+    const updated = new Map(state.workItems);
+    updated.set('1', { ...workItem, linkedRevision: '482' });
+    engineStore.setState({ workItems: updated });
+  }
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -216,39 +262,14 @@ test('it shows PR number when one PR is linked', async () => {
   });
 });
 
-test('it shows PR count when multiple PRs are linked', async () => {
-  const { lastFrame, emit } = setupTest();
-
-  addIssue(emit, 1);
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 10,
-    url: 'https://github.com/owner/repo/pull/10',
-    ciStatus: null,
-  });
-  emit({
-    type: 'prLinked',
-    issueNumber: 1,
-    prNumber: 11,
-    url: 'https://github.com/owner/repo/pull/11',
-    ciStatus: null,
-  });
-
-  await vi.waitFor(() => {
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('PRx2');
-  });
-});
-
 // ---------------------------------------------------------------------------
 // Section Assignment
 // ---------------------------------------------------------------------------
 
-test('it places ready-to-implement tasks in the ACTION section', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it places ready tasks in the ACTION section', async () => {
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'pending', title: 'Ready' });
+  addWorkItem(engineStore, '1', { status: 'ready', title: 'Ready' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -257,10 +278,21 @@ test('it places ready-to-implement tasks in the ACTION section', async () => {
   });
 });
 
-test('it places blocked tasks in the ACTION section', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it places pending tasks in the ACTION section', async () => {
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'blocked' });
+  addWorkItem(engineStore, '1', { status: 'pending' });
+
+  await vi.waitFor(() => {
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('ACTION (1)');
+  });
+});
+
+test('it places blocked tasks in the ACTION section', async () => {
+  const { lastFrame, engineStore } = setupTest();
+
+  addWorkItem(engineStore, '1', { status: 'blocked' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -269,9 +301,9 @@ test('it places blocked tasks in the ACTION section', async () => {
 });
 
 test('it places needs-refinement tasks in the ACTION section', async () => {
-  const { lastFrame, emit } = setupTest();
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'needs-refinement' });
+  addWorkItem(engineStore, '1', { status: 'needs-refinement' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -280,9 +312,9 @@ test('it places needs-refinement tasks in the ACTION section', async () => {
 });
 
 test('it places approved tasks in the ACTION section', async () => {
-  const { lastFrame, emit } = setupTest();
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'approved' });
+  addWorkItem(engineStore, '1', { status: 'approved' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -290,15 +322,20 @@ test('it places approved tasks in the ACTION section', async () => {
   });
 });
 
-test('it places agent-implementing tasks in the AGENTS section', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it places implementing tasks in the AGENTS section', async () => {
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'in-progress' });
-  emit({
-    type: 'agentStarted',
-    agentType: 'implementor',
-    issueNumber: 1,
+  addWorkItem(engineStore, '1', { status: 'in-progress' });
+  applyStateUpdate(engineStore, {
+    type: 'implementorRequested',
+    workItemID: '1',
     sessionID: 'sess-1',
+    branchName: 'issue-1',
+  });
+  applyStateUpdate(engineStore, {
+    type: 'implementorStarted',
+    sessionID: 'sess-1',
+    logFilePath: null,
   });
 
   await vi.waitFor(() => {
@@ -307,15 +344,20 @@ test('it places agent-implementing tasks in the AGENTS section', async () => {
   });
 });
 
-test('it places agent-reviewing tasks in the AGENTS section', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it places reviewing tasks in the AGENTS section', async () => {
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'review' });
-  emit({
-    type: 'agentStarted',
-    agentType: 'reviewer',
-    issueNumber: 1,
+  addWorkItem(engineStore, '1', { status: 'review' });
+  applyStateUpdate(engineStore, {
+    type: 'reviewerRequested',
+    workItemID: '1',
+    revisionID: 'rev-1',
     sessionID: 'sess-r-1',
+  });
+  applyStateUpdate(engineStore, {
+    type: 'reviewerStarted',
+    sessionID: 'sess-r-1',
+    logFilePath: null,
   });
 
   await vi.waitFor(() => {
@@ -329,13 +371,13 @@ test('it places agent-reviewing tasks in the AGENTS section', async () => {
 // ---------------------------------------------------------------------------
 
 test('it shows overflow indicator when items exceed capacity', async () => {
-  const { lastFrame, emit } = setupTest({ paneHeight: 4 });
+  const { lastFrame, engineStore } = setupTest({ paneHeight: 4 });
   // With paneHeight 4: ACTION gets ceil(4/2)=2 rows, 1 header = 1 capacity
   // AGENTS gets floor(4/2)=2 rows, 1 header = 1 capacity
 
-  addIssue(emit, 1, { status: 'pending', title: 'First', priority: 'priority:high' });
-  addIssue(emit, 2, { status: 'pending', title: 'Second', priority: 'priority:medium' });
-  addIssue(emit, 3, { status: 'pending', title: 'Third', priority: 'priority:low' });
+  addWorkItem(engineStore, '1', { status: 'ready', title: 'First', priority: 'high' });
+  addWorkItem(engineStore, '2', { status: 'ready', title: 'Second', priority: 'medium' });
+  addWorkItem(engineStore, '3', { status: 'ready', title: 'Third', priority: 'low' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -349,10 +391,10 @@ test('it shows overflow indicator when items exceed capacity', async () => {
 // ---------------------------------------------------------------------------
 
 test('it sorts tasks by status weight within a section', async () => {
-  const { lastFrame, emit } = setupTest();
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'pending', title: 'Ready', priority: 'priority:medium' });
-  addIssue(emit, 2, { status: 'approved', title: 'Approved', priority: 'priority:medium' });
+  addWorkItem(engineStore, '1', { status: 'ready', title: 'Ready', priority: 'medium' });
+  addWorkItem(engineStore, '2', { status: 'approved', title: 'Approved', priority: 'medium' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -363,10 +405,10 @@ test('it sorts tasks by status weight within a section', async () => {
 });
 
 test('it sorts tasks by priority within the same status weight', async () => {
-  const { lastFrame, emit } = setupTest();
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 1, { status: 'pending', title: 'Low', priority: 'priority:low' });
-  addIssue(emit, 2, { status: 'pending', title: 'High', priority: 'priority:high' });
+  addWorkItem(engineStore, '1', { status: 'ready', title: 'Low', priority: 'low' });
+  addWorkItem(engineStore, '2', { status: 'ready', title: 'High', priority: 'high' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
@@ -376,37 +418,24 @@ test('it sorts tasks by priority within the same status weight', async () => {
   });
 });
 
-test('it sorts tasks by issue number within the same priority', async () => {
-  const { lastFrame, emit } = setupTest();
+test('it sorts tasks by work item id within the same priority', async () => {
+  const { lastFrame, engineStore } = setupTest();
 
-  addIssue(emit, 10, { status: 'pending', title: 'Higher', priority: 'priority:medium' });
-  addIssue(emit, 5, { status: 'pending', title: 'Lower', priority: 'priority:medium' });
+  addWorkItem(engineStore, '10', { status: 'ready', title: 'Higher', priority: 'medium' });
+  addWorkItem(engineStore, '5', { status: 'ready', title: 'Lower', priority: 'medium' });
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';
     const lowerPos = frame.indexOf('Lower');
     const higherPos = frame.indexOf('Higher');
-    expect(lowerPos).toBeLessThan(higherPos);
+    // Lexicographic: '10' > '5' is false ('1' < '5'), so '10' comes first
+    expect(higherPos).toBeLessThan(lowerPos);
   });
 });
 
 // ---------------------------------------------------------------------------
 // Exported helpers
 // ---------------------------------------------------------------------------
-
-test('it returns the worst CI status from a set of PRs', () => {
-  expect(getWorstCIStatus([{ ciStatus: 'success' }, { ciStatus: 'failure' }])).toBe('failure');
-  expect(getWorstCIStatus([{ ciStatus: 'success' }, { ciStatus: 'pending' }])).toBe('pending');
-  expect(getWorstCIStatus([{ ciStatus: 'success' }])).toBe('success');
-  expect(getWorstCIStatus([{ ciStatus: null }])).toBe(null);
-});
-
-test('it returns the correct CI status color', () => {
-  expect(getCIStatusColor('failure')).toBe('red');
-  expect(getCIStatusColor('pending')).toBe('dim');
-  expect(getCIStatusColor('success')).toBe('green');
-  expect(getCIStatusColor(null)).toBe('dim');
-});
 
 test('it returns the correct priority color', () => {
   expect(getIssuePriorityColor('high')).toBe('red');
@@ -432,20 +461,28 @@ test('it gives the extra row to ACTION when pane height is odd', () => {
 });
 
 test('it computes visible tasks respecting section capacities', () => {
-  const sortedTasks = [
-    { task: { issueNumber: 1 }, section: 'action' as const },
-    { task: { issueNumber: 2 }, section: 'action' as const },
-    { task: { issueNumber: 3 }, section: 'action' as const },
-    { task: { issueNumber: 4 }, section: 'agents' as const },
-    { task: { issueNumber: 5 }, section: 'agents' as const },
+  const makeItem = (id: string, section: 'action' | 'agents'): DisplayWorkItem => ({
+    workItem: buildWorkItem({ id }),
+    displayStatus: section === 'action' ? 'dispatch' : 'implementing',
+    section,
+    linkedRevision: null,
+    latestRun: null,
+    dispatchCount: 0,
+  });
+
+  const sortedItems: DisplayWorkItem[] = [
+    makeItem('1', 'action'),
+    makeItem('2', 'action'),
+    makeItem('3', 'action'),
+    makeItem('4', 'agents'),
+    makeItem('5', 'agents'),
   ];
 
-  // biome-ignore lint/suspicious/noExplicitAny: test utility with partial task objects
-  const result = getVisibleTasks(sortedTasks as any, 2, 1);
+  const result = getVisibleTasks(sortedItems, 2, 1);
   expect(result).toHaveLength(3);
-  expect(result[0]?.task.issueNumber).toBe(1);
-  expect(result[1]?.task.issueNumber).toBe(2);
-  expect(result[2]?.task.issueNumber).toBe(4);
+  expect(result[0]?.workItem.id).toBe('1');
+  expect(result[1]?.workItem.id).toBe('2');
+  expect(result[2]?.workItem.id).toBe('4');
 });
 
 // ---------------------------------------------------------------------------
@@ -453,10 +490,10 @@ test('it computes visible tasks respecting section capacities', () => {
 // ---------------------------------------------------------------------------
 
 test('it highlights the selected task row', async () => {
-  const { lastFrame, emit, store } = setupTest();
+  const { lastFrame, engineStore, tuiStore } = setupTest();
 
-  addIssue(emit, 1, { title: 'Selected task' });
-  store.getState().selectIssue(1);
+  addWorkItem(engineStore, '1', { title: 'Selected task' });
+  tuiStore.getState().selectWorkItem('1');
 
   await vi.waitFor(() => {
     const frame = lastFrame() ?? '';

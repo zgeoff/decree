@@ -1,21 +1,18 @@
 import { useRef } from 'react';
 import type { StoreApi } from 'zustand';
-import type { Engine } from '../types.ts';
+import type { TUIEngine } from './store.ts';
 import { createTUIStore } from './store.ts';
-import type { CreateTUIStoreConfig, TUIStore } from './types.ts';
+import type { TUIActions, TUILocalState } from './types.ts';
 
 export interface UseEngineConfig {
-  engine: Engine;
+  engine: TUIEngine;
 }
 
-export function useEngine(config: UseEngineConfig): StoreApi<TUIStore> {
+export function useEngine(config: UseEngineConfig): StoreApi<TUILocalState & TUIActions> {
   const storeRef = useRef<ReturnType<typeof createTUIStore> | null>(null);
 
   if (storeRef.current === null) {
-    const storeConfig: CreateTUIStoreConfig = {
-      engine: config.engine,
-    };
-    storeRef.current = createTUIStore(storeConfig);
+    storeRef.current = createTUIStore({ engine: config.engine });
   }
 
   return storeRef.current;

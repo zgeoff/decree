@@ -31,6 +31,9 @@ observing state, dispatching agents, and responding to notifications.
   provider boundaries.
 - Agents must produce structured artifacts only — they must not perform external writes (no GitHub
   operations, no branch pushing, no status changes).
+- The config file (`control-plane.config.ts`) must default-export an `EngineConfig` with pre-built
+  provider interfaces and a runtime adapter factory. The entry point (`main.ts`) must not contain
+  provider construction, credential handling, or adapter wiring.
 
 ## Specification
 
@@ -231,6 +234,43 @@ See
 [control-plane-engine-handlers.md: handleOrphanedWorkItem](./control-plane-engine-handlers.md#handleorphanedworkitem)
 for the recovery handler specification.
 
+### Configuration
+
+The application is configured via `control-plane.config.ts` at the package root. This file
+default-exports an `EngineConfig` — the engine's dependency-injection contract defined in
+[control-plane-engine.md: Configuration](./control-plane-engine.md#configuration). The config file
+is the user's integration point: it constructs provider interfaces, runtime adapter factories, and
+optional policy, then passes them as pre-built implementations. Top-level `await` is permitted for
+async provider construction (e.g. `createGitHubProvider`).
+
+```
+// control-plane.config.ts (pseudocode)
+provider   = await createGitHubProvider({ appID, privateKey, ... })
+adapter    = (deps) => createClaudeAdapter(adapterConfig, deps)
+
+export default {
+  repository,
+  provider,
+  createRuntimeAdapters: (deps) => {
+    a = adapter(deps)
+    return { planner: a, implementor: a, reviewer: a }
+  },
+  logLevel,
+  shutdownTimeout,
+  workItemPoller:   { pollInterval },
+  revisionPoller:   { pollInterval },
+  specPoller:       { pollInterval },
+}
+```
+
+The entry point (`main.ts`) is a thin loader: load config → `createEngine(config)` → `renderApp()` →
+await exit. Provider construction, credential handling, and adapter wiring reside in the config file
+— never in the entry point.
+
+> **Rationale:** Users swap providers and runtime adapters by editing the config file — not by
+> modifying engine internals or the entry point. A Jira provider or an OpenAI adapter is a config
+> change. The engine operates on interfaces; the config file is where implementations are chosen.
+
 ### Technology
 
 | Choice           | Detail                                               |
@@ -243,7 +283,7 @@ for the recovery handler specification.
 | State management | Zustand (vanilla store + React binding)              |
 | GitHub API       | `@octokit/rest` with `@octokit/auth-app`             |
 | Agent invocation | `@anthropic-ai/claude-agent-sdk`                     |
-| Configuration    | TypeScript config file                               |
+| Configuration    | TypeScript config file (`control-plane.config.ts`)   |
 
 > **Rationale:** GitHub API and agent SDK libraries are isolated behind provider and runtime adapter
 > boundaries respectively. They are not imported outside their boundary modules.
@@ -377,6 +417,12 @@ types.
 - [ ] Given a work item with unresolved `blockedBy` dependencies enters `pending`, when
       `handleReadiness` evaluates it, then it remains `pending` until all blockers reach terminal
       status — `handleDependencyResolution` promotes it when the last blocker completes.
+- [ ] Given the config file uses top-level `await` for async provider construction, when the entry
+      point loads the config, then it awaits the module evaluation before passing interfaces to the
+      engine — no unresolved promises leak into `EngineConfig`.
+- [ ] Given a config file that provides provider interfaces backed by a non-GitHub implementation,
+      when the engine starts, then polling, event processing, and command execution operate normally
+      — no engine or entry point changes are required.
 
 ## Known Limitations
 

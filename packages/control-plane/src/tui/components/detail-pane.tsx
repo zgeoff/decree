@@ -4,33 +4,29 @@ import { useEffect, useRef, useState } from 'react';
 import { match } from 'ts-pattern';
 import type { StoreApi } from 'zustand';
 import { useStore } from 'zustand';
+import type { AgentRun, EngineState } from '../../engine/state-store/types.ts';
+import { getDisplayWorkItems } from '../selectors/get-display-work-items.ts';
 import type {
-  CachedIssueDetail,
-  CachedPRDetail,
-  Task,
-  TaskAgent,
-  TaskStatus,
-  TUIStore,
+  CachedDetail,
+  DisplayStatus,
+  DisplayWorkItem,
+  TUIActions,
+  TUILocalState,
 } from '../types.ts';
 
 export interface DetailPaneProps {
-  store: StoreApi<TUIStore>;
+  engineStore: StoreApi<EngineState>;
+  tuiStore: StoreApi<TUILocalState & TUIActions>;
   paneWidth: number;
   paneHeight: number;
 }
 
 type ContentView =
   | { view: 'none' }
-  | { view: 'issueDetail'; task: Task; detail: CachedIssueDetail | null }
-  | { view: 'agentStream'; task: Task; lines: string[] }
-  | { view: 'prSummary'; task: Task; prDetails: PrSummaryEntry[] }
-  | { view: 'crashDetail'; task: Task; agent: TaskAgent | null };
-
-interface PrSummaryEntry {
-  prNumber: number;
-  detail: CachedPRDetail | null;
-  ciStatus: 'pending' | 'success' | 'failure' | null;
-}
+  | { view: 'issueDetail'; displayItem: DisplayWorkItem; detail: CachedDetail | null }
+  | { view: 'agentStream'; displayItem: DisplayWorkItem; lines: string[] }
+  | { view: 'revisionSummary'; displayItem: DisplayWorkItem; detail: CachedDetail | null }
+  | { view: 'crashDetail'; displayItem: DisplayWorkItem; latestRun: AgentRun | null };
 
 const SCROLL_STEP = 1;
 const ELLIPSIS = '\u2026';
@@ -38,12 +34,13 @@ const ELLIPSIS = '\u2026';
 const ANSI_REGEX = /\x1b\[[0-9;]*m|\x1b\]8;;[^\x07]*\x07/g;
 
 export function DetailPane(props: DetailPaneProps): ReactNode {
-  const pinnedTask = useStore(props.store, (s) => s.pinnedTask);
-  const tasks = useStore(props.store, (s) => s.tasks);
-  const agentStreams = useStore(props.store, (s) => s.agentStreams);
-  const issueDetailCache = useStore(props.store, (s) => s.issueDetailCache);
-  const prDetailCache = useStore(props.store, (s) => s.prDetailCache);
-  const focusedPane = useStore(props.store, (s) => s.focusedPane);
+  const pinnedWorkItem = useStore(props.tuiStore, (s) => s.pinnedWorkItem);
+  const engineState = useStore(props.engineStore);
+  const streamBuffers = useStore(props.tuiStore, (s) => s.streamBuffers);
+  const detailCache = useStore(props.tuiStore, (s) => s.detailCache);
+  const focusedPane = useStore(props.tuiStore, (s) => s.focusedPane);
+
+  const displayItems = getDisplayWorkItems(engineState);
 
   const [scrollOffset, setScrollOffset] = useState(0);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -51,12 +48,15 @@ export function DetailPane(props: DetailPaneProps): ReactNode {
 
   const visibleRowCount = props.paneHeight;
 
-  const task = pinnedTask !== null ? (tasks.get(pinnedTask) ?? null) : null;
+  const displayItem =
+    pinnedWorkItem !== null
+      ? (displayItems.find((item) => item.workItem.id === pinnedWorkItem) ?? null)
+      : null;
+
   const contentView = resolveContentView({
-    task,
-    agentStreams,
-    issueDetailCache,
-    prDetailCache,
+    displayItem,
+    streamBuffers,
+    detailCache,
   });
 
   const allLines = buildContentLines(contentView);
@@ -66,15 +66,15 @@ export function DetailPane(props: DetailPaneProps): ReactNode {
   const streamLines = isStreaming ? contentView.lines : undefined;
   const chunkCount = streamLines?.length ?? 0;
 
-  const prevPinnedTaskRef = useRef(pinnedTask);
-  const prevStatusRef = useRef<TaskStatus | null>(task?.status ?? null);
+  const prevPinnedRef = useRef(pinnedWorkItem);
+  const prevStatusRef = useRef<DisplayStatus | null>(displayItem?.displayStatus ?? null);
 
   useEffect(() => {
-    const pinnedChanged = pinnedTask !== prevPinnedTaskRef.current;
-    const currentStatus = task?.status ?? null;
+    const pinnedChanged = pinnedWorkItem !== prevPinnedRef.current;
+    const currentStatus = displayItem?.displayStatus ?? null;
     const statusChanged = currentStatus !== prevStatusRef.current;
 
-    prevPinnedTaskRef.current = pinnedTask;
+    prevPinnedRef.current = pinnedWorkItem;
     prevStatusRef.current = currentStatus;
 
     if (pinnedChanged || statusChanged) {
@@ -93,7 +93,15 @@ export function DetailPane(props: DetailPaneProps): ReactNode {
       setScrollOffset(Math.max(0, lineCount - visibleRowCount));
     }
     prevChunkCountRef.current = chunkCount;
-  }, [pinnedTask, task?.status, chunkCount, autoScroll, isStreaming, lineCount, visibleRowCount]);
+  }, [
+    pinnedWorkItem,
+    displayItem?.displayStatus,
+    chunkCount,
+    autoScroll,
+    isStreaming,
+    lineCount,
+    visibleRowCount,
+  ]);
 
   useInput((input, key) => {
     if (focusedPane !== 'detailPane') {
@@ -142,38 +150,36 @@ export function DetailPane(props: DetailPaneProps): ReactNode {
 // ---------------------------------------------------------------------------
 
 interface ResolveContentViewParams {
-  task: Task | null;
-  agentStreams: Map<string, string[]>;
-  issueDetailCache: Map<number, CachedIssueDetail>;
-  prDetailCache: Map<number, CachedPRDetail>;
+  displayItem: DisplayWorkItem | null;
+  streamBuffers: Map<string, string[]>;
+  detailCache: Map<string, CachedDetail>;
 }
 
 function resolveContentView(params: ResolveContentViewParams): ContentView {
-  if (params.task === null) {
+  if (params.displayItem === null) {
     return { view: 'none' };
   }
 
-  const task = params.task;
+  const displayItem = params.displayItem;
 
-  return match(task.status)
-    .with('ready-to-implement', 'needs-refinement', 'blocked', (): ContentView => {
-      const detail = params.issueDetailCache.get(task.issueNumber) ?? null;
-      return { view: 'issueDetail', task, detail };
+  return match(displayItem.displayStatus)
+    .with('dispatch', 'pending', 'needs-refinement', 'blocked', (): ContentView => {
+      const detail = params.detailCache.get(displayItem.workItem.id) ?? null;
+      return { view: 'issueDetail', displayItem, detail };
     })
-    .with('agent-implementing', 'agent-reviewing', (): ContentView => {
-      const sessionID = task.agent?.sessionID;
-      const lines = sessionID ? (params.agentStreams.get(sessionID) ?? []) : [];
-      return { view: 'agentStream', task, lines };
+    .with('implementing', 'reviewing', (): ContentView => {
+      const sessionID = displayItem.latestRun?.sessionID;
+      const lines = sessionID ? (params.streamBuffers.get(sessionID) ?? []) : [];
+      return { view: 'agentStream', displayItem, lines };
     })
-    .with('ready-to-merge', (): ContentView => {
-      const prDetails: PrSummaryEntry[] = task.prs.map((pr) => ({
-        prNumber: pr.number,
-        detail: params.prDetailCache.get(pr.number) ?? null,
-        ciStatus: pr.ciStatus,
-      }));
-      return { view: 'prSummary', task, prDetails };
+    .with('approved', (): ContentView => {
+      const detail = params.detailCache.get(displayItem.workItem.id) ?? null;
+      return { view: 'revisionSummary', displayItem, detail };
     })
-    .with('agent-crashed', (): ContentView => ({ view: 'crashDetail', task, agent: task.agent }))
+    .with(
+      'failed',
+      (): ContentView => ({ view: 'crashDetail', displayItem, latestRun: displayItem.latestRun }),
+    )
     .exhaustive();
 }
 
@@ -184,10 +190,10 @@ function resolveContentView(params: ResolveContentViewParams): ContentView {
 function buildContentLines(contentView: ContentView): string[] {
   return match(contentView)
     .with({ view: 'none' }, () => buildNoTaskLines())
-    .with({ view: 'issueDetail' }, (cv) => buildIssueDetailLines(cv.task, cv.detail))
-    .with({ view: 'agentStream' }, (cv) => buildAgentStreamLines(cv.task, cv.lines))
-    .with({ view: 'prSummary' }, (cv) => buildPrSummaryLines(cv.task, cv.prDetails))
-    .with({ view: 'crashDetail' }, (cv) => buildCrashDetailLines(cv.agent))
+    .with({ view: 'issueDetail' }, (cv) => buildIssueDetailLines(cv.displayItem, cv.detail))
+    .with({ view: 'agentStream' }, (cv) => buildAgentStreamLines(cv.displayItem, cv.lines))
+    .with({ view: 'revisionSummary' }, (cv) => buildRevisionSummaryLines(cv.displayItem, cv.detail))
+    .with({ view: 'crashDetail' }, (cv) => buildCrashDetailLines(cv.displayItem, cv.latestRun))
     .exhaustive();
 }
 
@@ -195,78 +201,81 @@ function buildNoTaskLines(): string[] {
   return ['No task selected'];
 }
 
-function buildIssueDetailLines(task: Task, detail: CachedIssueDetail | null): string[] {
-  const lines: string[] = [`#${task.issueNumber} ${task.title}`];
+function buildIssueDetailLines(
+  displayItem: DisplayWorkItem,
+  detail: CachedDetail | null,
+): string[] {
+  const lines: string[] = [`#${displayItem.workItem.id} ${displayItem.workItem.title}`];
 
-  if (detail === null) {
+  if (detail === null || detail.loading) {
     lines.push('Loading...');
     return lines;
   }
 
-  lines.push(`Labels: ${detail.labels.join(', ')}`);
-  if (detail.stale) {
-    lines.push('(Refreshing...)');
+  if (detail.body !== null) {
+    lines.push('');
+    lines.push(...detail.body.split('\n'));
   }
-  lines.push('');
-  lines.push(...detail.body.split('\n'));
+
   return lines;
 }
 
-function buildAgentStreamLines(task: Task, lines: string[]): string[] {
-  const agentLabel = task.agent?.type === 'implementor' ? 'Implementor' : 'Reviewer';
-  return [`${agentLabel} output for #${task.issueNumber}`, ...lines];
+function buildAgentStreamLines(displayItem: DisplayWorkItem, lines: string[]): string[] {
+  const latestRun = displayItem.latestRun;
+  const agentLabel = latestRun?.role === 'reviewer' ? 'Reviewer' : 'Implementor';
+  return [`${agentLabel} output for #${displayItem.workItem.id}`, ...lines];
 }
 
-function buildPrSummaryLines(task: Task, prDetails: PrSummaryEntry[]): string[] {
-  if (prDetails.length === 0) {
-    return [`#${task.issueNumber} ${task.title}`, 'No linked PRs'];
+function buildRevisionSummaryLines(
+  displayItem: DisplayWorkItem,
+  detail: CachedDetail | null,
+): string[] {
+  const revision = displayItem.linkedRevision;
+  if (revision === null) {
+    return [`#${displayItem.workItem.id} ${displayItem.workItem.title}`, 'No linked revision'];
   }
 
-  const lines: string[] = [];
+  const lines: string[] = [`PR ${revision.id}: ${revision.title}`];
 
-  for (const entry of prDetails) {
-    if (entry.detail === null) {
-      lines.push(`PR #${entry.prNumber}: Loading...`);
-    } else {
-      lines.push(`PR #${entry.prNumber}: ${entry.detail.title}`);
-      lines.push(`Changed files: ${entry.detail.changedFilesCount}`);
-      lines.push(`CI: ${entry.ciStatus ?? 'unknown'}`);
+  if (detail !== null && !detail.loading && detail.revisionFiles !== null) {
+    lines.push(`Changed files: ${detail.revisionFiles.length}`);
+    for (const file of detail.revisionFiles) {
+      lines.push(`  ${file.status} ${file.path}`);
+    }
+  } else {
+    lines.push('Loading...');
+  }
 
-      if (entry.ciStatus === 'failure' && entry.detail.failedCheckNames) {
-        for (const checkName of entry.detail.failedCheckNames) {
-          lines.push(`  - ${checkName}`);
-        }
-      }
-
-      if (entry.detail.stale) {
-        lines.push('(Refreshing...)');
-      }
+  const pipeline = revision.pipeline;
+  if (pipeline !== null) {
+    lines.push(`CI: ${pipeline.status}`);
+    if (pipeline.status === 'failure' && pipeline.reason !== null) {
+      lines.push(`  ${pipeline.reason}`);
     }
   }
 
   return lines;
 }
 
-function buildCrashDetailLines(agent: TaskAgent | null): string[] {
-  if (agent === null) {
+function buildCrashDetailLines(
+  _displayItem: DisplayWorkItem,
+  latestRun: AgentRun | null,
+): string[] {
+  if (latestRun === null) {
     return ['Crash information unavailable', 'Press [d] to retry'];
   }
 
-  const agentLabel = agent.type === 'implementor' ? 'Implementor' : 'Reviewer';
+  const agentLabel = latestRun.role === 'reviewer' ? 'Reviewer' : 'Implementor';
   const lines: string[] = [`Agent: ${agentLabel}`];
 
-  if (agent.crash) {
-    lines.push(`\x1b[31mError: ${agent.crash.error}\x1b[0m`);
+  lines.push(`Session: ${latestRun.sessionID}`);
+
+  if (latestRun.role !== 'planner' && 'branchName' in latestRun) {
+    lines.push(`Branch: ${latestRun.branchName}`);
   }
 
-  lines.push(`Session: ${agent.sessionID}`);
-
-  if (agent.branchName) {
-    lines.push(`Branch: ${agent.branchName}`);
-  }
-
-  if (agent.logFilePath) {
-    lines.push(`Log: ${buildOSC8Link(`file://${agent.logFilePath}`, agent.logFilePath)}`);
+  if (latestRun.logFilePath !== null) {
+    lines.push(`Log: ${buildOSC8Link(`file://${latestRun.logFilePath}`, latestRun.logFilePath)}`);
   }
 
   lines.push('Press [d] to retry');

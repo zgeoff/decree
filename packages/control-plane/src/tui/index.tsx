@@ -1,5 +1,5 @@
 import { render } from 'ink';
-import type { Engine } from '../types.ts';
+import type { Engine } from '../engine/v2-engine/types.ts';
 import { App } from './app.tsx';
 
 export interface RenderAppConfig {

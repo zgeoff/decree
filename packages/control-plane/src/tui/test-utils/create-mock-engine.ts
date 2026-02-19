@@ -1,75 +1,51 @@
 import { vi } from 'vitest';
-import type { Engine, EngineCommand, EngineEvent } from '../../types.ts';
-
-type EventHandler = (event: EngineEvent) => void;
+import type { StoreApi } from 'zustand';
+import { createEngineStore } from '../../engine/state-store/create-engine-store.ts';
+import type { EngineState } from '../../engine/state-store/types.ts';
+import type { Engine } from '../../engine/v2-engine/types.ts';
 
 export interface MockEngineOverrides {
   start?: Engine['start'];
-  getIssueDetails?: Engine['getIssueDetails'];
-  getPRForIssue?: Engine['getPRForIssue'];
-  getPRFiles?: Engine['getPRFiles'];
-  getPRReviews?: Engine['getPRReviews'];
-  getCIStatus?: Engine['getCIStatus'];
+  stop?: Engine['stop'];
+  getWorkItemBody?: Engine['getWorkItemBody'];
+  getRevisionFiles?: Engine['getRevisionFiles'];
   getAgentStream?: Engine['getAgentStream'];
 }
 
 export interface MockEngineResult {
   engine: Engine;
-  emit: (event: EngineEvent) => void;
-  sentCommands: EngineCommand[];
+  store: StoreApi<EngineState>;
 }
 
 export function createMockEngine(overrides?: MockEngineOverrides): MockEngineResult {
-  const handlers: EventHandler[] = [];
-  const sentCommands: EngineCommand[] = [];
+  const store = createEngineStore();
 
   const engine: Engine = {
-    start: overrides?.start ?? vi.fn(async () => ({ issueCount: 0, recoveriesPerformed: 0 })),
-    on(handler: EventHandler): () => void {
-      handlers.push(handler);
-      return () => {
-        const idx = handlers.indexOf(handler);
-        if (idx >= 0) {
-          handlers.splice(idx, 1);
-        }
-      };
+    store,
+    start:
+      overrides?.start ??
+      vi.fn(async () => {
+        /* no-op */
+      }),
+    stop:
+      overrides?.stop ??
+      vi.fn(async () => {
+        /* no-op */
+      }),
+    enqueue: vi.fn(),
+    getState(): EngineState {
+      return store.getState();
     },
-    send: vi.fn((command: EngineCommand): void => {
-      sentCommands.push(command);
-    }),
-    getIssueDetails:
-      overrides?.getIssueDetails ??
-      vi.fn(async () => ({
-        number: 1,
-        title: 'Test',
-        body: 'body',
-        labels: ['task:implement'],
-        createdAt: '2026-01-01T00:00:00Z',
-      })),
-    getPRForIssue:
-      overrides?.getPRForIssue ??
-      vi.fn(async () => ({
-        number: 10,
-        title: 'PR Title',
-        changedFilesCount: 3,
-        ciStatus: 'success' as const,
-        url: 'https://github.com/owner/repo/pull/10',
-        isDraft: false,
-        headRefName: 'feature-branch',
-      })),
-    getPRFiles: overrides?.getPRFiles ?? vi.fn(async () => []),
-    getPRReviews: overrides?.getPRReviews ?? vi.fn(async () => ({ reviews: [], comments: [] })),
-    getCIStatus:
-      overrides?.getCIStatus ??
-      vi.fn(async () => ({ overall: 'success' as const, failedCheckRuns: [] })),
+    subscribe(listener: (state: EngineState) => void): () => void {
+      return store.subscribe((state) => {
+        listener(state);
+      });
+    },
+    getWorkItemBody: overrides?.getWorkItemBody ?? vi.fn(async () => ''),
+    getRevisionFiles: overrides?.getRevisionFiles ?? vi.fn(async () => []),
     getAgentStream: overrides?.getAgentStream ?? vi.fn(() => null),
+    refresh: vi.fn(),
   };
 
-  function emit(event: EngineEvent): void {
-    for (const handler of handlers) {
-      handler(event);
-    }
-  }
-
-  return { engine, emit, sentCommands };
+  return { engine, store };
 }
