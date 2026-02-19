@@ -16,8 +16,8 @@ not by assigning multiple work items to one agent.
 
 The Implementor produces structured output only. It does not push branches, open revisions, post
 comments, or change work item status. All external mutations are performed by the engine after
-processing the agent's result. See
-[002-architecture.md: Implementor](./v2/002-architecture.md#implementor) for the role contract.
+processing the agent's result. See [domain-model.md: Implementor](./domain-model.md#implementor) for
+the role contract.
 
 ## Constraints
 
@@ -172,15 +172,11 @@ change labels — all of that is handled by the engine.
 | Debugging limit (re-reading files)          | `validation-failure` | Description of the failure and what was attempted before stopping      |
 | Pre-existing validation failure             | `validation-failure` | Which validation step failed and why it is outside the agent's scope   |
 
-The `summary` field in the structured output replaces the Blocker Comment Format from v1 — it
-carries the same information (blocker type label, description, options, recommendation, impact) as
-plain text rather than as a GitHub issue comment. Blocker type is not a separate schema field — it
-is embedded in the summary text (e.g., "Type: spec-gap — …").
-
-> **Rationale:** In the v2 architecture, the agent produces artifacts only. The engine's
-> `ApplyImplementorResult` command handles outcome-dependent operations — transitioning status to
-> `blocked` or `needs-refinement`, and including the summary in the work item update if needed. The
-> agent does not need to know how blocker information is surfaced.
+The `summary` field carries blocker information (type label, description, options, recommendation,
+impact) as plain text. Blocker type is not a separate schema field — it is embedded in the summary
+text (e.g., "Type: spec-gap — …"). The engine's `ApplyImplementorResult` command handles
+outcome-dependent operations — transitioning status to `blocked` or `needs-refinement`, and
+including the summary in the work item update if needed.
 
 ## Structured Output
 
@@ -212,7 +208,7 @@ extracts it from the worktree via `git diff` after the session completes. See
 | `validation-failure` | Pre-submit validation failed due to something outside the agent's scope or debug limits. | Transition to `needs-refinement`.                   |
 
 The engine processes outcomes via `ApplyImplementorResult`. See
-[002-architecture.md: Implementor](./v2/002-architecture.md#implementor) for the full status flow.
+[domain-model.md: Implementor](./domain-model.md#implementor) for the full status flow.
 
 ### Summary Guidelines
 
@@ -221,8 +217,7 @@ and the human operator (for understanding what happened). Content varies by outc
 
 - **`completed`:** Brief description of what was implemented and tested.
 - **`blocked`:** Structured blocker information — type, description, spec reference (for spec
-  blockers), options with trade-offs, recommendation, and impact. This is the v2 equivalent of the
-  Blocker Comment Format.
+  blockers), options with trade-offs, recommendation, and impact.
 - **`validation-failure`:** Which validation step failed, what the agent tried, and why the failure
   is outside its scope.
 
@@ -280,15 +275,15 @@ and the human operator (for understanding what happened). Content varies by outc
 - [control-plane-engine-runtime-adapter-claude.md](./control-plane-engine-runtime-adapter-claude.md)
   — Context assembly (enriched prompt format), worktree management, patch extraction, structured
   output validation.
-- [002-architecture.md](./v2/002-architecture.md) — `ImplementorResult` type definition, Implementor
-  role contract, `ApplyImplementorResult` command semantics.
+- [domain-model.md](./domain-model.md) — `ImplementorResult` type definition, Implementor role
+  contract, `ApplyImplementorResult` command semantics.
 
 ## References
 
-- [002-architecture.md: Implementor](./v2/002-architecture.md#implementor) — Role contract, status
-  flow, concurrency.
-- [002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results) — `ImplementorResult`
-  type definition.
+- [domain-model.md: Implementor](./domain-model.md#implementor) — Role contract, status flow,
+  concurrency.
+- [domain-model.md: Agent Results](./domain-model.md#agent-results) — `ImplementorResult` type
+  definition.
 - [control-plane-engine-handlers.md: handleImplementation](./control-plane-engine-handlers.md#handleimplementation)
   — Dispatch and result processing logic.
 - [control-plane-engine-command-executor.md](./control-plane-engine-command-executor.md) —

@@ -39,9 +39,8 @@ entity types.
 - **AgentRun** — from `EngineState.agentRuns`. Run status, role, session ID, branch name, log file
   path, error.
 
-Domain types are defined in
-[002-architecture.md: Domain Model](./v2/002-architecture.md#domain-model). `AgentRun` variants are
-defined in
+Domain types are defined in [domain-model.md: Domain Model](./domain-model.md#domain-model).
+`AgentRun` variants are defined in
 [control-plane-engine-state-store.md](./control-plane-engine-state-store.md#agentrun-variants).
 
 Presentation-only derivations (display status, section assignment, sort weights) are computed inline
@@ -591,10 +590,9 @@ The `d` key is active when the selected work item's display status is:
 For all other display statuses, or when `failed` with a reviewer run, `d` is a no-op.
 
 > **Rationale:** Only `UserRequestedImplementorRun` exists as a user dispatch event.
-> `UserRequestedReviewerRun` is a future extension (see
-> [002-architecture.md: Future Extensions](./v2/002-architecture.md#future-extensions)). A failed
-> reviewer re-enters the dispatch cycle through automated recovery — the handler transitions the
-> work item back to `pending`, and the standard pipeline handles re-dispatch.
+> `UserRequestedReviewerRun` is a future extension (see [Known Limitations](#known-limitations)). A
+> failed reviewer re-enters the dispatch cycle through automated recovery — the handler transitions
+> the work item back to `pending`, and the standard pipeline handles re-dispatch.
 
 #### URL Resolution
 
@@ -809,9 +807,8 @@ On `y`: call `shutdown()`. On `n` / `Escape`: dismiss.
 - Items beyond section sub-pane capacity are not reachable via keyboard navigation. The `(V/N)`
   overflow indicator signals truncation, but the user cannot scroll to hidden items.
 - Reviewer dispatch from the TUI is not supported. Only implementor runs can be dispatched via the
-  `d` key. Reviewer dispatch is automated (triggered by pipeline success on linked revisions). See
-  [002-architecture.md: Future Extensions](./v2/002-architecture.md#future-extensions) for planned
-  `UserRequestedReviewerRun` support.
+  `d` key. Reviewer dispatch is automated (triggered by pipeline success on linked revisions).
+  `UserRequestedReviewerRun` support is a planned extension.
 - Work item URLs are constructed from TUI configuration using GitHub URL format. Revision URLs are
   provider-agnostic (from `Revision.url`).
 - Run cancellation (`UserCancelledRun`) and manual status transitions (`UserTransitionedStatus`) are
@@ -826,16 +823,14 @@ On `y`: call `shutdown()`. On `n` / `Escape`: dismiss.
   `refresh`).
 - [control-plane-engine-state-store.md](./control-plane-engine-state-store.md) — `EngineState`,
   `AgentRun` variants, selectors (`getActivePlannerRun`, `isAgentRunningForWorkItem`).
-- [002-architecture.md](./v2/002-architecture.md) — domain types (`WorkItem`, `Revision`,
-  `EngineEvent`, `WorkItemStatus`, `Priority`), TUI Contract.
+- [domain-model.md](./domain-model.md) — domain types (`WorkItem`, `Revision`, `EngineEvent`,
+  `WorkItemStatus`, `Priority`).
+- [control-plane-engine-github-provider.md](./control-plane-engine-github-provider.md) —
+  `RevisionFile` type.
 - Ink — React for the terminal.
 - Zustand — state management (React binding via `useStore`).
 
 ## References
 
-- [002-architecture.md: TUI Contract](./v2/002-architecture.md#tui-contract) — architectural
-  contract for TUI behavior.
 - [control-plane-engine.md](./control-plane-engine.md) — engine spec (v1.0.0).
 - [control-plane-engine-state-store.md](./control-plane-engine-state-store.md) — state store spec.
-- [001-plan.md](./v2/001-plan.md) — decisions 10, 18 (TUI as thin projection, on-demand detail
-  fetches).

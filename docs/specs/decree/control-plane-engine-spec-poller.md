@@ -108,12 +108,15 @@ updated) and retries.
 > **Rationale:** Provider-internal retry handles transient failures. If the call still fails, the
 > poller skips the cycle rather than emitting events with missing commit metadata.
 
+The `commitSHA` field on `SpecChanged` events is consumed by the TUI to construct diff URLs (e.g.,
+GitHub compare links) for spec changes.
+
 ### Type Definitions
 
 ```ts
 interface SpecPoller {
   poll(): Promise<void>;
-  stop(): void;
+  stop(): void; // clears the interval timer; if a poll is in-flight, it runs to completion
 }
 
 interface SpecPollerConfig {
@@ -127,12 +130,6 @@ interface SpecPollerConfig {
 ```
 
 ### Module Location
-
-> **v2 module.** This is new v2 code (`create-spec-poller-v2.ts`) in `engine/pollers/`, coexisting
-> with the v1 spec poller (`create-spec-poller.ts`). The v1 control plane remains the running system
-> until the full v2 stack (engine, TUI, agents, workflow) ships as a single cutover — see
-> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
-> Do not modify or delete v1 modules when implementing this spec.
 
 The poller lives in `engine/pollers/`. Files:
 
@@ -165,8 +162,8 @@ engine/pollers/
 
 ## Dependencies
 
-- [002-architecture.md](./v2/002-architecture.md) — Domain types (`Spec`, `SpecChanged` event,
-  `SpecFrontmatterStatus`), poller mechanism.
+- [domain-model.md](./domain-model.md) — Domain types (`Spec`, `SpecChanged` event,
+  `SpecFrontmatterStatus`).
 - [control-plane-engine-state-store.md](./control-plane-engine-state-store.md) — `EngineState`,
   `specs` map for diffing, `lastPlannedSHAs` (replaces snapshot seeding).
 - [control-plane-engine-github-provider.md](./control-plane-engine-github-provider.md) —
@@ -174,8 +171,7 @@ engine/pollers/
 
 ## References
 
-- [002-architecture.md: Pollers](./v2/002-architecture.md#pollers) — Poller mechanism and types.
-- [002-architecture.md: Domain Events](./v2/002-architecture.md#domain-events) — `SpecChanged` event
+- [domain-model.md: Domain Events](./domain-model.md#domain-events) — `SpecChanged` event
   definition.
 - [control-plane-engine.md](./control-plane-engine.md) — Parent engine spec (startup, event
   processing loop).

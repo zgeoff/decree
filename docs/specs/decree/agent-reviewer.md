@@ -174,7 +174,7 @@ AgentReviewComment {
 }
 ```
 
-Types are defined in [002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results).
+Types are defined in [domain-model.md: Agent Results](./domain-model.md#agent-results).
 
 ### Verdict
 
@@ -196,7 +196,7 @@ findings. Warnings do not influence the verdict.
 
 The agent does not post the review or transition work item status. The engine processes the
 `ReviewerResult` via the `ApplyReviewerResult` command — see
-[002-architecture.md: Agent Role Contracts (Reviewer)](./v2/002-architecture.md#reviewer).
+[control-plane-engine-command-executor.md: ApplyReviewerResult](./control-plane-engine-command-executor.md#applyreviewerresult).
 
 The `ApplyReviewerResult` command posts the review to the revision (or updates an existing review)
 and transitions the work item status based on the verdict:
@@ -254,24 +254,22 @@ and transitions the work item status based on the verdict:
 
 ## Dependencies
 
-- [002-architecture.md](./v2/002-architecture.md) — `ReviewerResult`, `AgentReview`,
-  `AgentReviewComment` types, Reviewer role contract, `ApplyReviewerResult` command.
+- [domain-model.md](./domain-model.md) — `ReviewerResult`, `AgentReview`, `AgentReviewComment`
+  types, `ApplyReviewerResult` command.
 - [control-plane-engine-runtime-adapter-claude.md](./control-plane-engine-runtime-adapter-claude.md)
   — Context assembly (enriched prompt format), `ReviewerOutputSchema` (Zod validation), agent
   definition loading, project context injection.
 - [control-plane-engine-handlers.md](./control-plane-engine-handlers.md) — `handleReview` handler
   (dispatch trigger, result processing).
 - `CLAUDE.md` — Code style, naming conventions, and patterns that the agent checks against.
-- `workflow-contracts.md` — Scope Enforcement Rules.
+- [workflow-contracts.md](./workflow-contracts.md) — Scope Enforcement Rules.
 - Agent Bash Tool Validator — PreToolUse hook that validates all Bash commands against
   blocklist/allowlist before execution. See `agent-hook-bash-validator.md` (rules) and
   `agent-hook-bash-validator-script.md` (shell implementation).
 
 ## References
 
-- [002-architecture.md: Agent Role Contracts (Reviewer)](./v2/002-architecture.md#reviewer) —
-  Trigger, input, output, concurrency, status flow.
-- [002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results) — `ReviewerResult`,
+- [domain-model.md: Agent Results](./domain-model.md#agent-results) — `ReviewerResult`,
   `AgentReview`, `AgentReviewComment` type definitions.
 - [control-plane-engine-runtime-adapter-claude.md: Reviewer Context](./control-plane-engine-runtime-adapter-claude.md#reviewer-context)
   — Enriched prompt format and data sources.

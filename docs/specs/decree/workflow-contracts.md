@@ -2,7 +2,7 @@
 title: Workflow Contracts
 version: 0.8.0
 last_updated: 2026-02-19
-status: draft
+status: approved
 ---
 
 # Workflow Contracts
@@ -12,15 +12,15 @@ status: draft
 Shared data formats and templates used across workflow agents. Each format is defined once here and
 referenced by the agent specs that produce or consume it. Agent structured output types
 (`PlannerResult`, `ImplementorResult`, `ReviewerResult`) are defined in
-[002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results) and detailed in the
-respective agent specs — this document does not redefine them.
+[domain-model.md: Agent Results](./domain-model.md#agent-results) and detailed in the respective
+agent specs — this document does not redefine them.
 
 ## Constraints
 
 - This spec is the single source of truth for work item templates and scope enforcement rules —
   agent definitions reference these via cross-references, not inline copies.
-- Agent structured output types are defined in 002-architecture.md — this spec does not duplicate
-  type definitions.
+- Agent structured output types are defined in domain-model.md — this spec does not duplicate type
+  definitions.
 - Every template must include all required fields; optional fields must be explicitly marked as
   optional.
 - Template changes require a version bump in this spec and updates to all consuming agent specs.
@@ -33,27 +33,11 @@ Agents produce structured output validated by the runtime adapter. Each role has
 type — the engine processes these artifacts and does not rely on agents having performed side
 effects.
 
-| Role        | Result Type         | Defined In                                                                                           |
-| ----------- | ------------------- | ---------------------------------------------------------------------------------------------------- |
-| Planner     | `PlannerResult`     | [002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results), `agent-planner.md`     |
-| Implementor | `ImplementorResult` | [002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results), `agent-implementor.md` |
-| Reviewer    | `ReviewerResult`    | [002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results), `agent-reviewer.md`    |
-
-In the v1 architecture, blocker information was posted as GitHub issue comments (Blocker Comment
-Format), escalation information was posted as separate comments (Escalation Comment Format), and
-reviews used markdown templates (Review Approval/Rejection Templates). In v2, all of this
-information is carried in the agent's structured result:
-
-- **Blocker and escalation information** is carried in `ImplementorResult.summary`. See
-  [agent-implementor.md: Summary Guidelines](./agent-implementor.md#summary-guidelines) for content
-  requirements per outcome.
-- **Review verdicts and feedback** are carried in `ReviewerResult.review` (`AgentReview` with
-  verdict, summary, and line-level comments). See
-  [agent-reviewer.md: Structured Output](./agent-reviewer.md#structured-output) for the schema and
-  comment format.
-- **Planning results** are carried in `PlannerResult` with `create`, `close`, and `update` arrays
-  using `tempID` references for dependency ordering. See
-  [agent-planner.md: Completion Output](./agent-planner.md#completion-output) for the schema.
+| Role        | Result Type         | Defined In                                                                                |
+| ----------- | ------------------- | ----------------------------------------------------------------------------------------- |
+| Planner     | `PlannerResult`     | [domain-model.md: Agent Results](./domain-model.md#agent-results), `agent-planner.md`     |
+| Implementor | `ImplementorResult` | [domain-model.md: Agent Results](./domain-model.md#agent-results), `agent-implementor.md` |
+| Reviewer    | `ReviewerResult`    | [domain-model.md: Agent Results](./domain-model.md#agent-results), `agent-reviewer.md`    |
 
 ### Work Item Templates
 
@@ -148,7 +132,9 @@ Labels at creation (included in `PlannedWorkItem.labels`):
 - **Type:** `task:refinement`
 - **Status:** `status:pending`
 - **Priority:** One of `priority:high` (default — blocks task creation), `priority:medium` (only if
-  the ambiguous section does not block critical-path work)
+  the ambiguous section does not block critical-path work). `priority:low` is not used for
+  refinement items — refinements by definition block task creation and warrant at least medium
+  priority.
 
 ### Scope Enforcement Rules
 
@@ -226,14 +212,14 @@ When a file outside scope needs non-incidental changes:
 - [agent-implementor.md](./agent-implementor.md) — consumes scope enforcement rules during
   implementation
 - [agent-reviewer.md](./agent-reviewer.md) — consumes scope enforcement rules during review
-- [002-architecture.md](./v2/002-architecture.md) — `PlannerResult`, `ImplementorResult`,
-  `ReviewerResult`, `AgentReview` type definitions
+- [domain-model.md](./domain-model.md) — `PlannerResult`, `ImplementorResult`, `ReviewerResult`,
+  `AgentReview` type definitions
 - [script-label-setup.md](./script-label-setup.md) — label definitions (names, descriptions, colors)
   used in work item templates
 
 ## References
 
-- `docs/specs/decree/v2/002-architecture.md` — Agent Results (structured output type definitions)
+- `docs/specs/decree/domain-model.md` — Agent Results (structured output type definitions)
 - `docs/specs/decree/workflow.md`
 - `docs/specs/decree/agent-planner.md`
 - `docs/specs/decree/agent-implementor.md`

@@ -1,6 +1,6 @@
 ---
 title: Control Plane Engine — GitHub Provider
-version: 0.2.0
+version: 0.3.0
 last_updated: 2026-02-16
 status: approved
 ---
@@ -30,7 +30,7 @@ leak past the provider — all consumers operate on domain types only.
 ### Provider Interfaces
 
 Five interfaces define the provider contract. They are provider-agnostic — they reference only
-domain types defined in [002-architecture.md: Domain Model](./v2/002-architecture.md#domain-model).
+domain types defined in [domain-model.md: Domain Model](./domain-model.md#domain-model).
 
 #### WorkProviderReader
 
@@ -75,6 +75,7 @@ interface RevisionProviderReader {
   listRevisions(): Promise<Revision[]>;
   getRevision(id: string): Promise<Revision | null>;
   getRevisionFiles(id: string): Promise<RevisionFile[]>;
+  getReviewHistory(revisionID: string): Promise<ReviewHistory>;
 }
 ```
 
@@ -82,6 +83,9 @@ interface RevisionProviderReader {
   populated.
 - `getRevision` — returns a single revision by id. Returns `null` if not found.
 - `getRevisionFiles` — returns the changed files for a revision (on-demand detail fetch).
+- `getReviewHistory` — returns all reviews and inline comments for a revision. Maps GitHub review
+  data to the domain `ReviewHistory` type defined in
+  [domain-model.md: ReviewHistory](./domain-model.md#reviewhistory).
 
 #### RevisionProviderWriter
 
@@ -215,6 +219,32 @@ issue number as a string. If no match is found, `workItemID` is `null`.
 **`reviewID` resolution:** The provider fetches reviews for each PR and checks for reviews authored
 by the app's bot username. If found, `reviewID` is `String(review.id)`. If no bot-authored review
 exists, `reviewID` is `null`. If multiple bot-authored reviews exist, the most recent one is used.
+
+#### Review History Mapping
+
+`getReviewHistory` fetches review data from two GitHub API endpoints:
+
+1. `pulls.listReviews(pr_number)` — top-level reviews.
+2. `pulls.listReviewComments(pr_number)` — inline comments.
+
+**ReviewSubmission mapping:**
+
+| ReviewSubmission field | GitHub source             |
+| ---------------------- | ------------------------- |
+| `author`               | `review.user.login ?? ''` |
+| `state`                | `review.state`            |
+| `body`                 | `review.body ?? ''`       |
+
+Reviews with `state: 'PENDING'` are excluded — only submitted reviews are returned.
+
+**ReviewInlineComment mapping:**
+
+| ReviewInlineComment field | GitHub source              |
+| ------------------------- | -------------------------- |
+| `path`                    | `comment.path`             |
+| `line`                    | `comment.line ?? null`     |
+| `author`                  | `comment.user.login ?? ''` |
+| `body`                    | `comment.body`             |
 
 **`pipeline` caching:** The GitHub provider may cache the last-seen head SHA and pipeline status per
 revision internally to skip redundant CI fetches when the SHA is unchanged and the pipeline status
@@ -509,12 +539,6 @@ automatic token refresh. The App must have: `issues:write` (work item operations
 
 ### Module Location
 
-> **v2 module.** This is new v2 code in `engine/github-provider/`, implemented alongside the v1
-> `engine/github-client/` module. The v1 control plane remains the running system until the full v2
-> stack (engine, TUI, agents, workflow) ships as a single cutover — see
-> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
-> Do not modify or delete v1 modules when implementing this spec.
-
 The provider lives in `engine/github-provider/`. Directory structure:
 
 ```
@@ -641,6 +665,11 @@ engine/github-provider/
       each file has `path`, `status`, and `patch` (or `patch: null` for binary files).
 - [ ] Given `getWorkItemBody` is called for an ID that does not exist, when the API returns `404`,
       then the error propagates to the caller.
+- [ ] Given `getReviewHistory` is called for a revision with two submitted reviews and three inline
+      comments, when the result is returned, then `reviews` contains two entries and
+      `inlineComments` contains three entries.
+- [ ] Given a revision has a review with `state: 'PENDING'`, when `getReviewHistory` is called, then
+      that review is excluded from the result.
 
 ### updateWorkItem
 
@@ -711,21 +740,17 @@ engine/github-provider/
 
 ## Dependencies
 
-- [002-architecture.md](./v2/002-architecture.md) — Domain types (`WorkItem`, `Revision`, `Spec`,
-  `PipelineResult`, `PipelineStatus`, `WorkItemStatus`, `Priority`, `Complexity`, `AgentReview`),
-  provider interface definitions.
-- [control-plane-engine-state-store.md](./control-plane-engine-state-store.md) — `EngineState` for
-  context on how providers feed the store.
+- [domain-model.md](./domain-model.md) — Domain types (`WorkItem`, `Revision`, `Spec`,
+  `PipelineResult`, `PipelineStatus`, `WorkItemStatus`, `Priority`, `Complexity`, `AgentReview`,
+  `ReviewHistory`, `ReviewSubmission`, `ReviewInlineComment`), provider interface definitions.
 - `@octokit/rest` — GitHub REST API client.
 - `@octokit/auth-app` — GitHub App authentication strategy.
 
 ## References
 
-- [002-architecture.md: Providers](./v2/002-architecture.md#providers) — Read/write interface
-  definitions, read/write enforcement, GitHub implementation overview.
-- [002-architecture.md: Domain Model](./v2/002-architecture.md#domain-model) — `WorkItem`,
-  `Revision`, `Spec`, status enums.
-- [002-architecture.md: Error Handling](./v2/002-architecture.md#error-handling) — Provider-internal
-  retry strategy.
+- [domain-model.md: Domain Model](./domain-model.md#domain-model) — `WorkItem`, `Revision`, `Spec`,
+  status enums.
+- [control-plane-engine-command-executor.md: Error Handling](./control-plane-engine-command-executor.md#error-handling)
+  — Provider-internal retry strategy.
 - [control-plane-engine.md](./control-plane-engine.md) — Engine spec (wiring, public interface,
   configuration).

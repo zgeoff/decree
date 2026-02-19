@@ -2,7 +2,7 @@
 title: Development Workflow
 version: 0.4.0
 last_updated: 2026-02-19
-status: draft
+status: approved
 ---
 
 # Development Workflow
@@ -121,8 +121,9 @@ that feeds the next phase.
 
 Handoffs between phases are mediated by engine handlers reacting to domain events: spec file commits
 trigger planning via `handlePlanning`, work items reaching `ready` status trigger implementation via
-`handleImplementation`, and revision pipeline success triggers review via `handleReview`. The Human
-is the manual bridge for unblocking work items and merging approved revisions.
+`handleImplementation`, revision pipeline success triggers review via `handleReview`, and the Human
+can manually dispatch agents via `handleUserDispatch` (e.g., `UserRequestedImplementorRun` from the
+TUI). The Human is also the manual bridge for unblocking work items and merging approved revisions.
 
 See [control-plane-engine-handlers.md](./control-plane-engine-handlers.md) for handler dispatch
 logic.
@@ -224,8 +225,6 @@ closes the issue after merging the revision. The engine does not mediate this tr
 "Integrate to Complete" quality gate defines the conditions.
 
 This table is the normative home for status transitions.
-[skill-github-workflow.md](./skill-github-workflow.md) includes a convenience copy for agent
-reference.
 
 ```mermaid
 stateDiagram-v2
@@ -443,21 +442,17 @@ Label definitions (names, descriptions, colors) and the setup script are specifi
 - `control-plane-engine-handlers.md` — Handler catalog (dispatch logic, status transitions)
 - `control-plane-engine-command-executor.md` — Command execution (provider operations, concurrency
   guards, policy gate)
-- `skill-github-workflow.md` — GitHub operations skill (work item CRUD, revision lifecycle, label
-  management, query patterns)
 - `skill-spec-writing.md` — Spec authoring skill and template
 - `script-label-setup.md` — Label definitions and setup script
 - `CLAUDE.md` — Code style, naming conventions, and project patterns
 
 ## References
 
-- `docs/specs/decree/v2/002-architecture.md` — Target architecture (domain model, handler catalog,
-  agent role contracts)
+- `docs/specs/decree/domain-model.md` — Domain model, handler catalog, agent role contracts
 - `docs/specs/decree/agent-planner.md`
 - `docs/specs/decree/agent-implementor.md`
 - `docs/specs/decree/agent-reviewer.md`
 - `docs/specs/decree/control-plane-engine-handlers.md`
 - `docs/specs/decree/control-plane-engine-command-executor.md`
-- `docs/specs/decree/skill-github-workflow.md`
 - `docs/specs/decree/skill-spec-writing.md`
 - `docs/specs/decree/script-label-setup.md`

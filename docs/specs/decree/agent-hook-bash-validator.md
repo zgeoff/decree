@@ -335,7 +335,7 @@ accepted trade-offs.
 ## References
 
 - `agent-hook-bash-validator-script.md` — Shell script implementation (for interactive agent use)
-- [control-plane-engine-agent-manager.md: Programmatic Hooks](./control-plane-engine-agent-manager.md#programmatic-hooks)
+- [control-plane-engine-runtime-adapter-claude.md: Programmatic Hooks](./control-plane-engine-runtime-adapter-claude.md#programmatic-hooks)
   — TypeScript implementation (for control plane agent sessions)
 - Agent definitions: `.claude/agents/implementor.md`, `.claude/agents/planner.md`,
   `.claude/agents/reviewer.md`

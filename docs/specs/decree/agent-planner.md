@@ -47,7 +47,7 @@ for how the runtime adapter parses them.
 The Planner is invoked when one or more specification files change with approved frontmatter status
 and a `blobSHA` that differs from `lastPlannedSHAs`. The trigger mechanism is defined by the
 `handlePlanning` handler (see
-[002-architecture.md: Handler Catalog](./v2/002-architecture.md#catalog)).
+[control-plane-engine-handlers.md: handlePlanning](./control-plane-engine-handlers.md#handleplanning)).
 
 When multiple specs change in the same poll cycle, they are all included in a single invocation.
 
@@ -163,7 +163,7 @@ Assemble the `PlannerResult` from the decisions made in Phases 1-3:
 > **Rationale:** The `tempID` mechanism allows the Planner to express dependency ordering between
 > new work items without knowing their real ids. The CommandExecutor processes creates in order,
 > builds a tempID-to-real-id map, and resolves all `blockedBy` references. See
-> [002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results).
+> [domain-model.md: Agent Results](./domain-model.md#agent-results).
 
 ## Complexity Assessment
 
@@ -207,7 +207,7 @@ decomposition:
 Refinement work items default to `priority:high` because they block task creation. Use
 `priority:medium` only if the ambiguous section does not block critical-path work.
 
-## Completion Output
+## Structured Output
 
 The Planner's structured output is a `PlannerResult` validated by the runtime adapter via the
 `PlannerOutputSchema` (see
@@ -280,8 +280,10 @@ Gate-failure-only and idempotent no-op runs produce a `PlannerResult` with all a
 
 ## Dependencies
 
-- [002-architecture.md](./v2/002-architecture.md) — `PlannerResult`, `PlannedWorkItem`,
-  `PlannedWorkItemUpdate` type definitions. `PlannerStartParams`. Agent Role Contracts (Planner).
+- [domain-model.md](./domain-model.md) — `PlannerResult`, `PlannedWorkItem`, `PlannedWorkItemUpdate`
+  type definitions. Agent Role Contracts (Planner).
+- [control-plane-engine-runtime-adapter.md](./control-plane-engine-runtime-adapter.md) —
+  `PlannerStartParams` type definition.
 - [control-plane-engine-runtime-adapter-claude.md](./control-plane-engine-runtime-adapter-claude.md)
   — Context assembly (enriched prompt format, data resolution). Structured output validation
   (`PlannerOutputSchema`). Agent definition loading.
@@ -292,10 +294,10 @@ Gate-failure-only and idempotent no-op runs produce a `PlannerResult` with all a
 
 ## References
 
-- [002-architecture.md: Agent Role Contracts (Planner)](./v2/002-architecture.md#planner) — Trigger,
-  input, output, concurrency, and status flow.
-- [002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results) — `PlannerResult`
-  type and `tempID` resolution mechanism.
+- [domain-model.md: Agent Role Contracts (Planner)](./domain-model.md#planner) — Trigger, input,
+  output, concurrency, and status flow.
+- [domain-model.md: Agent Results](./domain-model.md#agent-results) — `PlannerResult` type and
+  `tempID` resolution mechanism.
 - [control-plane-engine-runtime-adapter-claude.md: Planner Context](./control-plane-engine-runtime-adapter-claude.md#planner-context)
   — Enriched prompt format and data resolution for planner sessions.
 - [control-plane-engine.md](./control-plane-engine.md) — Engine wiring and handler dispatch.

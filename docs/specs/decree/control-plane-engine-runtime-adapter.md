@@ -1,7 +1,7 @@
 ---
 title: Control Plane Engine — Runtime Adapter
-version: 0.1.0
-last_updated: 2026-02-17
+version: 0.2.0
+last_updated: 2026-02-19
 status: approved
 ---
 
@@ -31,9 +31,7 @@ programs against this contract; the runtime implementation is pluggable.
 
 ### RuntimeAdapter Interface
 
-The interface is defined in
-[002-architecture.md: Runtime Adapter](./v2/002-architecture.md#runtime-adapter). This spec adds
-behavioral detail.
+The interface is defined in [domain-model.md](./domain-model.md). This spec adds behavioral detail.
 
 ```ts
 interface RuntimeAdapter {
@@ -187,9 +185,8 @@ from the execution environment. This patch becomes the `patch` field in the `Imp
 ### Structured Output Validation
 
 Agents must produce output conforming to the per-role `AgentResult` types defined in
-[002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results). The adapter is
-responsible for the validation mechanism. Invalid output is treated as agent failure —
-`handle.result` rejects.
+[domain-model.md: Agent Results](./domain-model.md#agent-results). The adapter is responsible for
+the validation mechanism. Invalid output is treated as agent failure — `handle.result` rejects.
 
 For Implementor: the agent's direct output omits the `patch` field (which is adapter-extracted). The
 adapter enriches the validated agent output with the extracted patch to produce the full
@@ -236,30 +233,13 @@ interface RuntimeAdapterConfig {
 
 ### ReviewHistory
 
-Types used by context assembly for review history fetching. Owned by this module.
-
-```ts
-interface ReviewHistory {
-  reviews: ReviewSubmission[];
-  inlineComments: ReviewInlineComment[];
-}
-
-interface ReviewSubmission {
-  author: string;
-  state: string;
-  body: string;
-}
-
-interface ReviewInlineComment {
-  path: string;
-  line: number | null;
-  author: string;
-  body: string;
-}
-```
+Types used by context assembly for review history fetching. Defined in
+[domain-model.md: ReviewHistory](./domain-model.md#reviewhistory).
 
 The `getReviewHistory` function in `RuntimeAdapterDeps` returns review data for a given revision.
-The engine wiring provides an implementation backed by the provider's capabilities.
+The engine wiring delegates to `RevisionProviderReader.getReviewHistory` — see
+[control-plane-engine-github-provider.md: Review History Mapping](./control-plane-engine-github-provider.md#review-history-mapping)
+for the GitHub implementation.
 
 ### Type Definitions
 
@@ -271,7 +251,6 @@ The following types are owned by this module and live in `engine/runtime-adapter
   `ReviewerStartParams`)
 - `RuntimeAdapterDeps`
 - `RuntimeAdapterConfig`
-- `ReviewHistory`, `ReviewSubmission`, `ReviewInlineComment`
 
 **Type migration.** `RuntimeAdapter`, `AgentRunHandle`, and `AgentStartParams` (per-role variants)
 are currently defined in `engine/command-executor/types.ts` as temporarily hosted types. When this
@@ -279,12 +258,6 @@ module is implemented, move these types to `engine/runtime-adapter/types.ts` and
 the command executor.
 
 ### Module Location
-
-> **v2 module.** This is new v2 code in `engine/runtime-adapter/`, implemented alongside the v1
-> agent manager (`engine/agent-manager/`). The v1 control plane remains the running system until the
-> full v2 stack (engine, TUI, agents, workflow) ships as a single cutover — see
-> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
-> Do not modify or delete v1 modules when implementing this spec.
 
 Core types live in `engine/runtime-adapter/types.ts`. Implementation files are adapter-specific —
 see the Claude adapter spec for the Claude SDK file layout.
@@ -384,8 +357,8 @@ see the Claude adapter spec for the Claude SDK file layout.
 
 ## Dependencies
 
-- [002-architecture.md](./v2/002-architecture.md) — `RuntimeAdapter` interface, `AgentRunHandle`,
-  `AgentStartParams` (per-role), `AgentResult` types, mutation boundary contract.
+- [domain-model.md](./domain-model.md) — `RuntimeAdapter` interface, `AgentRunHandle`,
+  `AgentStartParams` (per-role), `AgentResult` types, `ReviewHistory`, mutation boundary contract.
 - [control-plane-engine-command-executor.md](./control-plane-engine-command-executor.md) —
   `startAgentAsync` lifecycle (consumer of `RuntimeAdapter`).
 - [control-plane-engine-state-store.md](./control-plane-engine-state-store.md) — `EngineState`,
@@ -397,11 +370,7 @@ see the Claude adapter spec for the Claude SDK file layout.
 
 ## References
 
-- [002-architecture.md: Runtime Adapter](./v2/002-architecture.md#runtime-adapter) — Interface,
-  mutation boundary, worktree management, agent run lifecycle.
-- [002-architecture.md: Agent Role Contracts](./v2/002-architecture.md#agent-role-contracts) —
-  Shared patterns, per-role context requirements.
-- [002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results) — Structured output
-  types (`PlannerResult`, `ImplementorResult`, `ReviewerResult`, `AgentReview`).
+- [domain-model.md: Agent Results](./domain-model.md#agent-results) — Structured output types
+  (`PlannerResult`, `ImplementorResult`, `ReviewerResult`, `AgentReview`).
 - [control-plane-engine-command-executor.md: startAgentAsync](./control-plane-engine-command-executor.md#startagentasync)
   — Async lifecycle manager that consumes `AgentRunHandle`.

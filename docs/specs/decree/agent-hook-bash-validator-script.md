@@ -17,7 +17,7 @@ shell-specific implementation details.
 
 For control plane agent sessions, the engine provides a TypeScript implementation of the same rules
 via the SDK's `hooks` option. See
-[control-plane-engine-agent-manager.md: Programmatic Hooks](./control-plane-engine-agent-manager.md#programmatic-hooks).
+[control-plane-engine-runtime-adapter-claude.md: Programmatic Hooks](./control-plane-engine-runtime-adapter-claude.md#programmatic-hooks).
 
 ## Constraints
 
@@ -103,7 +103,7 @@ net that `bypassPermissions` alone does not.
 
 The validator has a BATS test suite at `scripts/workflow/validate-bash.test.sh`. The test file
 exercises every acceptance criterion in this spec and the core spec. See
-[Bash Testing](../repo/bash-testing.md) for BATS installation and test runner details.
+[Bash Testing](../_repo/bash-testing.md) for BATS installation and test runner details.
 
 The test file defines a `run_validator` helper function that constructs the JSON envelope expected
 by the hook contract and pipes it to the validator on stdin. The helper accepts a raw command
@@ -154,7 +154,7 @@ criteria below are specific to the shell script.
   evaluation order).
 - **Claude Code PreToolUse hooks**: The hook mechanism that invokes this script before each Bash
   tool call. See [Claude Code hooks](https://code.claude.com/docs/en/hooks).
-- [Bash Testing](../repo/bash-testing.md): BATS installation, test runner, and CI integration.
+- [Bash Testing](../_repo/bash-testing.md): BATS installation, test runner, and CI integration.
 
 ## References
 

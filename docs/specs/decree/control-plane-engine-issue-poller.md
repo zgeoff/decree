@@ -119,7 +119,7 @@ proceeds normally.
 ```ts
 interface WorkItemPoller {
   poll(): Promise<void>;
-  stop(): void;
+  stop(): void; // clears the interval timer; if a poll is in-flight, it runs to completion
 }
 
 interface WorkItemPollerConfig {
@@ -133,12 +133,6 @@ interface WorkItemPollerConfig {
 ```
 
 ### Module Location
-
-> **v2 module.** This is new v2 code (`create-work-item-poller.ts`) in `engine/pollers/`, coexisting
-> with the v1 issue poller (`create-issue-poller.ts`). The v1 control plane remains the running
-> system until the full v2 stack (engine, TUI, agents, workflow) ships as a single cutover — see
-> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
-> Do not modify or delete v1 modules when implementing this spec.
 
 The poller lives in `engine/pollers/`. Files:
 
@@ -171,8 +165,7 @@ engine/pollers/
 
 ## Dependencies
 
-- [002-architecture.md](./v2/002-architecture.md) — Domain types (`WorkItem`, `WorkItemChanged`
-  event), poller mechanism.
+- [domain-model.md](./domain-model.md) — Domain types (`WorkItem`, `WorkItemChanged` event).
 - [control-plane-engine-state-store.md](./control-plane-engine-state-store.md) — `EngineState`,
   `workItems` map for diffing.
 - [control-plane-engine-github-provider.md](./control-plane-engine-github-provider.md) —
@@ -180,8 +173,7 @@ engine/pollers/
 
 ## References
 
-- [002-architecture.md: Pollers](./v2/002-architecture.md#pollers) — Poller mechanism and types.
-- [002-architecture.md: Domain Events](./v2/002-architecture.md#domain-events) — `WorkItemChanged`
-  event definition.
+- [domain-model.md: Domain Events](./domain-model.md#domain-events) — `WorkItemChanged` event
+  definition.
 - [control-plane-engine.md](./control-plane-engine.md) — Parent engine spec (startup, event
   processing loop).

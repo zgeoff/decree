@@ -134,7 +134,8 @@ Git hooks are managed by lefthook:
 
 ### GitHub
 
-When interacting with GitHub (issues, PRs, labels, etc.), activate the `/github-workflow` skill.
+Use `scripts/workflow/gh.sh` instead of bare `gh` for all GitHub CLI operations (handles App token
+auth).
 
 ## Conventional Commits
 

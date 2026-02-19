@@ -383,12 +383,6 @@ in the state store.
 
 ### Module Location
 
-> **v2 module.** This is new v2 code implemented alongside the existing v1 engine. The v1 control
-> plane remains the running system until the full v2 stack (engine, TUI, agents, workflow) ships as
-> a single cutover — see
-> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
-> Do not modify or delete v1 modules when implementing this spec.
-
 The CommandExecutor lives in `engine/command-executor/`. Directory structure:
 
 ```
@@ -401,23 +395,10 @@ engine/command-executor/
   build-branch-name.ts
 ```
 
-**Temporarily hosted types.** The following types are defined in `engine/command-executor/types.ts`
-because they are needed by the CommandExecutor but have no implementation spec yet:
-
-| Type                                                              | Permanent home                    |
-| ----------------------------------------------------------------- | --------------------------------- |
-| `RuntimeAdapter`, `AgentRunHandle`, `AgentStartParams` (per-role) | `engine/runtime-adapter/types.ts` |
-
-These types are defined in
-[002-architecture.md: Runtime Adapter](./v2/002-architecture.md#runtime-adapter). When the runtime
-adapter module is implemented, move these types to their permanent home and update imports.
+`RuntimeAdapter`, `AgentRunHandle`, and `AgentStartParams` (per-role) are defined in
+[control-plane-engine-runtime-adapter.md](./control-plane-engine-runtime-adapter.md).
 
 `Policy` and `PolicyResult` are owned by this module — the CommandExecutor is the sole consumer.
-
-> **Rationale:** The runtime adapter interface is referenced by the architecture doc but has no
-> component spec or migration step yet. Defining the types here unblocks CommandExecutor
-> implementation without waiting for the full runtime adapter module. The explicit permanent-home
-> annotation ensures the planner creates a migration task to relocate them.
 
 ## Acceptance Criteria
 
@@ -539,9 +520,10 @@ adapter module is implemented, move these types to their permanent home and upda
 
 ## Dependencies
 
-- [002-architecture.md](./v2/002-architecture.md) — Domain commands (`EngineCommand` union), domain
-  events (`EngineEvent` union, `CommandRejected`, `CommandFailed`), `AgentStartParams`, `AgentRole`,
-  `AgentRunHandle`, `RuntimeAdapter` interface, `Policy` type.
+- [domain-model.md](./domain-model.md) — Domain commands (`EngineCommand` union), domain events
+  (`EngineEvent` union, `CommandRejected`, `CommandFailed`), `AgentRole`.
+- [control-plane-engine-runtime-adapter.md](./control-plane-engine-runtime-adapter.md) —
+  `RuntimeAdapter` interface, `AgentRunHandle`, `AgentStartParams`.
 - [control-plane-engine-state-store.md](./control-plane-engine-state-store.md) — Selectors
   (`getActivePlannerRun`, `getActiveAgentRun`, `isAgentRunningForWorkItem`,
   `getWorkItemWithRevision`), `EngineState`.
@@ -550,11 +532,6 @@ adapter module is implemented, move these types to their permanent home and upda
 
 ## References
 
-- [002-architecture.md: CommandExecutor](./v2/002-architecture.md#commandexecutor) — Pipeline,
-  concurrency guards, policy gate, command translation table.
-- [002-architecture.md: Runtime Adapter](./v2/002-architecture.md#runtime-adapter) —
+- [control-plane-engine-runtime-adapter.md](./control-plane-engine-runtime-adapter.md) —
   `RuntimeAdapter` interface, `AgentRunHandle`, `AgentStartParams`.
-- [002-architecture.md: Error Handling](./v2/002-architecture.md#error-handling) — `CommandRejected`
-  vs `CommandFailed` semantics, no engine-level retry.
-- [002-architecture.md: Agent Role Contracts](./v2/002-architecture.md#agent-role-contracts) —
-  Status flows and compound command behavior per role.
+- [domain-model.md](./domain-model.md) — Domain commands, domain events, agent role contracts.

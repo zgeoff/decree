@@ -2,7 +2,7 @@
 title: Label Setup Script
 version: 0.4.0
 last_updated: 2026-02-19
-status: draft
+status: approved
 ---
 
 # Label Setup Script

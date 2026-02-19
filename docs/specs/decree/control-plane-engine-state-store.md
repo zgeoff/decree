@@ -1,6 +1,6 @@
 ---
 title: Control Plane Engine — State Store
-version: 0.2.0
+version: 0.3.0
 last_updated: 2026-02-19
 status: approved
 ---
@@ -37,7 +37,7 @@ interface EngineState {
 ```
 
 Domain types (`WorkItem`, `Revision`, `Spec`) are defined in
-[002-architecture.md: Domain Model](./v2/002-architecture.md#domain-model).
+[domain-model.md: Domain Model](./domain-model.md#domain-model).
 
 ### AgentRun Variants
 
@@ -113,7 +113,7 @@ The `errors` list is bounded at **50 entries**. When a new entry would exceed th
 entry is evicted (index 0).
 
 `CommandRejected` and `CommandFailed` event types are defined in
-[002-architecture.md: Domain Events](./v2/002-architecture.md#domain-events).
+[domain-model.md: Domain Events](./domain-model.md#domain-events).
 
 ### Store Creation
 
@@ -153,28 +153,28 @@ event type without a dispatch entry is a compile error.
 
 **Dispatch table:**
 
-| Event type                    | Update function             | Effect                                              |
-| ----------------------------- | --------------------------- | --------------------------------------------------- |
-| `workItemChanged`             | `applyWorkItemChanged`      | Upsert or remove work item                          |
-| `revisionChanged`             | `applyRevisionChanged`      | Upsert revision                                     |
-| `specChanged`                 | `applySpecChanged`          | Upsert spec                                         |
-| `plannerRequested`            | `applyPlannerRequested`     | Create `PlannerRun` in `requested` status           |
-| `plannerStarted`              | `applyPlannerStarted`       | Transition to `running`, set `logFilePath`          |
-| `plannerCompleted`            | `applyPlannerCompleted`     | Transition to `completed`, update `lastPlannedSHAs` |
-| `plannerFailed`               | `applyPlannerFailed`        | Transition to `failed`, set `error`                 |
-| `implementorRequested`        | `applyImplementorRequested` | Create `ImplementorRun` in `requested` status       |
-| `implementorStarted`          | `applyImplementorStarted`   | Transition to `running`, set `logFilePath`          |
-| `implementorCompleted`        | `applyImplementorCompleted` | Transition to `completed`                           |
-| `implementorFailed`           | `applyImplementorFailed`    | Transition to `failed`, set `error`                 |
-| `reviewerRequested`           | `applyReviewerRequested`    | Create `ReviewerRun` in `requested` status          |
-| `reviewerStarted`             | `applyReviewerStarted`      | Transition to `running`, set `logFilePath`          |
-| `reviewerCompleted`           | `applyReviewerCompleted`    | Transition to `completed`                           |
-| `reviewerFailed`              | `applyReviewerFailed`       | Transition to `failed`, set `error`                 |
-| `commandRejected`             | `applyCommandRejected`      | Append `ErrorEntry` to `errors`                     |
-| `commandFailed`               | `applyCommandFailed`        | Append `ErrorEntry` to `errors`                     |
-| `userRequestedImplementorRun` | _(no-op)_                   | No state update — handled only by handlers          |
-| `userCancelledRun`            | _(no-op)_                   | No state update — handled only by handlers          |
-| `userTransitionedStatus`      | _(no-op)_                   | No state update — handled only by handlers          |
+| Event type                    | Update function             | Effect                                                  |
+| ----------------------------- | --------------------------- | ------------------------------------------------------- |
+| `workItemChanged`             | `applyWorkItemChanged`      | Upsert or remove work item                              |
+| `revisionChanged`             | `applyRevisionChanged`      | Upsert or remove revision                               |
+| `specChanged`                 | `applySpecChanged`          | Upsert spec                                             |
+| `plannerRequested`            | `applyPlannerRequested`     | Create `PlannerRun` in `requested` status               |
+| `plannerStarted`              | `applyPlannerStarted`       | Transition to `running`, set `logFilePath`              |
+| `plannerCompleted`            | `applyPlannerCompleted`     | Transition to `completed`, update `lastPlannedSHAs`     |
+| `plannerFailed`               | `applyPlannerFailed`        | Transition to terminal status per `reason`, set `error` |
+| `implementorRequested`        | `applyImplementorRequested` | Create `ImplementorRun` in `requested` status           |
+| `implementorStarted`          | `applyImplementorStarted`   | Transition to `running`, set `logFilePath`              |
+| `implementorCompleted`        | `applyImplementorCompleted` | Transition to `completed`                               |
+| `implementorFailed`           | `applyImplementorFailed`    | Transition to terminal status per `reason`, set `error` |
+| `reviewerRequested`           | `applyReviewerRequested`    | Create `ReviewerRun` in `requested` status              |
+| `reviewerStarted`             | `applyReviewerStarted`      | Transition to `running`, set `logFilePath`              |
+| `reviewerCompleted`           | `applyReviewerCompleted`    | Transition to `completed`                               |
+| `reviewerFailed`              | `applyReviewerFailed`       | Transition to terminal status per `reason`, set `error` |
+| `commandRejected`             | `applyCommandRejected`      | Append `ErrorEntry` to `errors`                         |
+| `commandFailed`               | `applyCommandFailed`        | Append `ErrorEntry` to `errors`                         |
+| `userRequestedImplementorRun` | _(no-op)_                   | No state update — handled only by handlers              |
+| `userCancelledRun`            | _(no-op)_                   | No state update — handled only by handlers              |
+| `userTransitionedStatus`      | _(no-op)_                   | No state update — handled only by handlers              |
 
 #### Entity Update Functions
 
@@ -185,7 +185,8 @@ event type without a dispatch entry is a compile error.
 
 **`applyRevisionChanged(store, event)`:**
 
-1. Set `revisions[event.revisionID]` to `event.revision`.
+1. If `event.newPipelineStatus` is `null` (removal), delete `event.revisionID` from `revisions`.
+2. Otherwise, set `revisions[event.revisionID]` to `event.revision`.
 
 **`applySpecChanged(store, event)`:**
 
@@ -222,8 +223,11 @@ transition is invalid, the update is rejected and logged — the store state is 
 
 **`applyPlannerFailed(store, event)`:**
 
-1. Look up the run by `event.sessionID`. Validate transition from current status to `failed`.
-2. Set `status` to `'failed'`, `logFilePath` to `event.logFilePath`, and `error` to `event.error`.
+1. Look up the run by `event.sessionID`. Derive the terminal status from `event.reason`: `error` →
+   `failed`, `timeout` → `timed-out`, `cancelled` → `cancelled`. Validate transition from current
+   status to the derived terminal status.
+2. Set `status` to the derived terminal status, `logFilePath` to `event.logFilePath`, and `error` to
+   `event.error`.
 
 > **Rationale:** `lastPlannedSHAs` is not updated on failure, ensuring the next poll cycle
 > re-detects the approved specs and re-triggers planning.
@@ -245,8 +249,10 @@ transition is invalid, the update is rejected and logged — the store state is 
 
 **`applyImplementorFailed(store, event)`:**
 
-1. Look up the run by `event.sessionID`. Validate transition to `failed`.
-2. Set `status` to `'failed'`, `logFilePath` to `event.logFilePath`, and `error` to `event.error`.
+1. Look up the run by `event.sessionID`. Derive the terminal status from `event.reason` (same
+   mapping as `applyPlannerFailed`). Validate transition to the derived terminal status.
+2. Set `status` to the derived terminal status, `logFilePath` to `event.logFilePath`, and `error` to
+   `event.error`.
 
 **`applyReviewerRequested(store, event)`:**
 
@@ -265,8 +271,10 @@ transition is invalid, the update is rejected and logged — the store state is 
 
 **`applyReviewerFailed(store, event)`:**
 
-1. Look up the run by `event.sessionID`. Validate transition to `failed`.
-2. Set `status` to `'failed'`, `logFilePath` to `event.logFilePath`, and `error` to `event.error`.
+1. Look up the run by `event.sessionID`. Derive the terminal status from `event.reason` (same
+   mapping as `applyPlannerFailed`). Validate transition to the derived terminal status.
+2. Set `status` to the derived terminal status, `logFilePath` to `event.logFilePath`, and `error` to
+   `event.error`.
 
 #### Error Update Functions
 
@@ -308,12 +316,6 @@ interface WorkItemWithRevision {
 
 ### Module Location
 
-> **v2 module.** This is new v2 code implemented alongside the existing v1 engine. The v1 control
-> plane remains the running system until the full v2 stack (engine, TUI, agents, workflow) ships as
-> a single cutover — see
-> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
-> Do not modify or delete v1 modules when implementing this spec.
-
 The state store lives in `engine/state-store/`. Directory structure:
 
 ```
@@ -343,12 +345,20 @@ engine/state-store/
       the oldest entry is evicted and the new entry is appended (list size remains 50).
 - [ ] Given a `WorkItemChanged` event with `newStatus: null`, when the update is applied, then the
       work item is deleted from the `workItems` map.
+- [ ] Given a `RevisionChanged` event with `newPipelineStatus: null`, when the update is applied,
+      then the revision is deleted from the `revisions` map.
 - [ ] Given a `PlannerCompleted` event for specs A and B, when the update is applied, then
       `lastPlannedSHAs` contains the current `blobSHA` from the `specs` map for both A and B.
 - [ ] Given a `PlannerCompleted` event references spec path X that is not in the `specs` map, when
       the update is applied, then `lastPlannedSHAs` is not updated for X.
 - [ ] Given a `PlannerFailed` event, when the update is applied, then `lastPlannedSHAs` is not
       modified.
+- [ ] Given a `*Failed` event with `reason: 'timeout'`, when the update is applied, then the agent
+      run's status is set to `timed-out`.
+- [ ] Given a `*Failed` event with `reason: 'cancelled'`, when the update is applied, then the agent
+      run's status is set to `cancelled`.
+- [ ] Given a `*Failed` event with `reason: 'error'`, when the update is applied, then the agent
+      run's status is set to `failed`.
 - [ ] Given two agent runs exist for the same work item (one `completed`, one `running`), when
       `isAgentRunningForWorkItem` is called, then it returns `true`.
 - [ ] Given work item A has `blockedBy: ['B', 'C']` where B is `closed` and C does not exist in
@@ -360,17 +370,12 @@ engine/state-store/
 
 ## Dependencies
 
-- [002-architecture.md](./v2/002-architecture.md) — Domain types (`WorkItem`, `Revision`, `Spec`,
+- [domain-model.md](./domain-model.md) — Domain types (`WorkItem`, `Revision`, `Spec`,
   `EngineEvent`, `EngineCommand`, `CommandRejected`, `CommandFailed`), `AgentRunStatus` transition
   table, selector catalog.
 - [Zustand](https://zustand-demo.pmnd.rs/) — Vanilla store (`zustand/vanilla`).
 
 ## References
 
-- [002-architecture.md: State Store](./v2/002-architecture.md#state-store) — Canonical state shape
-  and store design.
-- [002-architecture.md: State Updates](./v2/002-architecture.md#state-updates) — `applyStateUpdate`
-  dispatch pseudocode.
-- [002-architecture.md: Selectors](./v2/002-architecture.md#selectors) — Named selector catalog.
-- [002-architecture.md: Agent Run Lifecycle](./v2/002-architecture.md#agent-run-lifecycle) — Status
-  transition table and lifecycle semantics.
+- [domain-model.md: Agent Run Lifecycle](./domain-model.md#agent-run-lifecycle) — Status transition
+  table and lifecycle semantics.

@@ -24,7 +24,7 @@ subscription, event enqueuing, detail queries, and agent output streams.
   execution) before the next is dequeued.
 - The state store is the single source of truth for all domain state. No parallel state systems.
 - Provider-specific types must not appear outside the provider module. The engine operates on domain
-  types defined in [002-architecture.md](./v2/002-architecture.md).
+  types defined in [domain-model.md](./domain-model.md).
 - Must not crash on transient errors. Provider-internal retry handles transient failures; the engine
   handles persistent failures via `CommandFailed` events through normal event processing.
 - Handlers are pure functions — they never mutate state, call providers, or produce side effects.
@@ -96,8 +96,8 @@ processing in subsequent cycles.
 
 > **Rationale:** Sequential processing with a single snapshot eliminates concurrency hazards. The
 > independence invariant (defined in
-> [002-architecture.md: Domain Commands](./v2/002-architecture.md#domain-commands)) ensures commands
-> from one cycle cannot depend on effects of other commands in the same cycle.
+> [domain-model.md: Domain Commands](./domain-model.md#domain-commands)) ensures commands from one
+> cycle cannot depend on effects of other commands in the same cycle.
 
 ### Engine Public Interface
 
@@ -347,7 +347,7 @@ dedicated spec. The engine spec defines only how components are wired together.
 ### Error Handling
 
 Error handling follows the architecture defined in
-[002-architecture.md: Error Handling](./v2/002-architecture.md#error-handling).
+[control-plane-engine-command-executor.md: Error Handling](./control-plane-engine-command-executor.md#error-handling).
 
 | Error                                 | Behavior                                                                                                             |
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -360,28 +360,22 @@ Error handling follows the architecture defined in
 The engine does not retry failed commands. Recovery from persistent failures is handled through the
 normal event pipeline — handlers reacting to state changes (e.g. detecting in-progress work items
 with no active run and transitioning them to `pending`). See
-[002-architecture.md: Recovery](./v2/002-architecture.md#recovery).
+[control-plane-engine-handlers.md: handleOrphanedWorkItem](./control-plane-engine-handlers.md#handleorphanedworkitem).
 
 ### Type Definitions
 
 Domain types (`EngineEvent`, `EngineCommand`, `WorkItem`, `Revision`, `Spec`, `AgentResult`,
-`AgentStartParams`) are defined in [002-architecture.md](./v2/002-architecture.md). Component types
-are defined in their respective component specs.
+`AgentStartParams`) are defined in [domain-model.md](./domain-model.md). Component types are defined
+in their respective component specs.
 
 The engine spec owns `EngineConfig` (see [Configuration](#configuration)) and `Engine` (see
 [Engine Public Interface](#engine-public-interface)). The `Policy` type is defined in the
 [CommandExecutor spec](./control-plane-engine-command-executor.md).
 
 **Module location:** `engine/create-engine.ts` — the engine factory. Internal helpers
-(`createEventQueue`, `buildReviewHistoryFetcher`) are implementation details that live alongside or
-under the engine module.
-
-> **v2 module.** This is new v2 code implemented alongside the v1 engine (`engine/create-engine.ts`,
-> `engine/dispatch/`, `engine/recovery/`, `engine/planner-cache/`). The v1 control plane remains the
-> running system until the full v2 stack (engine, TUI, agents, workflow) ships as a single cutover,
-> at which point v2 replaces v1 and the old modules are deleted — see
-> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
-> Do not modify or delete v1 modules when implementing this spec.
+(`createEventQueue`, `buildReviewHistoryFetcher`) live alongside or under the engine module.
+`buildReviewHistoryFetcher` is a thin delegation to `RevisionProviderReader.getReviewHistory` — it
+binds the reader method to satisfy the `RuntimeAdapterDeps.getReviewHistory` signature.
 
 ## Acceptance Criteria
 
@@ -474,15 +468,14 @@ under the engine module.
   `createCommandExecutor`, broker boundary, `Policy` type.
 - [control-plane-engine-runtime-adapter.md](./control-plane-engine-runtime-adapter.md) —
   `RuntimeAdapter` interface, `AgentRunHandle`, `AgentStartParams`, `RuntimeAdapterDeps`.
-- [002-architecture.md](./v2/002-architecture.md) — Domain model, event/command unions, agent role
-  contracts, error handling, recovery.
+- [control-plane-engine-agent-session-logging.md](./control-plane-engine-agent-session-logging.md) —
+  Agent session logging (log file path on terminal events).
+- [domain-model.md](./domain-model.md) — Domain model, event/command unions, agent role contracts.
 - [workflow.md](./workflow.md) — Status transition table, quality gates.
 
 ## References
 
-- [002-architecture.md](./v2/002-architecture.md) — Target architecture, domain model, component
-  contracts.
-- [001-plan.md](./v2/001-plan.md) — Architectural decisions motivating the v2 design.
+- [domain-model.md](./domain-model.md) — Domain model, component contracts.
 - [control-plane-tui.md](./control-plane-tui.md) — TUI specification (consumes the engine's public
   interface).
 - [agent-planner.md](./agent-planner.md) — Planner agent definition.

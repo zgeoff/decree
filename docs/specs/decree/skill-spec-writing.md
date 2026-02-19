@@ -178,25 +178,24 @@ format appropriate for the content:
 **Example — bad:**
 
 ```markdown
-When the Agent Manager reports an Implementor completed event, the Engine Core calls getPRForIssue.
-If a PR is found, it sets status:review, updates the snapshot, emits a synthetic event, and
-dispatches the Reviewer. If no PR is found, it takes no action and crash recovery handles the issue.
+When the handler receives an Implementor result, the engine calls applyImplementorResult. If the
+outcome is completed, it creates a revision, updates the work item, and dispatches the Reviewer. If
+the outcome is blocked, it transitions the work item status.
 ```
 
 **Example — good:**
 
 ```markdown
-When the Agent Manager reports an Implementor `agentCompleted` event:
+When `handleImplementorCompleted` receives an `ImplementorCompleted` event:
 
-1. Call `getPRForIssue(issueNumber, { includeDrafts: false })`.
-2. **PR found:**
-   - Set `status:review` on the issue via `GitHubClient`.
-   - Update the IssuePoller snapshot entry to `status:review`.
-   - Emit a synthetic `issueStatusChanged` event (`isEngineTransition: true`).
+1. Extract the `ImplementorResult` from the event payload.
+2. **outcome = `completed`:**
+   - Create a revision from the patch via `CommandExecutor`.
+   - Transition work item status to `review`.
    - Dispatch the Reviewer.
-3. **No PR found:**
-   - No action. The issue remains `status:in-progress`.
-   - Crash recovery detects this and resets to `status:pending`.
+3. **outcome = `blocked`:**
+   - Transition work item status to `blocked`.
+   - Include the summary in the work item update.
 ```
 
 ### Acceptance Criteria Discipline

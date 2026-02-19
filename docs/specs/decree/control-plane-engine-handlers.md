@@ -354,12 +354,6 @@ In practice, handlers produce at most one or two commands per event:
 
 ### Module Location
 
-> **v2 module.** This is new v2 code implemented alongside the existing v1 engine. The v1 control
-> plane remains the running system until the full v2 stack (engine, TUI, agents, workflow) ships as
-> a single cutover — see
-> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
-> Do not modify or delete v1 modules when implementing this spec.
-
 Handlers live in `engine/handlers/`. Each handler is in its own file:
 
 ```
@@ -434,19 +428,12 @@ engine/handlers/
 
 ## Dependencies
 
-- [002-architecture.md](./v2/002-architecture.md) — Handler shape, wiring, catalog, domain events
-  (`EngineEvent`), domain commands (`EngineCommand`), independence invariant.
+- [domain-model.md](./domain-model.md) — Domain events (`EngineEvent`), domain commands
+  (`EngineCommand`).
 - [control-plane-engine-state-store.md](./control-plane-engine-state-store.md) — `EngineState`,
   selectors (`getSpecsRequiringPlanning`, `isWorkItemUnblocked`, `isAgentRunningForWorkItem`,
   `getWorkItemsDependingOn`).
 
 ## References
 
-- [002-architecture.md: Handlers](./v2/002-architecture.md#handlers) — Handler shape, wiring, and
-  catalog.
-- [002-architecture.md: Agent Role Contracts](./v2/002-architecture.md#agent-role-contracts) —
-  Per-role status flows and recovery patterns.
-- [002-architecture.md: Recovery](./v2/002-architecture.md#recovery) — Crash recovery via
-  `handleOrphanedWorkItem`.
-- [001-plan.md](./v2/001-plan.md) — Decisions 8 (event/command flow), 9 (sequential processing), 11
-  (handler-based dispatch), 12 (recovery via event pipeline).
+- [domain-model.md](./domain-model.md) — Domain events, domain commands, agent role contracts.

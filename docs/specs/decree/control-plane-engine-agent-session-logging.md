@@ -9,7 +9,7 @@ status: approved
 
 ## Overview
 
-When enabled, the Agent Manager writes a human-readable transcript of each agent session to disk.
+When enabled, the runtime adapter writes a human-readable transcript of each agent session to disk.
 Logs capture the full SDK message stream — session metadata, assistant text, tool invocations,
 result summaries, and unrecognized message types. This provides a durable record of agent activity
 for debugging and auditing.
@@ -32,11 +32,12 @@ for debugging and auditing.
 2. Write the session header immediately.
 3. As each SDK message arrives, format and append it to the file.
 4. When the session ends (success, failure, or cancellation), write a footer with the outcome, then
-   close the file. The footer must be written before the terminal event (`agentCompleted` /
-   `agentFailed`) is emitted, so that `logFilePath` points to a complete file. The `Outcome` line
-   uses one of three values: `completed` (SDK reports success), `failed` (SDK reports error or
-   session throws), or `cancelled` (user cancellation, shutdown, or timeout). Cancellation flows
-   through `agentFailed` at the event level, but the log footer preserves the distinction.
+   close the file. The footer must be written before the per-role terminal event (`PlannerCompleted`
+   / `ImplementorCompleted` / `ReviewerCompleted` or their `*Failed` variants) is emitted, so that
+   `logFilePath` points to a complete file. The `Outcome` line uses one of three values: `completed`
+   (SDK reports success), `failed` (SDK reports error or session throws), or `cancelled` (user
+   cancellation, shutdown, or timeout). Cancellation flows through the `*Failed` event variant, but
+   the log footer preserves the distinction.
 
 ### Log File Format
 
@@ -85,7 +86,7 @@ Finished: 2026-02-08T19:21:50.000Z
 ### Message Formatting
 
 All `[HH:MM:SS]` timestamps are UTC. Each SDK `assistant` message may contain multiple content
-blocks (text and tool_use mixed). The Agent Manager writes one `[HH:MM:SS] ASSISTANT` line per
+blocks (text and tool_use mixed). The runtime adapter writes one `[HH:MM:SS] ASSISTANT` line per
 content block, not per SDK message.
 
 | SDK Message Type             | Format                                                                                                                                                                                                              |
@@ -99,19 +100,20 @@ content block, not per SDK message.
 ### Error Handling
 
 Log writing failures are non-fatal. If the `logsDir` directory cannot be created or the log file
-cannot be opened, the Agent Manager skips logging for the remainder of that session — no
+cannot be opened, the runtime adapter skips logging for the remainder of that session — no
 `logFilePath` is included in the terminal event. If a write fails mid-session (e.g., disk full), the
-Agent Manager disables logging for the remainder of that session and logs a warning via the
+runtime adapter disables logging for the remainder of that session and logs a warning via the
 structured logger. The `logFilePath` field is still included in the terminal event, pointing to the
 partial file — a partial transcript is more useful than no transcript. In all cases, agent session
 behavior is unaffected.
 
 ### Log File Path in Events
 
-When agent session logging is enabled, `AgentCompletedEvent` and `AgentFailedEvent` include a
-`logFilePath` field with the absolute path to the session log file. The field is absent when:
-logging is disabled, the log file could not be created, or the session ended before the SDK `init`
-message was received (no file was opened).
+When agent session logging is enabled, the per-role terminal events (`PlannerCompleted`,
+`ImplementorCompleted`, `ReviewerCompleted` and their `*Failed` variants) include a `logFilePath`
+field with the absolute path to the session log file. The field is absent when: logging is disabled,
+the log file could not be created, or the session ended before the SDK `init` message was received
+(no file was opened).
 
 ## Acceptance Criteria
 
@@ -129,8 +131,8 @@ message was received (no file was opened).
       formatting is received (including `user` and `tool_result`), then it is written as
       `[HH:MM:SS] UNKNOWN {type}` followed by the raw JSON of the message.
 - [ ] Given `logging.agentSessions` is `true`, when an agent session completes or fails, then a
-      footer with the outcome is appended before the terminal event is emitted, and the
-      `agentCompleted`/`agentFailed` event includes `logFilePath`.
+      footer with the outcome is appended before the terminal event is emitted, and the per-role
+      terminal event includes `logFilePath`.
 - [ ] Given `logging.agentSessions` is `false` (default), when an agent session runs, then no log
       file is created and agent events do not include `logFilePath`.
 - [ ] Given `logging.agentSessions` is `true` and the `logsDir` directory does not exist, when a
@@ -146,14 +148,14 @@ message was received (no file was opened).
 
 ## Dependencies
 
-- [control-plane-engine-agent-manager.md](./control-plane-engine-agent-manager.md) — Parent agent
-  manager spec (agent lifecycle, session tracking)
+- [control-plane-engine-runtime-adapter.md](./control-plane-engine-runtime-adapter.md) — Parent
+  runtime adapter spec (agent lifecycle, session tracking)
 - [control-plane-engine.md](./control-plane-engine.md) — Parent engine spec (event types including
-  `logFilePath` on `AgentCompletedEvent` and `AgentFailedEvent`, logging configuration)
+  `logFilePath` on per-role terminal events, logging configuration)
 
 ## References
 
 - [control-plane-engine.md: Configuration — Logging](./control-plane-engine.md#logging) —
   `agentSessions` and `logsDir` settings
-- [control-plane-engine-agent-manager.md: Agent Lifecycle](./control-plane-engine-agent-manager.md#agent-lifecycle)
+- [control-plane-engine-runtime-adapter.md: startAgent Lifecycle Contract](./control-plane-engine-runtime-adapter.md#startagent-lifecycle-contract)
   — Session completion flow that triggers log footer writing

@@ -437,7 +437,7 @@ const ReviewerOutputSchema = z.object({
 
 The Zod schemas are converted to JSON Schema via `z.toJSONSchema()` and passed to the SDK's
 `outputFormat` option. The sub-schemas mirror the domain types defined in
-[002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results).
+[domain-model.md: Agent Results](./domain-model.md#agent-results).
 
 #### Result Assembly
 
@@ -524,7 +524,8 @@ newline.
 When `contextPaths` is empty, the agent's original prompt is used as-is. Files are read fresh on
 every session creation — no caching.
 
-**Default context paths:** The engine passes `['.claude/CLAUDE.md']` as the default `contextPaths`.
+**Default context paths:** The caller passes `['.claude/CLAUDE.md']` as the default `contextPaths`
+via `ClaudeAdapterConfig`.
 
 > **Rationale:** This ensures all agents receive the project's coding conventions — equivalent to
 > what `settingSources: ['project']` would have provided for CLAUDE.md.
@@ -566,12 +567,6 @@ each agent session to disk. See
 file lifecycle, format, message formatting, error handling, and log file path computation.
 
 ### Module Location
-
-> **v2 module.** This is new v2 code in `engine/runtime-adapter/`, implemented alongside the v1
-> agent manager (`engine/agent-manager/`). The v1 control plane remains the running system until the
-> full v2 stack (engine, TUI, agents, workflow) ships as a single cutover — see
-> [003-migration-plan.md: Implementation phasing](./v2/003-migration-plan.md#implementation-phasing).
-> Do not modify or delete v1 modules when implementing this spec.
 
 The Claude adapter lives in `engine/runtime-adapter/`. Directory structure:
 
@@ -735,8 +730,8 @@ engine/runtime-adapter/
 - [control-plane-engine-runtime-adapter.md](./control-plane-engine-runtime-adapter.md) — Core
   contract: `RuntimeAdapter` interface, `AgentRunHandle`, `AgentStartParams`, `RuntimeAdapterDeps`,
   `RuntimeAdapterConfig`, `ReviewHistory` types, lifecycle contracts, context data requirements.
-- [002-architecture.md](./v2/002-architecture.md) — `AgentResult` types (`PlannerResult`,
-  `ImplementorResult`, `ReviewerResult`, `AgentReview`), mutation boundary contract.
+- [domain-model.md](./domain-model.md) — `AgentResult` types (`PlannerResult`, `ImplementorResult`,
+  `ReviewerResult`, `AgentReview`), mutation boundary contract.
 - [control-plane-engine-command-executor.md](./control-plane-engine-command-executor.md) —
   `startAgentAsync` lifecycle (consumer of `RuntimeAdapter`).
 - [control-plane-engine-state-store.md](./control-plane-engine-state-store.md) — `EngineState`,
@@ -755,12 +750,8 @@ engine/runtime-adapter/
 
 ## References
 
-- [002-architecture.md: Runtime Adapter](./v2/002-architecture.md#runtime-adapter) — Interface,
-  mutation boundary, worktree management, agent run lifecycle.
-- [002-architecture.md: Agent Role Contracts](./v2/002-architecture.md#agent-role-contracts) —
-  Shared patterns, per-role context requirements.
-- [002-architecture.md: Agent Results](./v2/002-architecture.md#agent-results) — Structured output
-  types (`PlannerResult`, `ImplementorResult`, `ReviewerResult`, `AgentReview`).
+- [domain-model.md: Agent Results](./domain-model.md#agent-results) — Structured output types
+  (`PlannerResult`, `ImplementorResult`, `ReviewerResult`, `AgentReview`).
 - [control-plane-engine-command-executor.md: startAgentAsync](./control-plane-engine-command-executor.md#startagentasync)
   — Async lifecycle manager that consumes `AgentRunHandle`.
 - [agent-hook-bash-validator-script.md](./agent-hook-bash-validator-script.md) — Shell script
