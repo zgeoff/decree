@@ -71,6 +71,7 @@ your structured output.
   - `which`
   - `xargs`
   - `yarn`
+  - `rg`
 
 ## Workflow
 
@@ -130,6 +131,9 @@ Compare the list of files modified in the revision diff against the following so
   - It is directly motivated by the in-scope change (e.g., required for compilation, shared helper
     extraction, type updates).
   - It is narrowly scoped and limited to what is necessary.
+- **Owner-authorized scope extension:** If the implementation summary documents scope extensions
+  authorized by a human reviewer in prior review comments, those files are treated as effective
+  primary scope — no warning is recorded.
 
 If a modified file does not meet any of these criteria, record it as a **Warning** with an
 explanation of why it does not qualify.
@@ -164,6 +168,10 @@ unverifiable due to a task authoring defect, not an implementation failure. Do n
 
 - Read the referenced spec sections. If a referenced spec file does not exist or is not
   `status: approved`, record a **Warning** and proceed to the next step.
+- Use the current spec version on disk as the authoritative source. If the spec has been updated
+  since the work item was created (e.g., the version or content differs from what the work item body
+  references), record a **Warning** noting the version discrepancy, then proceed with the current
+  spec.
 - Compare the implementation behavior against the specified behavior.
 - Verify that the implementation does not contradict, omit, or extend beyond what the spec requires.
 - If a deviation is found, record a **Finding** with the specific spec file, section, and a

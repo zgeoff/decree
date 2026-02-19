@@ -69,6 +69,7 @@ reasonable choice and continue. Only course-correct if you encounter a concrete 
   - `which`
   - `xargs`
   - `yarn`
+  - `rg`
 
 ## Workflow
 
@@ -185,6 +186,9 @@ with at least two options, trade-offs, and a recommendation.
 
 ## Scope Enforcement
 
+If the work item body has no "In Scope" section, produce a `blocked` outcome with blocker type
+`spec-gap`. The work item is malformed and cannot be implemented without defined scope boundaries.
+
 You must ONLY modify files listed in the work item's "In Scope" section, subject to the following
 rules:
 
@@ -205,11 +209,23 @@ rules:
 4. **Scope inaccuracy:** When the In Scope list names a file that does not contain the expected code
    (e.g., the work item describes modifying a handler in file A, but the handler actually lives in
    file B), determine the correct target file from the codebase and treat it as the effective
-   primary scope. Document the discrepancy in a commit message.
+   primary scope. Document the discrepancy in your implementation summary using this format:
+
+   ```
+   Scope correction:
+   - Listed: `<file from In Scope list>`
+   - Actual: `<correct file>`
+   - Reason: <why the listed file is wrong and the actual file is correct>
+   ```
 
    This rule applies when the task intent is unambiguous and the correct target is identifiable from
    reading the code. If the discrepancy makes the task intent unclear, produce a `blocked` outcome
    (type: `spec-gap`).
+
+5. **Owner-authorized scope extension** (resume scenarios only): When a human reviewer explicitly
+   authorizes changes to files outside primary scope in their review comments (e.g., "also fix X in
+   file Y"), treat those files as authorized scope for this revision. Note the authorization in your
+   implementation summary for traceability.
 
 When a file outside scope needs non-incidental changes:
 
