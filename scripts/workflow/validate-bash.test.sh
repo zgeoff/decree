@@ -339,34 +339,14 @@ run_validator() {
 }
 
 @test "it exits with code 1 when jq is not available" {
-  # Override PATH to exclude jq while keeping bash, grep, sed, awk
-  local clean_path=""
-  local jq_path
-  jq_path=$(which jq)
-  local jq_dir
-  jq_dir=$(dirname "$jq_path")
-
-  # Build a PATH that excludes the directory containing jq, but only if jq
-  # is the only reason we need that directory. To be safe, just create a
-  # temporary directory with symlinks to everything except jq.
+  # Shadow the real jq with a stub that exits 127 (command-not-found).
+  # Prepending the shadow directory ensures bash finds this stub first.
   local tmpdir
   tmpdir=$(mktemp -d)
   trap "rm -rf $tmpdir" RETURN
+  printf '#!/bin/sh\nexit 127\n' > "$tmpdir/jq"
+  chmod +x "$tmpdir/jq"
 
-  # Symlink all executables from PATH directories except jq
-  while IFS=: read -ra dirs; do
-    for dir in "${dirs[@]}"; do
-      [[ -d "$dir" ]] || continue
-      for bin in "$dir"/*; do
-        [[ -x "$bin" ]] || continue
-        local name
-        name=$(basename "$bin")
-        [[ "$name" == "jq" ]] && continue
-        [[ -e "$tmpdir/$name" ]] || ln -s "$bin" "$tmpdir/$name" 2>/dev/null || true
-      done
-    done
-  done <<< "$PATH"
-
-  run bash -c "export PATH='$tmpdir'; printf '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"}}' | bash scripts/workflow/validate-bash.sh"
+  run bash -c "export PATH='$tmpdir:$PATH'; printf '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"}}' | bash scripts/workflow/validate-bash.sh"
   [[ "$status" -eq 1 ]]
 }
