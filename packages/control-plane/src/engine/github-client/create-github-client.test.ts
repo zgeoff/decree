@@ -139,14 +139,22 @@ test('it creates the client with app auth using the provided credentials', () =>
 
   createGitHubClient(config);
 
-  expect(Octokit).toHaveBeenCalledWith({
-    authStrategy: createAppAuth,
-    auth: {
-      appId: 42,
-      privateKey: 'test-key',
-      installationId: 99,
-    },
-  });
+  expect(Octokit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      authStrategy: createAppAuth,
+      auth: {
+        appId: 42,
+        privateKey: 'test-key',
+        installationId: 99,
+      },
+      log: expect.objectContaining({
+        debug: expect.any(Function),
+        info: expect.any(Function),
+        warn: expect.any(Function),
+        error: expect.any(Function),
+      }),
+    }),
+  );
 });
 
 // ---------------------------------------------------------------------------

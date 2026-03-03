@@ -74,6 +74,8 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
       privateKey: config.privateKey,
       installationId: config.installationID,
     },
+    // Suppress @octokit/plugin-request-log — its console.warn calls leak through the Ink TUI via stderr
+    log: { debug: noop, info: noop, warn: noop, error: noop },
   });
 
   return {
@@ -408,6 +410,9 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
 }
 
 // --- Helpers ---
+
+// biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op for silencing Octokit request logging
+const noop = (): void => {};
 
 interface OctokitReviewData {
   id: number;
