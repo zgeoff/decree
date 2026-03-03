@@ -1,7 +1,7 @@
 ---
 title: Control Plane Engine — Runtime Adapter
-version: 0.2.0
-last_updated: 2026-02-19
+version: 0.3.0
+last_updated: 2026-03-04
 status: approved
 ---
 
@@ -219,6 +219,7 @@ interface RuntimeAdapterDeps {
   revisionReader: RevisionProviderReader;
   getState: () => EngineState;
   getReviewHistory: (revisionID: string) => Promise<ReviewHistory>;
+  logger: pino.Logger;
 }
 ```
 
@@ -232,7 +233,7 @@ interface RuntimeAdapterConfig {
   maxAgentDuration: number; // seconds
   logging: {
     agentSessions: boolean;
-    logsDir: string; // absolute path
+    dir: string;
   };
 }
 ```
@@ -246,6 +247,24 @@ The `getReviewHistory` function in `RuntimeAdapterDeps` returns review data for 
 The engine wiring delegates to `RevisionProviderReader.getReviewHistory` — see
 [control-plane-engine-github-provider.md: Review History Mapping](./control-plane-engine-github-provider.md#review-history-mapping)
 for the GitHub implementation.
+
+### Logging
+
+The runtime adapter receives a logger via `RuntimeAdapterDeps.logger`. Adapters create a child
+logger with `{ component: 'runtimeAdapter' }` and per-session children with
+`{ sessionID, role, issue }`, where `issue` is the work item number from the start params (omitted
+for planner roles).
+
+| Event                        | Level  | Context fields             | Description                                           |
+| ---------------------------- | ------ | -------------------------- | ----------------------------------------------------- |
+| Session starting             | `info` | `role`, `sessionID`        | Before environment provisioning                       |
+| Context assembly completed   | `info` | `role`, `sessionID`        | All context data fetched successfully                 |
+| Session created              | `info` | `role`, `sessionID`        | SDK session initialized and streaming                 |
+| Session log write failure    | `warn` | `role`, `sessionID`, `err` | Non-fatal — logging disabled for remainder of session |
+| Session log creation failure | `warn` | `role`, `sessionID`, `err` | Non-fatal — no log file for this session              |
+
+Agent completion and failure logging is handled by the command executor's `startAgentAsync`, not the
+adapter. See [CommandExecutor: Logging](./control-plane-engine-command-executor.md#logging).
 
 ### Type Definitions
 
@@ -362,6 +381,8 @@ see the Claude adapter spec for the Claude SDK file layout.
   `WorkProviderReader`, `RevisionProviderReader` interfaces.
 - [control-plane-engine-agent-session-logging.md](./control-plane-engine-agent-session-logging.md) —
   Agent session transcript logging.
+- [control-plane-engine-logging.md](./control-plane-engine-logging.md) — Structured logging
+  infrastructure (child logger conventions).
 
 ## References
 

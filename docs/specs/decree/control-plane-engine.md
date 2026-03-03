@@ -1,7 +1,7 @@
 ---
 title: Control Plane Engine
-version: 1.0.0
-last_updated: 2026-02-18
+version: 1.1.0
+last_updated: 2026-03-04
 status: approved
 ---
 
@@ -144,16 +144,18 @@ adapters. It does not know or care what implementations back the interfaces.
 
 Construction steps (order matters — later steps depend on earlier ones):
 
-1. **Create state store** — `createEngineStore()`.
-2. **Create event queue** — `createEventQueue()`.
-3. **Create runtime adapters** — call `config.createRuntimeAdapters(deps)` with `getState` from the
+1. **Create root logger** — `pino(config.logging)` when `logging.enabled` is `true`, or
+   `pino({ level: 'silent' })` when `false`. Threaded to all subsequent components as a dependency.
+2. **Create state store** — `createEngineStore()`.
+3. **Create event queue** — `createEventQueue()`.
+4. **Create runtime adapters** — call `config.createRuntimeAdapters(deps)` with `getState` from the
    store and provider readers from config.
-4. **Create command executor** — `createCommandExecutor(deps)` with provider writers, runtime
+5. **Create command executor** — `createCommandExecutor(deps)` with provider writers, runtime
    adapters, policy, `getState`, and `enqueue`.
-5. **Create handlers** — `createHandlers()`.
-6. **Create pollers** — one each for work items, revisions, and specs. Each receives its reader,
+6. **Create handlers** — `createHandlers()`.
+7. **Create pollers** — one each for work items, revisions, and specs. Each receives its reader,
    `getState`, `enqueue`, and a poll interval from config (defaults: 30s, 30s, 60s).
-7. **Return Engine** — the public interface (store, start, stop, enqueue, getState, subscribe,
+8. **Return Engine** — the public interface (store, start, stop, enqueue, getState, subscribe,
    getWorkItemBody, getRevisionFiles, getAgentStream, refresh).
 
 `refresh()` calls `poll()` on each poller directly, outside the interval timer. The pollers enqueue
@@ -256,12 +258,8 @@ interface EngineConfig {
   policy?: Policy; // default: allow all commands
 
   // Engine-owned config
-  logLevel?: "debug" | "info" | "error"; // default: 'info'
   shutdownTimeout?: number; // seconds, default: 300
-  logging?: {
-    agentSessions?: boolean; // default: false — enable per-session log files
-    logsDir?: string; // default: './logs' — directory for agent session log files
-  };
+  logging?: LoggingConfig;
   workItemPoller?: {
     pollInterval?: number; // seconds, default: 30
   };
@@ -274,12 +272,14 @@ interface EngineConfig {
 }
 ```
 
+`LoggingConfig` is defined in
+[control-plane-engine-logging.md: Configuration](./control-plane-engine-logging.md#configuration).
+
 The engine's configuration contains only engine-owned concerns: polling intervals, shutdown timeout,
-and log level. All implementation-specific configuration — GitHub credentials, repository path,
-runtime adapter settings, agent names, logging directories — belongs in the config file
-(`control-plane.config.ts`), which constructs providers and adapter factories and passes them as
-pre-built interfaces. See [control-plane.md: Configuration](./control-plane.md#configuration) for
-the config file contract.
+and logging. All implementation-specific configuration — GitHub credentials, repository path,
+runtime adapter settings, agent names — belongs in the config file (`control-plane.config.ts`),
+which constructs providers and adapter factories and passes them as pre-built interfaces. See
+[control-plane.md: Configuration](./control-plane.md#configuration) for the config file contract.
 
 `provider` carries five interfaces that the engine threads to pollers (readers) and the
 CommandExecutor (writers). `createRuntimeAdapters` is a factory function that receives
@@ -312,10 +312,25 @@ dedicated spec. The engine spec defines only how components are wired together.
 
 ### Logging
 
-The engine logs structured events at `info`, `debug`, and `error` levels covering startup, shutdown,
-processing loop events, agent dispatch/completion/failure, poller cycles, and provider errors. See
-[Agent Session Logging: Log Format](./control-plane-engine-agent-session-logging.md#log-file-format)
-for per-event logging behavior of agent sessions.
+The engine uses Pino for structured logging. See
+[control-plane-engine-logging.md](./control-plane-engine-logging.md) for library choice,
+configuration, file transport, and child logger conventions.
+
+`createEngine` creates the root logger during engine construction (step 1) and threads it to all
+components. The processing loop logs at the following points:
+
+| Event                    | Level  | Context fields              | Description                                     |
+| ------------------------ | ------ | --------------------------- | ----------------------------------------------- |
+| Engine started           | `info` | —                           | After first poll cycles complete                |
+| Engine stopping          | `info` | —                           | On `stop()` entry                               |
+| Engine stopped           | `info` | —                           | After shutdown completes                        |
+| Event dequeued           | `info` | `eventType`                 | Each event pulled from the queue for processing |
+| Handler commands emitted | `info` | `eventType`, `commandCount` | After all handlers run for an event             |
+| Shutdown timeout reached | `warn` | `activeSessionCount`        | Monitors abandoned due to timeout               |
+
+Component-level log points are defined in each component's spec. See
+[Agent Session Logging](./control-plane-engine-agent-session-logging.md) for per-agent-session
+transcript files.
 
 ### Error Handling
 
@@ -432,6 +447,8 @@ binds the reader method to satisfy the `RuntimeAdapterDeps.getReviewHistory` sig
   `createCommandExecutor`, broker boundary, `Policy` type.
 - [control-plane-engine-runtime-adapter.md](./control-plane-engine-runtime-adapter.md) —
   `RuntimeAdapter` interface, `AgentRunHandle`, `AgentStartParams`, `RuntimeAdapterDeps`.
+- [control-plane-engine-logging.md](./control-plane-engine-logging.md) — Structured logging
+  infrastructure (Pino setup, file transport, child logger conventions).
 - [control-plane-engine-agent-session-logging.md](./control-plane-engine-agent-session-logging.md) —
   Agent session logging (log file path on terminal events).
 - [domain-model.md](./domain-model.md) — Domain model, event/command unions, agent role contracts.

@@ -1,7 +1,7 @@
 ---
 title: Control Plane Engine — Spec Poller
-version: 0.5.0
-last_updated: 2026-02-16
+version: 0.6.0
+last_updated: 2026-03-04
 status: approved
 ---
 
@@ -114,10 +114,21 @@ interface SpecPollerConfig {
   getState: () => EngineState;
   enqueue: (event: SpecChanged) => void;
   interval: number; // seconds
+  logger: pino.Logger;
 }
 
 // createSpecPoller(config: SpecPollerConfig): SpecPoller
 ```
+
+### Logging
+
+The poller creates a child logger with `{ component: 'specPoller' }` from the injected logger.
+
+| Event                   | Level  | Context fields             | Description                                                       |
+| ----------------------- | ------ | -------------------------- | ----------------------------------------------------------------- |
+| Poll cycle completed    | `info` | `eventsEmitted` (`number`) | After diffing and enqueueing change events                        |
+| Poll cycle failed       | `warn` | `err`                      | Provider reader threw during the poll cycle                       |
+| Commit SHA fetch failed | `warn` | `err`                      | `getDefaultBranchSHA` threw after changes detected; cycle skipped |
 
 ### Module Location
 

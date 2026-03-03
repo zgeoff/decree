@@ -1,7 +1,7 @@
 ---
 title: Control Plane Engine — WorkItem Poller
-version: 0.5.0
-last_updated: 2026-02-16
+version: 0.6.0
+last_updated: 2026-03-04
 status: approved
 ---
 
@@ -118,10 +118,20 @@ interface WorkItemPollerConfig {
   getState: () => EngineState;
   enqueue: (event: WorkItemChanged) => void;
   interval: number; // seconds
+  logger: pino.Logger;
 }
 
 // createWorkItemPoller(config: WorkItemPollerConfig): WorkItemPoller
 ```
+
+### Logging
+
+The poller creates a child logger with `{ component: 'workItemPoller' }` from the injected logger.
+
+| Event                | Level  | Context fields             | Description                                 |
+| -------------------- | ------ | -------------------------- | ------------------------------------------- |
+| Poll cycle completed | `info` | `eventsEmitted` (`number`) | After diffing and enqueueing change events  |
+| Poll cycle failed    | `warn` | `err`                      | Provider reader threw during the poll cycle |
 
 ### Module Location
 

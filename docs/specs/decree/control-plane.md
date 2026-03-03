@@ -1,7 +1,7 @@
 ---
 title: Agentic Workflow Control Plane
 version: 1.0.0
-last_updated: 2026-02-19
+last_updated: 2026-03-04
 status: approved
 ---
 
@@ -214,7 +214,7 @@ export default {
     a = adapter(deps)
     return { planner: a, implementor: a, reviewer: a }
   },
-  logLevel,
+  logging:          { enabled, level, dir, agentSessions },
   shutdownTimeout,
   workItemPoller:   { pollInterval },
   revisionPoller:   { pollInterval },
@@ -315,6 +315,8 @@ spec's own Known Limitations section.
   adapter core contract
 - [control-plane-engine-runtime-adapter-claude.md](./control-plane-engine-runtime-adapter-claude.md)
   — Claude SDK adapter implementation
+- [control-plane-engine-logging.md](./control-plane-engine-logging.md) — Structured logging
+  configuration (`LoggingConfig` type, pino setup, file transport)
 - [control-plane-testing.md](./control-plane-testing.md) — Test utility catalog, mock factories, and
   component testing patterns
 - [control-plane-tui.md](./control-plane-tui.md) — TUI specification (layout, interactions,

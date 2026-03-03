@@ -1,7 +1,7 @@
 ---
 title: Control Plane Engine — Revision Poller
-version: 0.3.0
-last_updated: 2026-02-17
+version: 0.4.0
+last_updated: 2026-03-04
 status: approved
 ---
 
@@ -120,10 +120,20 @@ interface RevisionPollerConfig {
   getState: () => EngineState;
   enqueue: (event: RevisionChanged) => void;
   interval: number; // seconds
+  logger: pino.Logger;
 }
 
 // createRevisionPoller(config: RevisionPollerConfig): RevisionPoller
 ```
+
+### Logging
+
+The poller creates a child logger with `{ component: 'revisionPoller' }` from the injected logger.
+
+| Event                | Level  | Context fields             | Description                                 |
+| -------------------- | ------ | -------------------------- | ------------------------------------------- |
+| Poll cycle completed | `info` | `eventsEmitted` (`number`) | After diffing and enqueueing change events  |
+| Poll cycle failed    | `warn` | `err`                      | Provider reader threw during the poll cycle |
 
 ### Module Location
 

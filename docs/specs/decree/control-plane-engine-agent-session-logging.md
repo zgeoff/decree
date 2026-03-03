@@ -1,7 +1,7 @@
 ---
 title: Control Plane Engine — Agent Session Logging
-version: 0.1.0
-last_updated: 2026-02-12
+version: 0.2.0
+last_updated: 2026-03-04
 status: approved
 ---
 
@@ -24,9 +24,9 @@ for debugging and auditing.
 
 1. When a session starts (SDK `init` message received), create the log file at the path determined
    by the agent's role:
-   - **Planner:** `{logsDir}/{timestamp}-planner.log`
-   - **Implementor:** `{logsDir}/{timestamp}-implementor-{issueNumber}.log`
-   - **Reviewer:** `{logsDir}/{timestamp}-reviewer-{issueNumber}.log`
+   - **Planner:** `{logging.dir}/sessions/{timestamp}-planner.log`
+   - **Implementor:** `{logging.dir}/sessions/{timestamp}-implementor-{issueNumber}.log`
+   - **Reviewer:** `{logging.dir}/sessions/{timestamp}-reviewer-{issueNumber}.log`
 
    Where `timestamp` is `Date.now()` (milliseconds since epoch) and `issueNumber` is the numeric
    issue number of the work item being implemented or reviewed. Examples:
@@ -105,13 +105,14 @@ content block, not per SDK message.
 
 ### Error Handling
 
-Log writing failures are non-fatal. If the `logsDir` directory cannot be created or the log file
-cannot be opened, the runtime adapter skips logging for the remainder of that session — no
-`logFilePath` is included in the terminal event. If a write fails mid-session (e.g., disk full), the
-runtime adapter disables logging for the remainder of that session and logs a warning via the
-structured logger. The `logFilePath` field is still included in the terminal event, pointing to the
-partial file — a partial transcript is more useful than no transcript. In all cases, agent session
-behavior is unaffected.
+Log writing failures are non-fatal. The runtime adapter creates the `{logging.dir}/sessions/`
+directory (via `mkdir`) when the first session starts if it does not already exist. If the directory
+cannot be created or the log file cannot be opened, the adapter skips logging for the remainder of
+that session — no `logFilePath` is included in the terminal event. If a write fails mid-session
+(e.g., disk full), the runtime adapter disables logging for the remainder of that session and logs a
+warning via the structured logger. The `logFilePath` field is still included in the terminal event,
+pointing to the partial file — a partial transcript is more useful than no transcript. In all cases,
+agent session behavior is unaffected.
 
 ### Log File Path in Events
 
@@ -124,9 +125,9 @@ the log file could not be created, or the session ended before the SDK `init` me
 ## Acceptance Criteria
 
 - [ ] Given `logging.agentSessions` is `true`, when an agent session receives the SDK init message,
-      then a log file is created at `{logsDir}/{timestamp}-{agentType}[-{context}].log` with a
-      session header containing agent type, session ID, and context-specific fields (Spec Paths for
-      Planner, Issue number for Implementor/Reviewer).
+      then a log file is created at `{logging.dir}/sessions/{timestamp}-{agentType}[-{context}].log`
+      with a session header containing agent type, session ID, and context-specific fields (Spec
+      Paths for Planner, Issue number for Implementor/Reviewer).
 - [ ] Given `logging.agentSessions` is `true`, when SDK messages arrive during the session, then
       each message is formatted and appended to the log file as it arrives (stream-write, not
       buffered).
@@ -141,8 +142,8 @@ the log file could not be created, or the session ended before the SDK `init` me
       terminal event includes `logFilePath`.
 - [ ] Given `logging.agentSessions` is `false` (default), when an agent session runs, then no log
       file is created and agent events do not include `logFilePath`.
-- [ ] Given `logging.agentSessions` is `true` and the `logsDir` directory does not exist, when a
-      session starts, then the directory is created automatically.
+- [ ] Given `logging.agentSessions` is `true` and the `{logging.dir}/sessions/` directory does not
+      exist, when a session starts, then the `sessions/` subdirectory is created automatically.
 - [ ] Given `logging.agentSessions` is `true`, when the log file cannot be created, then the Agent
       Manager skips logging for the remainder of that session and the agent session continues
       unaffected.
@@ -162,4 +163,4 @@ the log file could not be created, or the session ended before the SDK `init` me
 ## References
 
 - [Engine: Configuration](./control-plane-engine.md#configuration) — `logging.agentSessions` and
-  `logging.logsDir` settings
+  `logging.dir` settings

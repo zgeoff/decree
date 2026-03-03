@@ -1,7 +1,7 @@
 ---
 title: Control Plane Engine — CommandExecutor
-version: 0.1.0
-last_updated: 2026-02-17
+version: 0.2.0
+last_updated: 2026-03-04
 status: approved
 ---
 
@@ -39,6 +39,7 @@ interface CommandExecutorDeps {
   policy: Policy;
   getState: () => EngineState;
   enqueue: (event: EngineEvent) => void;
+  logger: pino.Logger;
   onHandleRegistered?: (sessionID: string, handle: AgentRunHandle) => void;
   onHandleRemoved?: (sessionID: string) => void;
 }
@@ -401,6 +402,28 @@ The executor generates a unique `sessionID` for each agent request command. The 
 UUID v4 string. It is included in the `*Requested` event and used as the key for the `agentRuns` map
 in the state store.
 
+### Logging
+
+The command executor creates a child logger with `{ component: 'commandExecutor' }` from the
+injected logger. `startAgentAsync` creates a nested child with `{ sessionID, role, issue }` for
+agent lifecycle logging, where `issue` is the work item number from the command (omitted for planner
+roles). The "Agent requested" log point is emitted from the synchronous `execute` path using the
+component-level child logger, passing `role` and `sessionID` as inline fields in the log call (not
+bound to a child) — it fires after command translation generates the `sessionID` but before
+`startAgentAsync` begins.
+
+| Event             | Level   | Context fields                    | Description                                           |
+| ----------------- | ------- | --------------------------------- | ----------------------------------------------------- |
+| Command executing | `info`  | `commandType`                     | Before guard/policy checks                            |
+| Guard rejected    | `warn`  | `commandType`, `reason`           | Concurrency guard denied the command                  |
+| Policy rejected   | `warn`  | `commandType`, `reason`           | Policy gate denied the command                        |
+| Command completed | `info`  | `commandType`, `resultEventCount` | After successful execution                            |
+| Command failed    | `error` | `commandType`, `err`              | Provider or state lookup error during execution       |
+| Agent requested   | `info`  | `role`, `sessionID`               | `*Requested` event emitted                            |
+| Agent started     | `info`  | `role`, `sessionID`               | `startAgent` resolved, `*Started` event enqueued      |
+| Agent completed   | `info`  | `role`, `sessionID`               | `handle.result` resolved, `*Completed` event enqueued |
+| Agent failed      | `error` | `role`, `sessionID`, `err`        | `startAgent` or `handle.result` rejected              |
+
 ### Module Location
 
 The CommandExecutor lives in `engine/command-executor/`. Directory structure:
@@ -549,6 +572,8 @@ engine/command-executor/
   `getWorkItemWithRevision`), `EngineState`.
 - [control-plane-engine-github-provider.md](./control-plane-engine-github-provider.md) —
   `WorkProviderWriter`, `RevisionProviderWriter` interfaces.
+- [control-plane-engine-logging.md](./control-plane-engine-logging.md) — Structured logging
+  infrastructure (child logger conventions).
 
 ## References
 
