@@ -36,7 +36,7 @@ const provider: GitHubProvider = await createGitHubProvider({
   installationID: 110_243_522,
   owner,
   repo,
-  specsDir: 'docs/specs/',
+  specsDir: 'docs/specs',
   defaultBranch: 'main',
 });
 
