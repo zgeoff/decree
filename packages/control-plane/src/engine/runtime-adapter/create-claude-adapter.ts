@@ -10,9 +10,9 @@ import type {
   SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import type pino from 'pino';
 import invariant from 'tiny-invariant';
 import { z } from 'zod';
-import type { Logger } from '../create-logger.ts';
 import type { AgentResult } from '../state-store/domain-type-stubs.ts';
 import { buildImplementorContext } from './context-assembly/build-implementor-context.ts';
 import { buildPlannerContext } from './context-assembly/build-planner-context.ts';
@@ -45,11 +45,6 @@ interface SDKAgentDefinition {
   prompt: string;
 }
 
-/**
- * Narrowed SDK hook input for tool-use events — internal type with same shape as ToolUseEvent.
- */
-type ToolUseHookInput = ToolUseEvent;
-
 interface ExecResult {
   stdout: string;
   stderr: string;
@@ -66,13 +61,31 @@ export interface ClaudeAdapterConfig extends RuntimeAdapterConfig {
   defaultBranch: string;
   contextPaths: string[];
   bashValidatorHook: BashValidatorHook;
-  logger: Logger;
 }
 
 interface ActiveSession {
   abortController: AbortController;
   role: string;
   branchName: string | null;
+}
+
+interface AdapterContext {
+  sessions: Map<string, ActiveSession>;
+  log: pino.Logger;
+}
+
+interface SDKBlock {
+  type: string;
+}
+
+interface SDKTextBlock {
+  type: 'text';
+  text: string;
+}
+
+interface SDKToolUseBlock {
+  type: 'tool_use';
+  name: string;
 }
 
 // --- Constants ---
@@ -92,12 +105,15 @@ export function createClaudeAdapter(
   config: ClaudeAdapterConfig,
   deps: RuntimeAdapterDeps,
 ): RuntimeAdapter {
-  const sessions = new Map<string, ActiveSession>();
+  const ctx: AdapterContext = {
+    sessions: new Map<string, ActiveSession>(),
+    log: deps.logger.child({ component: 'runtimeAdapter' }),
+  };
 
   return {
     startAgent: (params: AgentStartParams): Promise<AgentRunHandle> =>
-      startAgent(config, deps, sessions, params),
-    cancelAgent: (sessionID: string): void => cancelAgent(sessions, sessionID),
+      startAgent(config, deps, ctx, params),
+    cancelAgent: (sessionID: string): void => cancelAgent(ctx.sessions, sessionID),
   };
 }
 
@@ -106,9 +122,20 @@ export function createClaudeAdapter(
 async function startAgent(
   config: ClaudeAdapterConfig,
   deps: RuntimeAdapterDeps,
-  sessions: Map<string, ActiveSession>,
+  ctx: AdapterContext,
   params: AgentStartParams,
 ): Promise<AgentRunHandle> {
+  const issue =
+    params.role !== 'planner' && 'workItemID' in params ? Number(params.workItemID) : undefined;
+  const sessionID = buildSessionID(params);
+  const sessionLog = ctx.log.child({
+    sessionID,
+    role: params.role,
+    ...(issue !== undefined && { issue }),
+  });
+
+  sessionLog.info('session starting');
+
   let workingDirectory = config.repoRoot;
   let branchName: string | null = null;
 
@@ -128,6 +155,7 @@ async function startAgent(
   try {
     // Step 2: Context assembly
     const enrichedPrompt = await assembleContext(params, config, deps);
+    sessionLog.info('context assembly completed');
 
     // Step 3: Agent definition loading
     const { definition, maxTurns } = await loadAgentDefinition({
@@ -180,10 +208,10 @@ async function startAgent(
       },
     });
 
-    // Step 5: Session tracking
-    const sessionID = buildSessionID(params);
+    sessionLog.info('session created');
 
-    sessions.set(sessionID, {
+    // Step 5: Session tracking
+    ctx.sessions.set(sessionID, {
       abortController,
       role: params.role,
       branchName,
@@ -250,9 +278,10 @@ async function startAgent(
       logContext,
       pushOutput,
       endOutput,
-      sessions,
+      sessions: ctx.sessions,
       sessionID,
       timeoutHandle,
+      sessionLog,
     });
 
     return {
@@ -291,6 +320,7 @@ interface ProcessSessionParams {
   sessions: Map<string, ActiveSession>;
   sessionID: string;
   timeoutHandle: ReturnType<typeof setTimeout> | null;
+  sessionLog: pino.Logger;
 }
 
 async function processSession(opts: ProcessSessionParams): Promise<AgentResult> {
@@ -299,7 +329,7 @@ async function processSession(opts: ProcessSessionParams): Promise<AgentResult> 
 
     for await (const message of opts.q) {
       // Log message if logging enabled
-      await logMessage(opts.logContext, message, opts.config.logger);
+      await logMessage(opts.logContext, message, opts.sessionLog);
 
       if (message.type === 'assistant') {
         extractTextFromAssistant(message, opts.pushOutput);
@@ -618,7 +648,7 @@ function buildLogContext(
   const timestamp = Date.now();
   const context = params.role === 'planner' ? '' : `-${getWorkItemID(params)}`;
   const filename = `${timestamp}-${params.role}${context}.log`;
-  const logFilePath = join(config.logging.logsDir, filename);
+  const logFilePath = join(config.logging.dir, 'sessions', filename);
   return {
     enabled: true,
     logFilePath,
@@ -643,7 +673,7 @@ function getWorkItemID(params: AgentStartParams): string {
 async function logMessage(
   logContext: LogContext,
   message: SDKMessage,
-  logger: Logger,
+  logger: pino.Logger,
 ): Promise<void> {
   if (!logContext.enabled || logContext.logFilePath === null) {
     return;
@@ -657,10 +687,7 @@ async function logMessage(
         await writeFile(logContext.logFilePath, header, 'utf-8');
         logContext.headerWritten = true;
       } catch (error: unknown) {
-        logger.error('log file creation failed, disabling session logging', {
-          logFilePath: logContext.logFilePath,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        logger.warn({ err: error }, 'session log creation failure');
         logContext.enabled = false;
         logContext.logFilePath = null;
         return;
@@ -677,10 +704,7 @@ async function logMessage(
       ];
       await appendFile(logContext.logFilePath, lines.join('\n'), 'utf-8');
     } catch (error: unknown) {
-      logger.error('mid-session log write failed, disabling logging', {
-        logFilePath: logContext.logFilePath,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      logger.warn({ err: error }, 'session log write failure');
       logContext.enabled = false;
     }
     return;
@@ -740,10 +764,7 @@ async function logMessage(
       'utf-8',
     );
   } catch (error: unknown) {
-    logger.error('mid-session log write failed, disabling logging', {
-      logFilePath: logContext.logFilePath,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    logger.warn({ err: error }, 'session log write failure');
     logContext.enabled = false;
   }
 }
@@ -823,15 +844,15 @@ function validateModel(model: string): SDKModelLiteral {
 
 // --- Type guards ---
 
-function isToolUseHookInput(value: unknown): value is ToolUseHookInput {
+function isToolUseHookInput(value: unknown): value is ToolUseEvent {
   return typeof value === 'object' && value !== null && 'tool_name' in value;
 }
 
-function isTextBlock(block: { type: string }): block is { type: 'text'; text: string } {
+function isTextBlock(block: SDKBlock): block is SDKTextBlock {
   return block.type === 'text';
 }
 
-function isToolUseBlock(block: { type: string }): block is { type: 'tool_use'; name: string } {
+function isToolUseBlock(block: SDKBlock): block is SDKToolUseBlock {
   return block.type === 'tool_use';
 }
 
