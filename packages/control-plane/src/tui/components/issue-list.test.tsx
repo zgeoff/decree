@@ -1,12 +1,11 @@
 import { render } from 'ink-testing-library';
 import { expect, test, vi } from 'vitest';
 import type { StoreApi } from 'zustand';
-import type { Logger } from '../../engine/create-logger.ts';
-import { createLogger } from '../../engine/create-logger.ts';
 import { applyStateUpdate } from '../../engine/state-store/apply-state-update.ts';
 import type { EngineState, Priority, WorkItemStatus } from '../../engine/state-store/types.ts';
 import { buildRevision } from '../../test-utils/build-revision.ts';
 import { buildWorkItem } from '../../test-utils/build-work-item.ts';
+import { createTestLogger } from '../../test-utils/create-test-logger.ts';
 import { createTUIStore } from '../store.ts';
 import { createMockEngine } from '../test-utils/create-mock-engine.ts';
 import type { DisplayWorkItem } from '../types.ts';
@@ -18,8 +17,7 @@ import {
   IssueList,
 } from './issue-list.tsx';
 
-// biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op writer for test logger
-const testLogger: Logger = createLogger({ logLevel: 'error', writer: () => {} });
+const testLogger: ReturnType<typeof createTestLogger> = createTestLogger();
 
 function setupTest(config?: { paneHeight?: number; paneWidth?: number }): ReturnType<
   typeof render
