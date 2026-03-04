@@ -22,6 +22,10 @@ function buildSpecContent(status: string): string {
   return `---\ntitle: Test Spec\nversion: 0.1.0\nstatus: ${status}\n---\n\n# Test\n\nContent.\n`;
 }
 
+const COMMIT_SHA = 'commit-sha-abc';
+const ROOT_TREE_SHA = 'root-tree-sha-abc';
+const DOCS_TREE_SHA = 'docs-tree-sha-abc';
+
 function setupTest(overrides?: {
   dirSHA?: string;
   treeSHA?: string;
@@ -38,10 +42,29 @@ function setupTest(overrides?: {
 
   const client = createMockGitHubClient();
 
-  vi.mocked(client.repos.getContent).mockResolvedValue({ data: { sha: dirSHA } });
+  vi.mocked(client.git.getRef).mockResolvedValue({
+    data: { object: { sha: COMMIT_SHA } },
+  });
 
-  vi.mocked(client.git.getTree).mockResolvedValue({
-    data: { sha: treeSHA, tree: entries },
+  vi.mocked(client.git.getCommit).mockResolvedValue({
+    data: { sha: COMMIT_SHA, tree: { sha: ROOT_TREE_SHA } },
+  });
+
+  vi.mocked(client.git.getTree).mockImplementation(async (params) => {
+    if (params.recursive === '1') {
+      return { data: { sha: treeSHA, tree: entries } };
+    }
+    if (params.tree_sha === ROOT_TREE_SHA) {
+      return {
+        data: { sha: ROOT_TREE_SHA, tree: [{ path: 'docs', sha: DOCS_TREE_SHA, type: 'tree' }] },
+      };
+    }
+    if (params.tree_sha === DOCS_TREE_SHA) {
+      return {
+        data: { sha: DOCS_TREE_SHA, tree: [{ path: 'specs', sha: dirSHA, type: 'tree' }] },
+      };
+    }
+    return { data: { sha: '', tree: [] } };
   });
 
   vi.mocked(client.git.getBlob).mockImplementation(async (params) => {
@@ -130,17 +153,39 @@ test('it returns cached result when tree SHA is unchanged', async () => {
 test('it re-fetches when tree SHA changes', async () => {
   const client = createMockGitHubClient();
 
-  let callCount = 0;
-  vi.mocked(client.repos.getContent).mockImplementation(async () => {
-    callCount += 1;
-    return { data: { sha: `dir-sha-${callCount}` } };
+  vi.mocked(client.git.getRef).mockResolvedValue({
+    data: { object: { sha: COMMIT_SHA } },
   });
 
-  vi.mocked(client.git.getTree).mockResolvedValue({
-    data: {
-      sha: 'tree-sha',
-      tree: [buildTreeEntry({ path: 'workflow.md', sha: 'sha-1', type: 'blob' })],
-    },
+  vi.mocked(client.git.getCommit).mockResolvedValue({
+    data: { sha: COMMIT_SHA, tree: { sha: ROOT_TREE_SHA } },
+  });
+
+  let walkCallCount = 0;
+  vi.mocked(client.git.getTree).mockImplementation(async (params) => {
+    if (params.recursive === '1') {
+      return {
+        data: {
+          sha: 'tree-sha',
+          tree: [buildTreeEntry({ path: 'workflow.md', sha: 'sha-1', type: 'blob' })],
+        },
+      };
+    }
+    if (params.tree_sha === ROOT_TREE_SHA) {
+      return {
+        data: { sha: ROOT_TREE_SHA, tree: [{ path: 'docs', sha: DOCS_TREE_SHA, type: 'tree' }] },
+      };
+    }
+    if (params.tree_sha === DOCS_TREE_SHA) {
+      walkCallCount += 1;
+      return {
+        data: {
+          sha: DOCS_TREE_SHA,
+          tree: [{ path: 'specs', sha: `dir-sha-${walkCallCount}`, type: 'tree' }],
+        },
+      };
+    }
+    return { data: { sha: '', tree: [] } };
   });
 
   vi.mocked(client.git.getBlob).mockResolvedValue({

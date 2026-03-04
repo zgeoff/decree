@@ -94,17 +94,42 @@ export function createSpecReader(deps: SpecReaderDeps): SpecProviderReader {
 }
 
 async function getSpecsDirTreeSHA(deps: SpecReaderDeps): Promise<string> {
-  const response = await retryWithBackoff(() =>
-    deps.client.repos.getContent({
+  const refResponse = await retryWithBackoff(() =>
+    deps.client.git.getRef({
       owner: deps.config.owner,
       repo: deps.config.repo,
-      path: deps.config.specsDir,
-      ref: deps.config.defaultBranch,
+      ref: `heads/${deps.config.defaultBranch}`,
     }),
   );
 
-  invariant(response.data.sha, 'specs directory content must have a sha');
-  return response.data.sha;
+  const commitResponse = await retryWithBackoff(() =>
+    deps.client.git.getCommit({
+      owner: deps.config.owner,
+      repo: deps.config.repo,
+      commit_sha: refResponse.data.object.sha,
+    }),
+  );
+
+  let currentSHA = commitResponse.data.tree.sha;
+  const segments = deps.config.specsDir.split('/');
+
+  for (const segment of segments) {
+    // biome-ignore lint/performance/noAwaitInLoops: sequential tree walk required to resolve each path segment
+    const treeResponse = await retryWithBackoff(() =>
+      deps.client.git.getTree({
+        owner: deps.config.owner,
+        repo: deps.config.repo,
+        tree_sha: currentSHA,
+      }),
+    );
+
+    const entry = treeResponse.data.tree.find((e) => e.path === segment && e.type === 'tree');
+
+    invariant(entry?.sha, `tree entry for "${segment}" must exist with a sha`);
+    currentSHA = entry.sha;
+  }
+
+  return currentSHA;
 }
 
 function decodeBase64(encoded: string): string {
