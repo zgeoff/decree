@@ -1,7 +1,7 @@
 import type { ExecFileException } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import type { Mock } from 'vitest';
-import { afterEach, expect, test, vi } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { extractPatch } from './extract-patch.ts';
 
 vi.mock('node:child_process');
@@ -14,10 +14,6 @@ const mockExecFile: Mock = vi.mocked(execFile);
 function setupExecFileMock(stdout: string, stderr?: string): void {
   mockExecFile.mockResolvedValue({ stdout, stderr: stderr ?? '' });
 }
-
-afterEach(() => {
-  vi.clearAllMocks();
-});
 
 test('it extracts a non-empty unified diff from the worktree', async () => {
   const diffOutput = `diff --git a/src/foo.ts b/src/foo.ts

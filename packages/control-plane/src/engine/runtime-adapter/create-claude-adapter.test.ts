@@ -113,15 +113,6 @@ interface SetupTestResult {
 }
 
 function setupTest(overrides?: Partial<ClaudeAdapterConfig>): SetupTestResult {
-  // Reset module-level mocks between tests — each mock is re-configured below
-  mockQuery.mockReset();
-  mockExecFile.mockReset();
-  mockLoadAgentDefinition.mockReset();
-  mockBuildPlannerContext.mockReset();
-  mockBuildImplementorContext.mockReset();
-  mockBuildReviewerContext.mockReset();
-  mockExtractPatch.mockReset();
-
   const bashValidatorHook = vi.fn<BashValidatorHook>();
   bashValidatorHook.mockResolvedValue(undefined);
 
