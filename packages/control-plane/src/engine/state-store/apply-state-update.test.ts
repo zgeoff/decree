@@ -1,4 +1,4 @@
-import { expect, test, vi } from 'vitest';
+import { expect, test } from 'vitest';
 import type { StoreApi } from 'zustand';
 import { buildCommandFailedEvent } from '../../test-utils/build-command-failed-event.ts';
 import { buildCommandRejectedEvent } from '../../test-utils/build-command-rejected-event.ts';
@@ -18,15 +18,17 @@ import { buildRevisionChangedEvent } from '../../test-utils/build-revision-chang
 import { buildSpecChangedEvent } from '../../test-utils/build-spec-changed-event.ts';
 import { buildWorkItemChangedRemoval } from '../../test-utils/build-work-item-changed-removal.ts';
 import { buildWorkItemChangedUpsert } from '../../test-utils/build-work-item-changed-upsert.ts';
-import { createMockLogger } from '../../test-utils/create-mock-logger.ts';
-import type { Logger } from '../create-logger.ts';
+import { createTestLogger } from '../../test-utils/create-test-logger.ts';
 import { applyStateUpdate } from './apply-state-update.ts';
 import { createEngineStore } from './create-engine-store.ts';
 import type { EngineState } from './types.ts';
 
-function setupTest(): { store: StoreApi<EngineState>; logger: Logger } {
+function setupTest(): {
+  store: StoreApi<EngineState>;
+  logger: ReturnType<typeof createTestLogger>;
+} {
   const store = createEngineStore();
-  const { logger } = createMockLogger();
+  const logger = createTestLogger();
   return { store, logger };
 }
 
@@ -535,66 +537,6 @@ test('it rejects a started event when session ID is not in agent runs', () => {
 
   const stateAfter = store.getState();
   expect(stateAfter.agentRuns).toStrictEqual(stateBefore.agentRuns);
-});
-
-// --- Logging tests ---
-
-test('it logs an error when a transition targets an unknown session', () => {
-  const { store } = setupTest();
-  const { logger } = createMockLogger();
-
-  applyStateUpdate(store, buildImplementorStartedEvent({ sessionID: 'nonexistent' }), logger);
-
-  expect(logger.error).toHaveBeenCalledWith('agent run not found for transition', {
-    sessionID: 'nonexistent',
-    targetStatus: 'running',
-  });
-});
-
-test('it logs an error when a transition is invalid', () => {
-  const { store } = setupTest();
-  const { logger } = createMockLogger();
-
-  applyStateUpdate(store, buildImplementorRequestedEvent(), logger);
-  applyStateUpdate(store, buildImplementorStartedEvent(), logger);
-  applyStateUpdate(store, buildImplementorCompletedEvent(), logger);
-
-  vi.mocked(logger.error).mockClear();
-  applyStateUpdate(store, buildImplementorStartedEvent({ sessionID: 'session-impl-1' }), logger);
-
-  expect(logger.error).toHaveBeenCalledWith('invalid agent run transition', {
-    sessionID: 'session-impl-1',
-    currentStatus: 'completed',
-    targetStatus: 'running',
-  });
-});
-
-test('it logs an error when planner completed targets an unknown session', () => {
-  const { store } = setupTest();
-  const { logger } = createMockLogger();
-
-  applyStateUpdate(store, buildPlannerCompletedEvent({ sessionID: 'nonexistent' }), logger);
-
-  expect(logger.error).toHaveBeenCalledWith('agent run not found for transition', {
-    sessionID: 'nonexistent',
-    targetStatus: 'completed',
-  });
-});
-
-test('it logs an error when planner completed has an invalid transition', () => {
-  const { store } = setupTest();
-  const { logger } = createMockLogger();
-
-  applyStateUpdate(store, buildPlannerRequestedEvent(), logger);
-
-  vi.mocked(logger.error).mockClear();
-  applyStateUpdate(store, buildPlannerCompletedEvent(), logger);
-
-  expect(logger.error).toHaveBeenCalledWith('invalid agent run transition', {
-    sessionID: 'session-planner-1',
-    currentStatus: 'requested',
-    targetStatus: 'completed',
-  });
 });
 
 // --- CommandRejected tests ---

@@ -1,6 +1,6 @@
+import type pino from 'pino';
 import { match } from 'ts-pattern';
 import type { StoreApi } from 'zustand';
-import type { Logger } from '../create-logger.ts';
 import type {
   AgentRunStatus,
   CommandFailed,
@@ -39,7 +39,7 @@ const VALID_TRANSITIONS: Record<AgentRunStatus, AgentRunStatus[]> = {
 export function applyStateUpdate(
   store: StoreApi<EngineState>,
   event: EngineEvent,
-  logger: Logger,
+  logger: pino.Logger,
 ): void {
   match(event)
     .with({ type: 'workItemChanged' }, (e) => applyWorkItemChanged(store, e))
@@ -167,7 +167,7 @@ function applyReviewerRequested(store: StoreApi<EngineState>, event: ReviewerReq
 function applyPlannerStarted(
   store: StoreApi<EngineState>,
   event: PlannerStarted,
-  logger: Logger,
+  logger: pino.Logger,
 ): void {
   transitionAgentRun(
     store,
@@ -183,25 +183,24 @@ function applyPlannerStarted(
 function applyPlannerCompleted(
   store: StoreApi<EngineState>,
   event: PlannerCompleted,
-  logger: Logger,
+  logger: pino.Logger,
 ): void {
   const state = store.getState();
   const existingRun = state.agentRuns.get(event.sessionID);
 
   if (!existingRun) {
-    logger.error('agent run not found for transition', {
-      sessionID: event.sessionID,
-      targetStatus: 'completed',
-    });
+    logger.error(
+      { sessionID: event.sessionID, targetStatus: 'completed' },
+      'agent run not found for transition',
+    );
     return;
   }
 
   if (!isValidTransition(existingRun.status, 'completed')) {
-    logger.error('invalid agent run transition', {
-      sessionID: event.sessionID,
-      currentStatus: existingRun.status,
-      targetStatus: 'completed',
-    });
+    logger.error(
+      { sessionID: event.sessionID, currentStatus: existingRun.status, targetStatus: 'completed' },
+      'invalid agent run transition',
+    );
     return;
   }
 
@@ -227,7 +226,7 @@ function applyPlannerCompleted(
 function applyPlannerFailed(
   store: StoreApi<EngineState>,
   event: PlannerFailed,
-  logger: Logger,
+  logger: pino.Logger,
 ): void {
   transitionAgentRun(
     store,
@@ -244,7 +243,7 @@ function applyPlannerFailed(
 function applyImplementorStarted(
   store: StoreApi<EngineState>,
   event: ImplementorStarted,
-  logger: Logger,
+  logger: pino.Logger,
 ): void {
   transitionAgentRun(
     store,
@@ -260,7 +259,7 @@ function applyImplementorStarted(
 function applyImplementorCompleted(
   store: StoreApi<EngineState>,
   event: ImplementorCompleted,
-  logger: Logger,
+  logger: pino.Logger,
 ): void {
   transitionAgentRun(
     store,
@@ -276,7 +275,7 @@ function applyImplementorCompleted(
 function applyImplementorFailed(
   store: StoreApi<EngineState>,
   event: ImplementorFailed,
-  logger: Logger,
+  logger: pino.Logger,
 ): void {
   transitionAgentRun(
     store,
@@ -293,7 +292,7 @@ function applyImplementorFailed(
 function applyReviewerStarted(
   store: StoreApi<EngineState>,
   event: ReviewerStarted,
-  logger: Logger,
+  logger: pino.Logger,
 ): void {
   transitionAgentRun(
     store,
@@ -309,7 +308,7 @@ function applyReviewerStarted(
 function applyReviewerCompleted(
   store: StoreApi<EngineState>,
   event: ReviewerCompleted,
-  logger: Logger,
+  logger: pino.Logger,
 ): void {
   transitionAgentRun(
     store,
@@ -325,7 +324,7 @@ function applyReviewerCompleted(
 function applyReviewerFailed(
   store: StoreApi<EngineState>,
   event: ReviewerFailed,
-  logger: Logger,
+  logger: pino.Logger,
 ): void {
   transitionAgentRun(
     store,
@@ -361,25 +360,28 @@ interface AgentRunTransition {
 function transitionAgentRun(
   store: StoreApi<EngineState>,
   transition: AgentRunTransition,
-  logger: Logger,
+  logger: pino.Logger,
 ): void {
   const state = store.getState();
   const existingRun = state.agentRuns.get(transition.sessionID);
 
   if (!existingRun) {
-    logger.error('agent run not found for transition', {
-      sessionID: transition.sessionID,
-      targetStatus: transition.targetStatus,
-    });
+    logger.error(
+      { sessionID: transition.sessionID, targetStatus: transition.targetStatus },
+      'agent run not found for transition',
+    );
     return;
   }
 
   if (!isValidTransition(existingRun.status, transition.targetStatus)) {
-    logger.error('invalid agent run transition', {
-      sessionID: transition.sessionID,
-      currentStatus: existingRun.status,
-      targetStatus: transition.targetStatus,
-    });
+    logger.error(
+      {
+        sessionID: transition.sessionID,
+        currentStatus: existingRun.status,
+        targetStatus: transition.targetStatus,
+      },
+      'invalid agent run transition',
+    );
     return;
   }
 

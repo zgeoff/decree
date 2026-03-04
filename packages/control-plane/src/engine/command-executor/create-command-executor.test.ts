@@ -8,6 +8,7 @@ import {
   createMockRuntimeAdapter,
   type MockRuntimeAdapterResult,
 } from '../../test-utils/create-mock-runtime-adapter.ts';
+import { createTestLogger } from '../../test-utils/create-test-logger.ts';
 import type { AgentResult, EngineCommand } from '../state-store/domain-type-stubs.ts';
 import type { AgentRun, EngineState, PlannerRun } from '../state-store/types.ts';
 import { createCommandExecutor } from './create-command-executor.ts';
@@ -100,6 +101,7 @@ function setupTest(config?: {
     policy,
     getState: vi.fn().mockReturnValue(state),
     enqueue: enqueueSpy.enqueue,
+    logger: createTestLogger(),
   };
 
   return { deps, state, enqueueSpy, plannerAdapter, implementorAdapter, reviewerAdapter };

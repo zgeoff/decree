@@ -1,18 +1,16 @@
 import { render } from 'ink-testing-library';
 import { expect, test, vi } from 'vitest';
 import type { StoreApi } from 'zustand';
-import type { Logger } from '../engine/create-logger.ts';
-import { createLogger } from '../engine/create-logger.ts';
 import { applyStateUpdate } from '../engine/state-store/apply-state-update.ts';
 import type { EngineState, Priority, WorkItemStatus } from '../engine/state-store/types.ts';
 import { buildRevision } from '../test-utils/build-revision.ts';
 import { buildWorkItem } from '../test-utils/build-work-item.ts';
+import { createTestLogger } from '../test-utils/create-test-logger.ts';
 import { App, computePaneWidths, resolveTaskURL } from './app.tsx';
 import { createMockEngine } from './test-utils/create-mock-engine.ts';
 import type { DisplayWorkItem } from './types.ts';
 
-// biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op writer for test logger
-const testLogger: Logger = createLogger({ logLevel: 'error', writer: () => {} });
+const testLogger: ReturnType<typeof createTestLogger> = createTestLogger();
 
 async function setupTest(): Promise<
   ReturnType<typeof render> & {
@@ -26,10 +24,6 @@ async function setupTest(): Promise<
     const frame = instance.lastFrame() ?? '';
     expect(frame).toContain('ACTION');
   });
-  // useInput registers its listener via useEffect, which fires after the
-  // initial render paint. Wait one macrotask so effects complete before
-  // tests write to stdin.
-  await new Promise((resolve) => setTimeout(resolve, 0));
   return {
     ...instance,
     engine,
@@ -337,7 +331,6 @@ test('it moves selection down when j is pressed', async () => {
 
   // Select first, then move down
   stdin.write('j');
-  await new Promise((r) => setTimeout(r, 50));
   stdin.write('j');
 
   await vi.waitFor(() => {
@@ -358,12 +351,12 @@ test('it does not wrap past the last AGENTS item when pressing down', async () =
 
   // Select it and then try to move down
   stdin.write('j');
-  await new Promise((r) => setTimeout(r, 50));
   stdin.write('j');
-  await new Promise((r) => setTimeout(r, 50));
 
-  // Should still show the same item
-  expect(lastFrame()).toContain('#1');
+  await vi.waitFor(() => {
+    // Should still show the same item
+    expect(lastFrame()).toContain('#1');
+  });
 });
 
 test('it crosses sections seamlessly when navigating down from ACTION to AGENTS', async () => {
@@ -402,7 +395,6 @@ test('it crosses sections seamlessly when navigating down from ACTION to AGENTS'
 
   // Navigate to first item, then down to agents
   stdin.write('j');
-  await new Promise((r) => setTimeout(r, 50));
   stdin.write('j');
 
   await vi.waitFor(() => {
@@ -428,7 +420,6 @@ test('it pins a task to the detail pane when Enter is pressed', async () => {
 
   // Select and pin
   stdin.write('j');
-  await new Promise((r) => setTimeout(r, 50));
   stdin.write('\r');
 
   await vi.waitFor(() => {
@@ -443,11 +434,11 @@ test('it does nothing when Enter is pressed with no selection', async () => {
 
   stdin.write('\r');
 
-  await new Promise((r) => setTimeout(r, 50));
-
-  const frame = lastFrame() ?? '';
-  // No error, still showing empty sections
-  expect(frame).toContain('ACTION (0)');
+  await vi.waitFor(() => {
+    const frame = lastFrame() ?? '';
+    // No error, still showing empty sections
+    expect(frame).toContain('ACTION (0)');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -465,7 +456,6 @@ test('it shows a dispatch prompt when d is pressed on a dispatchable task', asyn
 
   // Select and dispatch
   stdin.write('j');
-  await new Promise((r) => setTimeout(r, 50));
   stdin.write('d');
 
   await vi.waitFor(() => {
@@ -483,12 +473,11 @@ test('it does nothing when d is pressed on a blocked task', async () => {
   });
 
   stdin.write('j');
-  await new Promise((r) => setTimeout(r, 50));
   stdin.write('d');
 
-  await new Promise((r) => setTimeout(r, 50));
-
-  expect(lastFrame()).not.toContain('Dispatch');
+  await vi.waitFor(() => {
+    expect(lastFrame()).not.toContain('Dispatch');
+  });
 });
 
 test('it shows a retry prompt when d is pressed on a failed task', async () => {
@@ -533,7 +522,6 @@ test('it shows a retry prompt when d is pressed on a failed task', async () => {
   });
 
   stdin.write('j');
-  await new Promise((r) => setTimeout(r, 50));
   stdin.write('d');
 
   await vi.waitFor(() => {
@@ -583,13 +571,12 @@ test('it does nothing when d is pressed on a failed reviewer task', async () => 
   });
 
   stdin.write('j');
-  await new Promise((r) => setTimeout(r, 50));
   stdin.write('d');
 
-  await new Promise((r) => setTimeout(r, 50));
-
-  expect(lastFrame()).not.toContain('Retry');
-  expect(lastFrame()).not.toContain('Dispatch');
+  await vi.waitFor(() => {
+    expect(lastFrame()).not.toContain('Retry');
+    expect(lastFrame()).not.toContain('Dispatch');
+  });
 });
 
 test('it dispatches when the dispatch prompt is confirmed', async () => {
@@ -602,7 +589,6 @@ test('it dispatches when the dispatch prompt is confirmed', async () => {
   });
 
   stdin.write('j');
-  await new Promise((r) => setTimeout(r, 50));
   stdin.write('d');
 
   await vi.waitFor(() => {
@@ -639,7 +625,6 @@ test('it toggles focus back to task list on second Tab', async () => {
   const { lastFrame, stdin } = await setupTest();
 
   stdin.write('\t');
-  await new Promise((r) => setTimeout(r, 50));
   stdin.write('\t');
 
   await vi.waitFor(() => {
@@ -767,10 +752,10 @@ test('it ignores all keys except y, n, Escape while a prompt is active', async (
   stdin.write('o');
   stdin.write('c');
 
-  await new Promise((r) => setTimeout(r, 50));
-
-  // Prompt is still active
-  expect(lastFrame()).toContain('Quit?');
+  await vi.waitFor(() => {
+    // Prompt is still active
+    expect(lastFrame()).toContain('Quit?');
+  });
 });
 
 // ---------------------------------------------------------------------------

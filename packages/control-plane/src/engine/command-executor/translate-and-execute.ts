@@ -76,12 +76,14 @@ export async function translateAndExecute(
     })
     .with({ command: 'requestPlannerRun' }, (cmd) => {
       const sessionID = crypto.randomUUID();
+      deps.logger.info({ role: 'planner', sessionID }, 'agent requested');
       startAgentAsync('planner', sessionID, { role: 'planner', specPaths: cmd.specPaths });
       return [{ type: 'plannerRequested' as const, sessionID, specPaths: cmd.specPaths }];
     })
     .with({ command: 'requestImplementorRun' }, (cmd) => {
       const sessionID = crypto.randomUUID();
       const branchName = buildBranchName(cmd.workItemID);
+      deps.logger.info({ role: 'implementor', sessionID }, 'agent requested');
       startAgentAsync('implementor', sessionID, {
         role: 'implementor',
         workItemID: cmd.workItemID,
@@ -98,6 +100,7 @@ export async function translateAndExecute(
     })
     .with({ command: 'requestReviewerRun' }, (cmd) => {
       const sessionID = crypto.randomUUID();
+      deps.logger.info({ role: 'reviewer', sessionID }, 'agent requested');
       startAgentAsync('reviewer', sessionID, {
         role: 'reviewer',
         workItemID: cmd.workItemID,

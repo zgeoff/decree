@@ -1,3 +1,4 @@
+import type pino from 'pino';
 import type { RevisionProviderReader, WorkProviderReader } from '../github-provider/types.ts';
 import type { AgentResult, ReviewHistory } from '../state-store/domain-type-stubs.ts';
 import type { EngineState } from '../state-store/types.ts';
@@ -71,6 +72,7 @@ export interface RuntimeAdapterDeps {
   revisionReader: RevisionProviderReader;
   getState: () => EngineState;
   getReviewHistory: (revisionID: string) => Promise<ReviewHistory>;
+  logger: pino.Logger;
 }
 
 // --- RuntimeAdapterConfig ---
@@ -83,7 +85,7 @@ export interface RuntimeAdapterConfig {
   maxAgentDuration: number;
   logging: {
     agentSessions: boolean;
-    logsDir: string;
+    dir: string;
   };
 }
 

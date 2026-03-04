@@ -1,3 +1,4 @@
+import type pino from 'pino';
 import type {
   RevisionProviderReader,
   SpecProviderReader,
@@ -19,6 +20,7 @@ export interface SpecPollerConfig {
   getState: () => EngineState;
   enqueue: (event: SpecChanged) => void;
   interval: number;
+  logger: pino.Logger;
 }
 
 export interface SpecPoller {
@@ -40,6 +42,7 @@ export interface WorkItemPollerConfig {
   getState: () => EngineState;
   enqueue: (event: WorkItemChanged) => void;
   interval: number;
+  logger: pino.Logger;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,4 +59,5 @@ export interface RevisionPollerConfig {
   getState: () => EngineState;
   enqueue: (event: RevisionChanged) => void;
   interval: number;
+  logger: pino.Logger;
 }

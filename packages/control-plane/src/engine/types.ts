@@ -34,8 +34,10 @@ export interface Engine {
 // --- LoggingConfig ---
 
 export interface LoggingConfig {
+  enabled?: boolean;
+  level?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+  dir?: string;
   agentSessions?: boolean;
-  logsDir?: string;
 }
 
 // --- EngineConfig ---
@@ -50,7 +52,6 @@ export interface EngineConfig {
   };
   createRuntimeAdapters: (deps: RuntimeAdapterDeps) => Record<AgentRole, RuntimeAdapter>;
   policy?: Policy;
-  logLevel?: 'debug' | 'info' | 'error';
   shutdownTimeout?: number;
   logging?: LoggingConfig;
   workItemPoller?: {

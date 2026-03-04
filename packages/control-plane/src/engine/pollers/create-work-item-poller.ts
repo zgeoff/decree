@@ -8,6 +8,7 @@ import type { WorkItemPoller, WorkItemPollerConfig } from './types.ts';
 const MILLISECONDS_PER_SECOND = 1000;
 
 export function createWorkItemPoller(config: WorkItemPollerConfig): WorkItemPoller {
+  const log = config.logger.child({ component: 'workItemPoller' });
   let timer: ReturnType<typeof setInterval> | null = null;
   let started = false;
 
@@ -22,10 +23,18 @@ export function createWorkItemPoller(config: WorkItemPollerConfig): WorkItemPoll
         providerMap.set(item.id, item);
       }
 
-      detectNewAndChangedItems(providerMap, storedItems, config.enqueue);
-      detectRemovedItems(providerMap, storedItems, config.enqueue);
-    } catch {
-      // Provider reader failed — skip this cycle, next interval proceeds normally
+      let eventsEmitted = 0;
+      const countingEnqueue = (event: WorkItemChanged): void => {
+        eventsEmitted += 1;
+        config.enqueue(event);
+      };
+
+      detectNewAndChangedItems(providerMap, storedItems, countingEnqueue);
+      detectRemovedItems(providerMap, storedItems, countingEnqueue);
+
+      log.info({ eventsEmitted }, 'poll cycle completed');
+    } catch (error: unknown) {
+      log.warn({ err: error }, 'poll cycle failed');
     }
 
     if (!started) {

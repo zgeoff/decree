@@ -7,5 +7,5 @@ afterEach(() => {
   vol.reset();
   vi.clearAllTimers();
   vi.useRealTimers();
-  vi.restoreAllMocks();
+  vi.resetAllMocks();
 });

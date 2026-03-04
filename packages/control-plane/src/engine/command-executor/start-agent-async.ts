@@ -1,3 +1,4 @@
+import type pino from 'pino';
 import invariant from 'tiny-invariant';
 import { match } from 'ts-pattern';
 import type {
@@ -11,6 +12,7 @@ import type { AgentRunHandle, AgentStartParams, CommandExecutorDeps } from './ty
 interface StartAgentContext {
   deps: CommandExecutorDeps;
   agentHandles: Map<string, AgentRunHandle>;
+  logger: pino.Logger;
 }
 
 export async function startAgentAsync(
@@ -19,16 +21,27 @@ export async function startAgentAsync(
   params: AgentStartParams,
   context: StartAgentContext,
 ): Promise<void> {
+  const issue =
+    params.role !== 'planner' && 'workItemID' in params ? Number(params.workItemID) : undefined;
+  const sessionLog = context.logger.child({
+    sessionID,
+    role,
+    ...(issue !== undefined && { issue }),
+  });
+
   try {
     const handle = await context.deps.runtimeAdapters[role].startAgent(params);
     context.agentHandles.set(sessionID, handle);
     context.deps.onHandleRegistered?.(sessionID, handle);
     context.deps.enqueue(buildStartedEvent(role, sessionID, handle.logFilePath));
+    sessionLog.info('agent started');
 
     try {
       const result = await handle.result;
       context.deps.enqueue(buildCompletedEvent(sessionID, params, result, handle.logFilePath));
+      sessionLog.info('agent completed');
     } catch (error: unknown) {
+      sessionLog.error({ err: error }, 'agent failed');
       const message = error instanceof Error ? error.message : String(error);
       const reason = deriveFailureReason(handle.abortSignal);
       context.deps.enqueue(
@@ -45,6 +58,7 @@ export async function startAgentAsync(
       context.deps.onHandleRemoved?.(sessionID);
     }
   } catch (error: unknown) {
+    sessionLog.error({ err: error }, 'agent failed');
     const message = error instanceof Error ? error.message : String(error);
     context.deps.enqueue(
       buildFailedEvent({ sessionID, params, reason: 'error', error: message, logFilePath: null }),

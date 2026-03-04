@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vitest';
 import { buildRevision } from '../../test-utils/build-revision.ts';
+import { createTestLogger } from '../../test-utils/create-test-logger.ts';
 import type { PipelineResult, Revision, RevisionChanged } from '../state-store/types.ts';
 import { createRevisionPoller } from './create-revision-poller.ts';
 
@@ -71,6 +72,7 @@ function setupTest(
       getState: () => state,
       enqueue,
       interval: 60,
+      logger: createTestLogger(),
     });
   }
 

@@ -8,6 +8,7 @@ import type { RevisionPoller, RevisionPollerConfig } from './types.ts';
 const MILLISECONDS_PER_SECOND = 1000;
 
 export function createRevisionPoller(config: RevisionPollerConfig): RevisionPoller {
+  const log = config.logger.child({ component: 'revisionPoller' });
   let timer: ReturnType<typeof setInterval> | null = null;
   let started = false;
 
@@ -22,10 +23,18 @@ export function createRevisionPoller(config: RevisionPollerConfig): RevisionPoll
         providerMap.set(revision.id, revision);
       }
 
-      detectNewAndChangedRevisions(providerMap, storedRevisions, config.enqueue);
-      detectRemovedRevisions(providerMap, storedRevisions, config.enqueue);
-    } catch {
-      // Provider reader failed — skip this cycle, next interval proceeds normally
+      let eventsEmitted = 0;
+      const countingEnqueue = (event: RevisionChanged): void => {
+        eventsEmitted += 1;
+        config.enqueue(event);
+      };
+
+      detectNewAndChangedRevisions(providerMap, storedRevisions, countingEnqueue);
+      detectRemovedRevisions(providerMap, storedRevisions, countingEnqueue);
+
+      log.info({ eventsEmitted }, 'poll cycle completed');
+    } catch (error: unknown) {
+      log.warn({ err: error }, 'poll cycle failed');
     }
 
     if (!started) {
