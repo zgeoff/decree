@@ -2,7 +2,7 @@ import type { SDKMessage, SDKResultError, SDKSystemMessage } from '@anthropic-ai
 import { vol } from 'memfs';
 import type { Mock, MockedFunction } from 'vitest';
 import { expect, test, vi } from 'vitest';
-import { createMockLogger } from '../../test-utils/create-mock-logger.ts';
+import { createTestLogger } from '../../test-utils/create-test-logger.ts';
 import type { PlannerResult, ReviewerResult } from '../state-store/types.ts';
 import {
   type BashValidatorHook,
@@ -113,22 +113,27 @@ interface SetupTestResult {
 }
 
 function setupTest(overrides?: Partial<ClaudeAdapterConfig>): SetupTestResult {
-  vi.clearAllMocks();
+  // Reset module-level mocks between tests — each mock is re-configured below
+  mockQuery.mockReset();
+  mockExecFile.mockReset();
+  mockLoadAgentDefinition.mockReset();
+  mockBuildPlannerContext.mockReset();
+  mockBuildImplementorContext.mockReset();
+  mockBuildReviewerContext.mockReset();
+  mockExtractPatch.mockReset();
+
   const bashValidatorHook = vi.fn<BashValidatorHook>();
   bashValidatorHook.mockResolvedValue(undefined);
-
-  const { logger } = createMockLogger();
 
   const config: ClaudeAdapterConfig = {
     repoRoot: '/repo',
     defaultBranch: 'main',
     contextPaths: [],
     bashValidatorHook,
-    logger,
     maxAgentDuration: 0,
     logging: {
       agentSessions: false,
-      logsDir: '/logs',
+      dir: '/logs',
     },
     ...overrides,
   };
@@ -154,6 +159,7 @@ function setupTest(overrides?: Partial<ClaudeAdapterConfig>): SetupTestResult {
       lastPlannedSHAs: new Map(),
     }),
     getReviewHistory: vi.fn().mockResolvedValue({ reviews: [], inlineComments: [] }),
+    logger: createTestLogger(),
   };
 
   // Default mocks
@@ -967,7 +973,7 @@ test('it aborts the agent session when the duration timeout fires', async () => 
 
 test('it creates a log file when logging is enabled', async () => {
   const { config, deps } = setupTest({
-    logging: { agentSessions: true, logsDir: '/logs' },
+    logging: { agentSessions: true, dir: '/logs' },
   });
 
   const plannerOutput: PlannerResult = {
@@ -987,7 +993,7 @@ test('it creates a log file when logging is enabled', async () => {
 
 test('it sets logFilePath to null when logging is disabled', async () => {
   const { config, deps } = setupTest({
-    logging: { agentSessions: false, logsDir: '/logs' },
+    logging: { agentSessions: false, dir: '/logs' },
   });
 
   const plannerOutput: PlannerResult = {
@@ -1006,7 +1012,7 @@ test('it sets logFilePath to null when logging is disabled', async () => {
 
 test('it includes work item ID in log filename for implementor sessions', async () => {
   const { config, deps } = setupTest({
-    logging: { agentSessions: true, logsDir: '/logs' },
+    logging: { agentSessions: true, dir: '/logs' },
   });
 
   const implementorOutput = {
@@ -1024,7 +1030,7 @@ test('it includes work item ID in log filename for implementor sessions', async 
 
 test('it includes work item ID in log filename for reviewer sessions', async () => {
   const { config, deps } = setupTest({
-    logging: { agentSessions: true, logsDir: '/logs' },
+    logging: { agentSessions: true, dir: '/logs' },
   });
 
   const reviewerOutput: ReviewerResult = {
@@ -1161,7 +1167,7 @@ test('it uses worktree path as cwd for implementor sessions', async () => {
 
 test('it writes cancelled outcome to the log footer when a session is aborted', async () => {
   const { config, deps } = setupTest({
-    logging: { agentSessions: true, logsDir: '/logs' },
+    logging: { agentSessions: true, dir: '/logs' },
   });
 
   const hangCallback: { resolve: (() => void) | null } = { resolve: null };
@@ -1203,7 +1209,7 @@ test('it writes cancelled outcome to the log footer when a session is aborted', 
 
 test('it assigns independent log file paths for concurrent sessions', async () => {
   const { config, deps } = setupTest({
-    logging: { agentSessions: true, logsDir: '/logs' },
+    logging: { agentSessions: true, dir: '/logs' },
   });
 
   const plannerOutput: PlannerResult = {
@@ -1288,7 +1294,7 @@ test('it assigns independent log file paths for concurrent sessions', async () =
 
 test('it logs unrecognized message types as unknown', async () => {
   const { config, deps } = setupTest({
-    logging: { agentSessions: true, logsDir: '/logs' },
+    logging: { agentSessions: true, dir: '/logs' },
   });
 
   const plannerOutput: PlannerResult = {
@@ -1300,8 +1306,10 @@ test('it logs unrecognized message types as unknown', async () => {
 
   async function* customMessageGenerator(): AsyncGenerator<SDKMessage, void> {
     yield buildSystemInitMessage();
-    // Yield an unrecognized message type
-    yield { type: 'custom_event' } as unknown as SDKMessage;
+    // Inject an unrecognized message type at the mock boundary — single assertion
+    // required because the SDK union does not include synthetic test types
+    const unrecognizedMessage: Record<string, unknown> = { type: 'custom_event' };
+    yield unrecognizedMessage as SDKMessage;
     yield {
       type: 'result',
       subtype: 'success',
