@@ -84,6 +84,9 @@ const config: AppConfig = {
   repository,
   provider,
   createRuntimeAdapters,
+  logging: {
+    enabled: true,
+  },
 };
 
 // biome-ignore lint/style/noDefaultExport: config files use default export by convention

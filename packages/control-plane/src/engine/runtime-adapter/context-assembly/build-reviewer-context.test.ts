@@ -1,4 +1,5 @@
 import { expect, test, vi } from 'vitest';
+import { createTestLogger } from '../../../test-utils/create-test-logger.ts';
 import type { RevisionFile } from '../../github-provider/types.ts';
 import type { Revision, WorkItem } from '../../state-store/domain-type-stubs.ts';
 import type { EngineState } from '../../state-store/types.ts';
@@ -126,6 +127,7 @@ function setupTest(options?: SetupTestOptions): {
     getReviewHistory: vi
       .fn<(revisionID: string) => Promise<ReviewHistory>>()
       .mockResolvedValue(reviewHistory),
+    logger: createTestLogger(),
   };
 
   return { params, getState, deps };
@@ -462,6 +464,7 @@ test('it throws when the work item is not found in state', async () => {
     },
     getState,
     getReviewHistory: vi.fn(),
+    logger: createTestLogger(),
   };
 
   await expect(buildReviewerContext({ params, getState, deps })).rejects.toThrow(
@@ -503,6 +506,7 @@ test('it throws when the revision is not found in state', async () => {
     },
     getState,
     getReviewHistory: vi.fn(),
+    logger: createTestLogger(),
   };
 
   await expect(buildReviewerContext({ params, getState, deps })).rejects.toThrow(

@@ -1,5 +1,4 @@
 import { render } from 'ink-testing-library';
-import type pino from 'pino';
 import { expect, test, vi } from 'vitest';
 import type { StoreApi } from 'zustand';
 import { applyStateUpdate } from '../engine/state-store/apply-state-update.ts';
@@ -11,7 +10,7 @@ import { App, computePaneWidths, resolveTaskURL } from './app.tsx';
 import { createMockEngine } from './test-utils/create-mock-engine.ts';
 import type { DisplayWorkItem } from './types.ts';
 
-const testLogger: pino.Logger = createTestLogger();
+const testLogger: ReturnType<typeof createTestLogger> = createTestLogger();
 
 async function setupTest(): Promise<
   ReturnType<typeof render> & {

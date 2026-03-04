@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vitest';
 import { buildSpec } from '../../test-utils/build-spec.ts';
+import { createTestLogger } from '../../test-utils/create-test-logger.ts';
 import type { Spec, SpecChanged } from '../state-store/types.ts';
 import { createSpecPoller } from './create-spec-poller.ts';
 
@@ -64,6 +65,7 @@ function setupTest(
       getState: () => state,
       enqueue,
       interval: 60,
+      logger: createTestLogger(),
     });
   }
 

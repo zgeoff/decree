@@ -6,6 +6,7 @@ import {
   createMockRuntimeAdapter,
   type MockRuntimeAdapterResult,
 } from '../../test-utils/create-mock-runtime-adapter.ts';
+import { createTestLogger } from '../../test-utils/create-test-logger.ts';
 import type { AgentResult } from '../state-store/domain-type-stubs.ts';
 import { startAgentAsync } from './start-agent-async.ts';
 import type { AgentRunHandle, AgentStartParams, CommandExecutorDeps } from './types.ts';
@@ -63,6 +64,7 @@ function setupTest(config?: { startAgentError?: Error }): {
       lastPlannedSHAs: new Map(),
     }),
     enqueue: enqueueSpy.enqueue,
+    logger: createTestLogger(),
   };
 
   const agentHandles = new Map<string, AgentRunHandle>();
@@ -77,7 +79,11 @@ test('it enqueues planner started then planner completed when agent resolves suc
   const params: AgentStartParams = { role: 'planner', specPaths: ['docs/specs/a.md'] };
   const plannerResult: AgentResult = { role: 'planner', create: [], close: [], update: [] };
 
-  const promise = startAgentAsync('planner', 'session-1', params, { deps, agentHandles });
+  const promise = startAgentAsync('planner', 'session-1', params, {
+    deps,
+    agentHandles,
+    logger: createTestLogger(),
+  });
   getFirstHandle(plannerAdapter).resolveResult(plannerResult);
   await promise;
 
@@ -102,7 +108,11 @@ test('it enqueues planner started then planner failed when agent result rejects'
   const { deps, agentHandles, plannerAdapter, enqueueSpy } = setupTest();
   const params: AgentStartParams = { role: 'planner', specPaths: ['docs/specs/a.md'] };
 
-  const promise = startAgentAsync('planner', 'session-1', params, { deps, agentHandles });
+  const promise = startAgentAsync('planner', 'session-1', params, {
+    deps,
+    agentHandles,
+    logger: createTestLogger(),
+  });
   getFirstHandle(plannerAdapter).rejectResult(new Error('agent crashed'));
   await promise;
 
@@ -129,7 +139,11 @@ test('it enqueues planner failed without started when start agent itself rejects
   });
   const params: AgentStartParams = { role: 'planner', specPaths: ['docs/specs/a.md'] };
 
-  await startAgentAsync('planner', 'session-1', params, { deps, agentHandles });
+  await startAgentAsync('planner', 'session-1', params, {
+    deps,
+    agentHandles,
+    logger: createTestLogger(),
+  });
 
   expect(enqueueSpy.events).toHaveLength(1);
   expect(enqueueSpy.events[0]).toStrictEqual({
@@ -158,7 +172,11 @@ test('it enqueues implementor started then implementor completed with work item 
     summary: 'Done',
   };
 
-  const promise = startAgentAsync('implementor', 'session-2', params, { deps, agentHandles });
+  const promise = startAgentAsync('implementor', 'session-2', params, {
+    deps,
+    agentHandles,
+    logger: createTestLogger(),
+  });
   getFirstHandle(implementorAdapter).resolveResult(implResult);
   await promise;
 
@@ -188,7 +206,11 @@ test('it enqueues implementor started then implementor failed when agent result 
     branchName: 'decree/wi-42',
   };
 
-  const promise = startAgentAsync('implementor', 'session-2', params, { deps, agentHandles });
+  const promise = startAgentAsync('implementor', 'session-2', params, {
+    deps,
+    agentHandles,
+    logger: createTestLogger(),
+  });
   getFirstHandle(implementorAdapter).rejectResult(new Error('build failed'));
   await promise;
 
@@ -222,7 +244,11 @@ test('it enqueues reviewer started then reviewer completed with revision fields'
     review: { verdict: 'approve', summary: 'LGTM', comments: [] },
   };
 
-  const promise = startAgentAsync('reviewer', 'session-3', params, { deps, agentHandles });
+  const promise = startAgentAsync('reviewer', 'session-3', params, {
+    deps,
+    agentHandles,
+    logger: createTestLogger(),
+  });
   getFirstHandle(reviewerAdapter).resolveResult(reviewerResult);
   await promise;
 
@@ -249,7 +275,11 @@ test('it retains the agent handle while running and removes it when the run comp
   const params: AgentStartParams = { role: 'planner', specPaths: ['docs/specs/a.md'] };
   const plannerResult: AgentResult = { role: 'planner', create: [], close: [], update: [] };
 
-  const promise = startAgentAsync('planner', 'session-1', params, { deps, agentHandles });
+  const promise = startAgentAsync('planner', 'session-1', params, {
+    deps,
+    agentHandles,
+    logger: createTestLogger(),
+  });
 
   await vi.waitFor(() => {
     expect(agentHandles.has('session-1')).toBe(true);
@@ -265,7 +295,11 @@ test('it removes the agent handle when the run fails', async () => {
   const { deps, agentHandles, plannerAdapter } = setupTest();
   const params: AgentStartParams = { role: 'planner', specPaths: ['docs/specs/a.md'] };
 
-  const promise = startAgentAsync('planner', 'session-1', params, { deps, agentHandles });
+  const promise = startAgentAsync('planner', 'session-1', params, {
+    deps,
+    agentHandles,
+    logger: createTestLogger(),
+  });
 
   await vi.waitFor(() => {
     expect(agentHandles.has('session-1')).toBe(true);
@@ -283,7 +317,11 @@ test('it does not add a handle when start agent itself rejects', async () => {
   });
   const params: AgentStartParams = { role: 'planner', specPaths: ['docs/specs/a.md'] };
 
-  await startAgentAsync('planner', 'session-1', params, { deps, agentHandles });
+  await startAgentAsync('planner', 'session-1', params, {
+    deps,
+    agentHandles,
+    logger: createTestLogger(),
+  });
 
   expect(agentHandles.has('session-1')).toBe(false);
 });
@@ -294,7 +332,11 @@ test('it emits timeout reason when the abort signal was aborted with timeout', a
   const { deps, agentHandles, plannerAdapter, enqueueSpy } = setupTest();
   const params: AgentStartParams = { role: 'planner', specPaths: ['docs/specs/a.md'] };
 
-  const promise = startAgentAsync('planner', 'session-1', params, { deps, agentHandles });
+  const promise = startAgentAsync('planner', 'session-1', params, {
+    deps,
+    agentHandles,
+    logger: createTestLogger(),
+  });
   const handle = getFirstHandle(plannerAdapter);
   handle.abortController.abort('timeout');
   handle.rejectResult(new Error('agent timed out'));
@@ -320,7 +362,11 @@ test('it emits cancelled reason when the abort signal was aborted with cancelled
     branchName: 'decree/wi-42',
   };
 
-  const promise = startAgentAsync('implementor', 'session-2', params, { deps, agentHandles });
+  const promise = startAgentAsync('implementor', 'session-2', params, {
+    deps,
+    agentHandles,
+    logger: createTestLogger(),
+  });
   const handle = getFirstHandle(implementorAdapter);
   handle.abortController.abort('cancelled');
   handle.rejectResult(new Error('agent was cancelled'));
@@ -347,7 +393,11 @@ test('it emits error reason when the abort signal was not aborted', async () => 
     revisionID: 'rev-1',
   };
 
-  const promise = startAgentAsync('reviewer', 'session-3', params, { deps, agentHandles });
+  const promise = startAgentAsync('reviewer', 'session-3', params, {
+    deps,
+    agentHandles,
+    logger: createTestLogger(),
+  });
   getFirstHandle(reviewerAdapter).rejectResult(new Error('validation failed'));
   await promise;
 

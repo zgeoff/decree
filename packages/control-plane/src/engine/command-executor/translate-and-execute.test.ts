@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vitest';
 import { buildRevision } from '../../test-utils/build-revision.ts';
 import { buildWorkItem } from '../../test-utils/build-work-item.ts';
+import { createTestLogger } from '../../test-utils/create-test-logger.ts';
 import type {
   AgentReview,
   EngineCommand,
@@ -44,6 +45,7 @@ function buildMockDeps(overrides?: Partial<CommandExecutorDeps>): CommandExecuto
     policy: vi.fn(() => ({ allowed: true, reason: null })),
     getState: vi.fn(() => setupState()),
     enqueue: vi.fn(),
+    logger: createTestLogger(),
     ...overrides,
   };
 }

@@ -6,6 +6,7 @@ import type { SpecPoller, SpecPollerConfig } from './types.ts';
 const MILLISECONDS_PER_SECOND = 1000;
 
 export function createSpecPoller(config: SpecPollerConfig): SpecPoller {
+  const log = config.logger.child({ component: 'specPoller' });
   let timer: ReturnType<typeof setInterval> | null = null;
   let started = false;
 
@@ -14,7 +15,8 @@ export function createSpecPoller(config: SpecPollerConfig): SpecPoller {
 
     try {
       specs = await config.reader.listSpecs();
-    } catch {
+    } catch (error: unknown) {
+      log.warn({ err: error }, 'poll cycle failed');
       return;
     }
 
@@ -24,13 +26,15 @@ export function createSpecPoller(config: SpecPollerConfig): SpecPoller {
     const changes = detectChanges(specs, storedSpecs);
 
     if (changes.length === 0) {
+      log.info({ eventsEmitted: 0 }, 'poll cycle completed');
       return;
     }
 
     let commitSHA: string;
     try {
       commitSHA = await config.reader.getDefaultBranchSHA();
-    } catch {
+    } catch (error: unknown) {
+      log.warn({ err: error }, 'commit SHA fetch failed');
       return;
     }
 
@@ -41,6 +45,8 @@ export function createSpecPoller(config: SpecPollerConfig): SpecPoller {
         config.enqueue(buildModifiedSpecEvent(change.spec, commitSHA));
       }
     }
+
+    log.info({ eventsEmitted: changes.length }, 'poll cycle completed');
   }
 
   async function poll(): Promise<void> {

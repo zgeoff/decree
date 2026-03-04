@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vitest';
 import { buildWorkItem } from '../../test-utils/build-work-item.ts';
+import { createTestLogger } from '../../test-utils/create-test-logger.ts';
 import type { WorkItem, WorkItemChanged } from '../state-store/types.ts';
 import { createWorkItemPoller } from './create-work-item-poller.ts';
 
@@ -61,6 +62,7 @@ function setupTest(
       getState: () => state,
       enqueue,
       interval: 60,
+      logger: createTestLogger(),
     });
   }
 
