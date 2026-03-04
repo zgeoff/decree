@@ -1,9 +1,9 @@
+import { resolve as resolvePath } from 'node:path';
+import pino from 'pino';
 import invariant from 'tiny-invariant';
 import type { StoreApi } from 'zustand';
 import { createCommandExecutor } from './command-executor/create-command-executor.ts';
 import type { CommandExecutor } from './command-executor/types.ts';
-import type { Logger } from './create-logger.ts';
-import { createLogger } from './create-logger.ts';
 import { defaultPolicy } from './default-policy.ts';
 import { createEventQueue } from './event-queue/create-event-queue.ts';
 import type { EventQueue } from './event-queue/types.ts';
@@ -47,20 +47,43 @@ interface ProcessEventDeps {
   queue: EventQueue;
   executor: CommandExecutor;
   handlers: Handler[];
-  logger: Logger;
+  logger: pino.Logger;
 }
 
 export function createEngine(config: EngineConfig): Engine {
   validateConfig(config);
 
   // 1. Create logger
-  const logger = createLogger({ logLevel: config.logLevel ?? 'info' });
+  const loggingEnabled = config.logging?.enabled === true;
+  const loggingDir = resolvePath(config.logging?.dir ?? './logs');
+
+  let logger: pino.Logger;
+  if (loggingEnabled) {
+    const transport = pino.transport({
+      target: 'pino-roll',
+      options: {
+        file: resolvePath(loggingDir, 'engine', `engine-${Date.now()}`),
+        mkdir: true,
+        size: '50m',
+        limit: { count: 30, removeOtherLogFiles: true },
+      },
+    });
+    logger = pino(
+      {
+        level: config.logging?.level ?? 'info',
+        serializers: { err: pino.stdSerializers.err },
+      },
+      transport,
+    );
+  } else {
+    logger = pino({ level: 'silent' });
+  }
 
   // 2. Create state store
   const store = createEngineStore();
 
   // 3. Create event queue
-  const queue = createEventQueue({ logger });
+  const queue = createEventQueue();
 
   // 4. Create runtime adapters
   const getReviewHistory = buildReviewHistoryFetcher(config.provider.revisionReader);
@@ -69,6 +92,7 @@ export function createEngine(config: EngineConfig): Engine {
     revisionReader: config.provider.revisionReader,
     getState: store.getState,
     getReviewHistory,
+    logger,
   });
 
   // 5. Agent handle map — populated via callbacks from the CommandExecutor
@@ -91,6 +115,7 @@ export function createEngine(config: EngineConfig): Engine {
     onHandleRemoved: (sessionID: string) => {
       agentHandles.delete(sessionID);
     },
+    logger,
   });
 
   // 7. Create handlers
@@ -104,6 +129,7 @@ export function createEngine(config: EngineConfig): Engine {
       queue.enqueue(event);
     },
     interval: config.workItemPoller?.pollInterval ?? DEFAULT_WORK_ITEM_POLL_INTERVAL,
+    logger,
   });
 
   const revisionPoller = createRevisionPoller({
@@ -113,6 +139,7 @@ export function createEngine(config: EngineConfig): Engine {
       queue.enqueue(event);
     },
     interval: config.revisionPoller?.pollInterval ?? DEFAULT_REVISION_POLL_INTERVAL,
+    logger,
   });
 
   const specPoller = createSpecPoller({
@@ -122,6 +149,7 @@ export function createEngine(config: EngineConfig): Engine {
       queue.enqueue(event);
     },
     interval: config.specPoller?.pollInterval ?? DEFAULT_SPEC_POLL_INTERVAL,
+    logger,
   });
 
   // Engine internal state
@@ -172,6 +200,8 @@ export function createEngine(config: EngineConfig): Engine {
     // Start the processing loop
     running = true;
     loopPromise = runProcessingLoop();
+
+    logger.info('engine started');
   }
 
   function stopEngine(): Promise<void> {
@@ -183,6 +213,8 @@ export function createEngine(config: EngineConfig): Engine {
   }
 
   async function performStop(): Promise<void> {
+    logger.info('engine stopping');
+
     // 1. Mark the engine as shutting down — reject new events (except terminal agent events)
     queue.setRejecting(true, isTerminalEventType);
 
@@ -199,6 +231,15 @@ export function createEngine(config: EngineConfig): Engine {
     // 3. Wait for monitors to drain terminal events, up to shutdownTimeout
     if (activeSessionIDs.length > 0) {
       await waitForMonitorsDrain(store, activeSessionIDs, shutdownTimeout);
+
+      const postDrainState = store.getState();
+      const stillActive = activeSessionIDs.filter((sessionID) => {
+        const run = postDrainState.agentRuns.get(sessionID);
+        return run !== undefined && (run.status === 'requested' || run.status === 'running');
+      });
+      if (stillActive.length > 0) {
+        logger.warn({ activeSessionCount: stillActive.length }, 'shutdown timeout reached');
+      }
     }
 
     // 4. Stop all pollers
@@ -218,6 +259,8 @@ export function createEngine(config: EngineConfig): Engine {
 
     // Clean up agent handles
     agentHandles.clear();
+
+    logger.info('engine stopped');
   }
 
   // --- Processing loop ---
@@ -248,6 +291,8 @@ export function createEngine(config: EngineConfig): Engine {
 // --- Event processing (stateless — receives all dependencies as parameters) ---
 
 async function processEvent(processDeps: ProcessEventDeps, event: EngineEvent): Promise<void> {
+  processDeps.logger.info({ eventType: event.type }, 'event dequeued');
+
   // 1. Apply state update
   applyStateUpdate(processDeps.store, event, processDeps.logger);
 
@@ -256,6 +301,11 @@ async function processEvent(processDeps: ProcessEventDeps, event: EngineEvent): 
 
   // 3. Run all handlers with the same snapshot
   const commands = collectHandlerCommands(processDeps.handlers, event, snapshot);
+
+  processDeps.logger.info(
+    { eventType: event.type, commandCount: commands.length },
+    'handler commands emitted',
+  );
 
   // 4. Execute each command with the same snapshot; enqueue result events
   for (const command of commands) {

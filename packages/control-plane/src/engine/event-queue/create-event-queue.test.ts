@@ -1,19 +1,15 @@
 import { expect, test } from 'vitest';
-import { createMockLogger } from '../../test-utils/create-mock-logger.ts';
-import type { Logger } from '../create-logger.ts';
 import type { EngineEvent } from '../state-store/domain-type-stubs.ts';
 import { createEventQueue } from './create-event-queue.ts';
 import type { EventQueue } from './types.ts';
 
 interface SetupTestResult {
   queue: EventQueue;
-  logger: Logger;
 }
 
 function setupTest(): SetupTestResult {
-  const { logger } = createMockLogger();
-  const queue = createEventQueue({ logger });
-  return { queue, logger };
+  const queue = createEventQueue();
+  return { queue };
 }
 
 function buildWorkItemChangedEvent(workItemID: string): EngineEvent {
@@ -162,8 +158,8 @@ test('it maintains FIFO order when multiple events are enqueued and dequeued', (
   expect(queue.dequeue()).toBeUndefined();
 });
 
-test('it silently drops and logs when enqueue is called after setRejecting is enabled without filter', () => {
-  const { queue, logger } = setupTest();
+test('it silently drops when enqueue is called after setRejecting is enabled without filter', () => {
+  const { queue } = setupTest();
   const event = buildWorkItemChangedEvent('1');
 
   queue.setRejecting(true);
@@ -171,9 +167,6 @@ test('it silently drops and logs when enqueue is called after setRejecting is en
   queue.enqueue(event);
 
   expect(queue.size()).toBe(0);
-  expect(logger.error).toHaveBeenCalledWith('event rejected during shutdown', {
-    eventType: 'workItemChanged',
-  });
 });
 
 test('it allows enqueue when setRejecting is disabled after being enabled', () => {
@@ -189,7 +182,7 @@ test('it allows enqueue when setRejecting is disabled after being enabled', () =
 });
 
 test('it allows terminal events when setRejecting is enabled with a filter', () => {
-  const { queue, logger } = setupTest();
+  const { queue } = setupTest();
   const startedEvent = buildImplementorStartedEvent('session-1');
   const completedEvent = buildImplementorCompletedEvent('session-1');
   const workItemEvent = buildWorkItemChangedEvent('1');
@@ -209,15 +202,9 @@ test('it allows terminal events when setRejecting is enabled with a filter', () 
 
   queue.enqueue(startedEvent);
   expect(queue.size()).toBe(1);
-  expect(logger.error).toHaveBeenCalledWith('event rejected during shutdown', {
-    eventType: 'implementorStarted',
-  });
 
   queue.enqueue(workItemEvent);
   expect(queue.size()).toBe(1);
-  expect(logger.error).toHaveBeenCalledWith('event rejected during shutdown', {
-    eventType: 'workItemChanged',
-  });
 });
 
 test('it allows dequeue to work normally when rejecting mode is enabled', () => {
